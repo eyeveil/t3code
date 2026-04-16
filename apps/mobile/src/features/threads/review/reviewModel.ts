@@ -30,6 +30,10 @@ export interface ReviewRenderableLineRow {
   readonly content: string;
   readonly additionTokenIndex: number | null;
   readonly deletionTokenIndex: number | null;
+  readonly comparison: {
+    readonly change: "add" | "delete";
+    readonly tokenIndex: number;
+  } | null;
 }
 
 export type ReviewRenderableRow = ReviewRenderableHunkRow | ReviewRenderableLineRow;
@@ -47,6 +51,42 @@ export interface ReviewRenderableFile {
   readonly deletionLines: ReadonlyArray<string>;
   readonly rows: ReadonlyArray<ReviewRenderableRow>;
 }
+
+export interface ReviewFileHeaderListItem {
+  readonly kind: "file-header";
+  readonly id: string;
+  readonly fileId: string;
+  readonly file: ReviewRenderableFile;
+  readonly expanded: boolean;
+}
+
+export interface ReviewFileSuppressedListItem {
+  readonly kind: "file-suppressed";
+  readonly id: string;
+  readonly fileId: string;
+  readonly message: string;
+  readonly actionLabel: string | null;
+}
+
+export interface ReviewHunkListItem {
+  readonly kind: "hunk";
+  readonly id: string;
+  readonly fileId: string;
+  readonly row: ReviewRenderableHunkRow;
+}
+
+export interface ReviewLineListItem {
+  readonly kind: "line";
+  readonly id: string;
+  readonly fileId: string;
+  readonly row: ReviewRenderableLineRow;
+}
+
+export type ReviewListItem =
+  | ReviewFileHeaderListItem
+  | ReviewFileSuppressedListItem
+  | ReviewHunkListItem
+  | ReviewLineListItem;
 
 export type ReviewFilePreviewState =
   | {
@@ -267,6 +307,72 @@ export function getReviewFilePreviewState(file: ReviewRenderableFile): ReviewFil
   return { kind: "render" };
 }
 
+// The flattened review list item model is inspired by pierre/diffs' iterator-first
+// virtualization architecture, adapted here for React Native and LegendList.
+// Original project: https://github.com/pingdotgg/pierre/tree/main/packages/diffs
+// Reference files:
+// - src/utils/iterateOverDiff.ts
+// - src/components/VirtualizedFileDiff.ts
+export function buildReviewListItems(input: {
+  readonly files: ReadonlyArray<ReviewRenderableFile>;
+  readonly expandedFileIds: ReadonlyArray<string>;
+  readonly revealedLargeFileIds: ReadonlyArray<string>;
+}): ReadonlyArray<ReviewListItem> {
+  const expandedFileIds = new Set(input.expandedFileIds);
+  const revealedLargeFileIds = new Set(input.revealedLargeFileIds);
+  const items: ReviewListItem[] = [];
+
+  input.files.forEach((file) => {
+    const expanded = expandedFileIds.has(file.id);
+    items.push({
+      kind: "file-header",
+      id: `${file.id}:header`,
+      fileId: file.id,
+      file,
+      expanded,
+    });
+
+    if (!expanded) {
+      return;
+    }
+
+    const previewState = getReviewFilePreviewState(file);
+    if (previewState.kind === "suppressed") {
+      if (previewState.reason !== "large" || !revealedLargeFileIds.has(file.id)) {
+        items.push({
+          kind: "file-suppressed",
+          id: `${file.id}:suppressed`,
+          fileId: file.id,
+          message: previewState.message,
+          actionLabel: previewState.actionLabel,
+        });
+        return;
+      }
+    }
+
+    file.rows.forEach((row) => {
+      if (row.kind === "hunk") {
+        items.push({
+          kind: "hunk",
+          id: row.id,
+          fileId: file.id,
+          row,
+        });
+        return;
+      }
+
+      items.push({
+        kind: "line",
+        id: row.id,
+        fileId: file.id,
+        row,
+      });
+    });
+  });
+
+  return items;
+}
+
 function fallbackHunkHeader(hunk: FileDiffMetadata["hunks"][number]): string {
   return `@@ -${hunk.deletionStart},${hunk.deletionCount} +${hunk.additionStart},${hunk.additionCount} @@`;
 }
@@ -304,6 +410,7 @@ function buildRenderableRows(file: FileDiffMetadata): ReadonlyArray<ReviewRender
             ),
             additionTokenIndex,
             deletionTokenIndex,
+            comparison: null,
           });
           deletionLineNumber += 1;
           additionLineNumber += 1;
@@ -312,6 +419,10 @@ function buildRenderableRows(file: FileDiffMetadata): ReadonlyArray<ReviewRender
         }
         return;
       }
+
+      const pairedLineCount = Math.min(segment.deletions, segment.additions);
+      const deletionTokenIndexStart = deletionTokenIndex;
+      const additionTokenIndexStart = additionTokenIndex;
 
       for (let index = 0; index < segment.deletions; index += 1) {
         rows.push({
@@ -323,6 +434,13 @@ function buildRenderableRows(file: FileDiffMetadata): ReadonlyArray<ReviewRender
           content: stripTrailingNewline(file.deletionLines[deletionTokenIndex] ?? ""),
           additionTokenIndex: null,
           deletionTokenIndex,
+          comparison:
+            index < pairedLineCount
+              ? {
+                  change: "add",
+                  tokenIndex: additionTokenIndexStart + index,
+                }
+              : null,
         });
         deletionLineNumber += 1;
         deletionTokenIndex += 1;
@@ -338,6 +456,13 @@ function buildRenderableRows(file: FileDiffMetadata): ReadonlyArray<ReviewRender
           content: stripTrailingNewline(file.additionLines[additionTokenIndex] ?? ""),
           additionTokenIndex,
           deletionTokenIndex: null,
+          comparison:
+            index < pairedLineCount
+              ? {
+                  change: "delete",
+                  tokenIndex: deletionTokenIndexStart + index,
+                }
+              : null,
         });
         additionLineNumber += 1;
         additionTokenIndex += 1;

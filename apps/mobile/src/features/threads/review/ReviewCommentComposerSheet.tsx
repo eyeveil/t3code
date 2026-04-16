@@ -27,12 +27,16 @@ import { appendReviewCommentToDraft } from "../use-thread-composer-state";
 import {
   clearReviewCommentTarget,
   formatReviewCommentContext,
-  getReviewChangeMarker,
   getReviewUnifiedLineNumber,
   getSelectedReviewCommentLines,
   useReviewCommentTarget,
 } from "./reviewCommentSelection";
-import { changeTone, DiffTokenText } from "./reviewDiffRendering";
+import {
+  changeTone,
+  DiffTokenText,
+  REVIEW_MONO_FONT_FAMILY,
+  ReviewChangeBar,
+} from "./reviewDiffRendering";
 import {
   highlightReviewSelectedLines,
   type ReviewDiffTheme,
@@ -217,19 +221,18 @@ export function ReviewCommentComposerSheet() {
                           className={cn("flex-row items-start", changeTone(line.change))}
                           style={{ height: REVIEW_COMMENT_LINE_HEIGHT }}
                         >
-                          <Text className="w-9 px-1 py-1 text-right text-[11px] font-t3-medium text-foreground-muted">
-                            {lineNumber ?? ""}
-                          </Text>
+                          <ReviewChangeBar change={line.change} />
                           <Text
-                            className="px-0.5 py-1 text-center font-mono text-[12px] text-foreground-muted"
-                            style={{ width: 18 }}
+                            className="w-9 py-1 pr-1 text-right text-[11px] font-t3-medium text-foreground-muted"
+                            style={{ fontFamily: REVIEW_MONO_FONT_FAMILY }}
                           >
-                            {getReviewChangeMarker(line.change)}
+                            {lineNumber ?? ""}
                           </Text>
                           <View className="min-w-0 flex-1 flex-shrink-0 px-1 py-1">
                             <DiffTokenText
                               fallback={line.content}
                               tokens={highlightedLinesById[line.id] ?? null}
+                              change={line.change}
                             />
                           </View>
                         </View>

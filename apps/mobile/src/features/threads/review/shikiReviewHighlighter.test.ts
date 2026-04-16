@@ -41,4 +41,73 @@ describe("highlightReviewFile", () => {
     expect(highlighted.additionLines[2]?.some((token) => token.content === "const")).toBe(true);
     expect(highlighted.additionLines[3]?.some((token) => token.content === "expect")).toBe(true);
   });
+
+  it("adds word-alt diff emphasis for paired deletion and addition lines", async () => {
+    const file = makeRenderableFile({
+      path: "apps/mobile/src/example-inline-diff.test.ts",
+      additionLines: ["const after = 2;"],
+      deletionLines: ["const before = 1;"],
+      rows: [
+        {
+          kind: "line",
+          id: "delete-1",
+          change: "delete",
+          oldLineNumber: 1,
+          newLineNumber: null,
+          content: "const before = 1;",
+          additionTokenIndex: null,
+          deletionTokenIndex: 0,
+          comparison: { change: "add", tokenIndex: 0 },
+        },
+        {
+          kind: "line",
+          id: "add-1",
+          change: "add",
+          oldLineNumber: null,
+          newLineNumber: 1,
+          content: "const after = 2;",
+          additionTokenIndex: 0,
+          deletionTokenIndex: null,
+          comparison: { change: "delete", tokenIndex: 0 },
+        },
+      ],
+    });
+
+    const highlighted = await highlightReviewFile(file, "light");
+
+    expect(highlighted.deletionLines[0]?.some((token) => token.diffHighlight === true)).toBe(true);
+    expect(highlighted.additionLines[0]?.some((token) => token.diffHighlight === true)).toBe(true);
+  });
+
+  it("falls back to plain tokens for very long lines", async () => {
+    const longLine = `const value = "${"a".repeat(1_100)}";`;
+    const file = makeRenderableFile({
+      path: "apps/mobile/src/example-long-line.ts",
+      additionLines: [longLine],
+      rows: [
+        {
+          kind: "line",
+          id: "add-1",
+          change: "add",
+          oldLineNumber: null,
+          newLineNumber: 1,
+          content: longLine,
+          additionTokenIndex: 0,
+          deletionTokenIndex: null,
+          comparison: null,
+        },
+      ],
+    });
+
+    const highlighted = await highlightReviewFile(file, "light");
+
+    expect(highlighted.additionLines).toHaveLength(1);
+    expect(highlighted.additionLines[0]).toEqual([
+      {
+        content: longLine,
+        color: null,
+        fontStyle: null,
+      },
+    ]);
+  });
 });

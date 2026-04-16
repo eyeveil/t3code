@@ -8,13 +8,15 @@ import {
   type ReviewHighlighterEngine,
 } from "./reviewHighlighterEngine";
 import type { ReviewRenderableFile, ReviewRenderableLineRow } from "./reviewModel";
+import { applyDiffRangesToTokens, computeWordAltDiffRanges } from "./reviewWordDiffs";
 
 export type ReviewDiffTheme = "light" | "dark";
 
 export interface ReviewHighlightedToken {
-  readonly content: string;
+  content: string;
   readonly color: string | null;
   readonly fontStyle: number | null;
+  readonly diffHighlight?: boolean;
 }
 
 export interface ReviewHighlightedFile {
@@ -26,13 +28,19 @@ const SHIKI_THEME_NAME_BY_SCHEME = {
   light: "github-light-default",
   dark: "github-dark-default",
 } as const;
+const REVIEW_HIGHLIGHTER_ENGINE_ENV_VALUE =
+  process.env.EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE ?? "javascript";
 const REVIEW_HIGHLIGHTER_ENGINE_PREFERENCE = resolveReviewHighlighterEnginePreference(
-  process.env.EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE ?? "javascript",
+  REVIEW_HIGHLIGHTER_ENGINE_ENV_VALUE,
 );
 const REVIEW_HIGHLIGHTER_DISABLE_RESULT_CACHE = resolveReviewHighlighterBooleanFlag(
   process.env.EXPO_PUBLIC_REVIEW_HIGHLIGHTER_DISABLE_CACHE,
   false,
 );
+const REVIEW_HIGHLIGHT_RESULT_CACHE_LIMIT = 8;
+const REVIEW_HIGHLIGHT_CHUNK_LINE_THRESHOLD = 40;
+const REVIEW_HIGHLIGHT_CHUNK_SIZE = 20;
+const REVIEW_TOKENIZE_MAX_LINE_LENGTH = 1_000;
 const highlightCache = new Map<string, Promise<ReviewHighlightedFile>>();
 const resolvedHighlightCache = new Map<string, ReviewHighlightedFile>();
 const loadedLanguages = new Set<string>(["text"]);
@@ -205,6 +213,17 @@ function joinPatchLines(lines: ReadonlyArray<string>): string {
   return lines.map(stripTrailingNewline).join("\n");
 }
 
+function waitForNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+
+    setTimeout(resolve, 0);
+  });
+}
+
 async function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
     const configuredHighlighterPromise = Promise.all([
@@ -214,6 +233,7 @@ async function getHighlighter(): Promise<HighlighterCore> {
       let nativeEngineAvailable = false;
 
       logReviewHighlighterDiagnostic("initializing", {
+        configuredPreference: REVIEW_HIGHLIGHTER_ENGINE_ENV_VALUE,
         preference: REVIEW_HIGHLIGHTER_ENGINE_PREFERENCE,
         resultCacheDisabled: REVIEW_HIGHLIGHTER_DISABLE_RESULT_CACHE,
       });
@@ -379,6 +399,146 @@ function normalizeHighlightedLines(
   );
 }
 
+function applyWordAltDiffHighlightsToFile(
+  file: ReviewRenderableFile,
+  highlighted: ReviewHighlightedFile,
+): ReviewHighlightedFile {
+  const nextAdditionLines = [...highlighted.additionLines];
+  const nextDeletionLines = [...highlighted.deletionLines];
+  const processedPairs = new Set<string>();
+  let changed = false;
+
+  file.rows.forEach((row) => {
+    if (row.kind !== "line" || row.change === "context" || !row.comparison) {
+      return;
+    }
+
+    const deletionTokenIndex =
+      row.change === "delete"
+        ? row.deletionTokenIndex
+        : row.comparison.change === "delete"
+          ? row.comparison.tokenIndex
+          : null;
+    const additionTokenIndex =
+      row.change === "add"
+        ? row.additionTokenIndex
+        : row.comparison.change === "add"
+          ? row.comparison.tokenIndex
+          : null;
+
+    if (deletionTokenIndex === null || additionTokenIndex === null) {
+      return;
+    }
+
+    const pairKey = `${deletionTokenIndex}:${additionTokenIndex}`;
+    if (processedPairs.has(pairKey)) {
+      return;
+    }
+    processedPairs.add(pairKey);
+
+    const deletionLine = stripTrailingNewline(file.deletionLines[deletionTokenIndex] ?? "");
+    const additionLine = stripTrailingNewline(file.additionLines[additionTokenIndex] ?? "");
+    const ranges = computeWordAltDiffRanges({ deletionLine, additionLine });
+
+    if (ranges.deletion.length > 0) {
+      nextDeletionLines[deletionTokenIndex] = applyDiffRangesToTokens(
+        nextDeletionLines[deletionTokenIndex] ?? [],
+        ranges.deletion,
+      );
+      changed = true;
+    }
+
+    if (ranges.addition.length > 0) {
+      nextAdditionLines[additionTokenIndex] = applyDiffRangesToTokens(
+        nextAdditionLines[additionTokenIndex] ?? [],
+        ranges.addition,
+      );
+      changed = true;
+    }
+  });
+
+  return changed
+    ? {
+        additionLines: nextAdditionLines,
+        deletionLines: nextDeletionLines,
+      }
+    : highlighted;
+}
+
+function applyWordAltDiffHighlightsToSelectedLines(input: {
+  readonly lines: ReadonlyArray<ReviewRenderableLineRow>;
+  readonly tokenMap: Record<string, ReadonlyArray<ReviewHighlightedToken>>;
+}): Record<string, ReadonlyArray<ReviewHighlightedToken>> {
+  const additionLineByTokenIndex = new Map<number, ReviewRenderableLineRow>();
+  const deletionLineByTokenIndex = new Map<number, ReviewRenderableLineRow>();
+
+  input.lines.forEach((line) => {
+    if (line.change === "add" && line.additionTokenIndex !== null) {
+      additionLineByTokenIndex.set(line.additionTokenIndex, line);
+    }
+    if (line.change === "delete" && line.deletionTokenIndex !== null) {
+      deletionLineByTokenIndex.set(line.deletionTokenIndex, line);
+    }
+  });
+
+  const nextTokenMap = { ...input.tokenMap };
+  const processedPairs = new Set<string>();
+
+  input.lines.forEach((line) => {
+    if (line.change === "context" || !line.comparison) {
+      return;
+    }
+
+    const pairedDeletionLine =
+      line.change === "delete"
+        ? line
+        : line.comparison.change === "delete"
+          ? deletionLineByTokenIndex.get(line.comparison.tokenIndex)
+          : undefined;
+    const pairedAdditionLine =
+      line.change === "add"
+        ? line
+        : line.comparison.change === "add"
+          ? additionLineByTokenIndex.get(line.comparison.tokenIndex)
+          : undefined;
+
+    if (
+      !pairedDeletionLine ||
+      !pairedAdditionLine ||
+      pairedDeletionLine.deletionTokenIndex === null ||
+      pairedAdditionLine.additionTokenIndex === null
+    ) {
+      return;
+    }
+
+    const pairKey = `${pairedDeletionLine.deletionTokenIndex}:${pairedAdditionLine.additionTokenIndex}`;
+    if (processedPairs.has(pairKey)) {
+      return;
+    }
+    processedPairs.add(pairKey);
+
+    const ranges = computeWordAltDiffRanges({
+      deletionLine: pairedDeletionLine.content,
+      additionLine: pairedAdditionLine.content,
+    });
+
+    if (ranges.deletion.length > 0) {
+      nextTokenMap[pairedDeletionLine.id] = applyDiffRangesToTokens(
+        nextTokenMap[pairedDeletionLine.id] ?? [],
+        ranges.deletion,
+      );
+    }
+    if (ranges.addition.length > 0) {
+      nextTokenMap[pairedAdditionLine.id] = applyDiffRangesToTokens(
+        nextTokenMap[pairedAdditionLine.id] ?? [],
+        ranges.addition,
+      );
+    }
+  });
+
+  return nextTokenMap;
+}
+
 async function highlightLines(
   code: string,
   language: string,
@@ -389,12 +549,74 @@ async function highlightLines(
   }
 
   const highlighter = await getHighlighter();
-  const tokenLines = highlighter.codeToTokensBase(code, { lang: language, theme });
-  return normalizeHighlightedLines(tokenLines);
+  const sourceLines = code.split("\n");
+  const highlightedLines: Array<ReadonlyArray<ReviewHighlightedToken>> = [];
+  const shortLineBatch: string[] = [];
+
+  const flushShortLineBatch = async (): Promise<void> => {
+    if (shortLineBatch.length === 0) {
+      return;
+    }
+
+    const tokenLines = highlighter.codeToTokensBase(shortLineBatch.join("\n"), {
+      lang: language,
+      theme,
+    });
+    highlightedLines.push(...normalizeHighlightedLines(tokenLines));
+    shortLineBatch.length = 0;
+  };
+
+  for (let lineIndex = 0; lineIndex < sourceLines.length; lineIndex += 1) {
+    const line = sourceLines[lineIndex] ?? "";
+
+    if (line.length > REVIEW_TOKENIZE_MAX_LINE_LENGTH) {
+      await flushShortLineBatch();
+      highlightedLines.push([{ content: line, color: null, fontStyle: null }]);
+    } else {
+      shortLineBatch.push(line);
+    }
+
+    if (shortLineBatch.length >= REVIEW_HIGHLIGHT_CHUNK_SIZE) {
+      await flushShortLineBatch();
+    }
+
+    if (
+      sourceLines.length > REVIEW_HIGHLIGHT_CHUNK_LINE_THRESHOLD &&
+      lineIndex + 1 < sourceLines.length &&
+      (shortLineBatch.length === 0 || line.length > REVIEW_TOKENIZE_MAX_LINE_LENGTH)
+    ) {
+      await waitForNextFrame();
+    }
+  }
+
+  await flushShortLineBatch();
+
+  return highlightedLines;
 }
 
 function getHighlightCacheKey(file: ReviewRenderableFile, theme: ReviewDiffTheme): string {
   return `${SHIKI_THEME_NAME_BY_SCHEME[theme]}:${file.cacheKey}`;
+}
+
+function storeResolvedHighlightedFile(cacheKey: string, highlighted: ReviewHighlightedFile): void {
+  if (resolvedHighlightCache.has(cacheKey)) {
+    resolvedHighlightCache.delete(cacheKey);
+  }
+
+  resolvedHighlightCache.set(cacheKey, highlighted);
+
+  while (resolvedHighlightCache.size > REVIEW_HIGHLIGHT_RESULT_CACHE_LIMIT) {
+    const oldestKey = resolvedHighlightCache.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    resolvedHighlightCache.delete(oldestKey);
+  }
+}
+
+export function clearReviewHighlightFileCache(): void {
+  highlightCache.clear();
+  resolvedHighlightCache.clear();
 }
 
 export function getCachedHighlightedReviewFile(
@@ -417,32 +639,72 @@ export async function highlightReviewFile(
   if (!REVIEW_HIGHLIGHTER_DISABLE_RESULT_CACHE) {
     const resolved = resolvedHighlightCache.get(cacheKey);
     if (resolved) {
+      logReviewHighlighterDiagnostic("file highlight cache hit (resolved)", {
+        fileId: file.id,
+        filePath: file.path,
+        theme,
+      });
       return resolved;
     }
     const cached = highlightCache.get(cacheKey);
     if (cached) {
+      logReviewHighlighterDiagnostic("file highlight cache hit (pending)", {
+        fileId: file.id,
+        filePath: file.path,
+        theme,
+      });
       return cached;
     }
   }
 
   const promise = (async () => {
+    const startedAt = Date.now();
+    logReviewHighlighterDiagnostic("file highlight start", {
+      fileId: file.id,
+      filePath: file.path,
+      theme,
+      additionLineCount: file.additionLines.length,
+      deletionLineCount: file.deletionLines.length,
+      rowCount: file.rows.length,
+    });
     const language = await resolveLanguage(file);
-    const [additionLines, deletionLines] = await Promise.all([
-      highlightLines(joinPatchLines(file.additionLines), language, shikiTheme),
-      highlightLines(joinPatchLines(file.deletionLines), language, shikiTheme),
-    ]);
+    const additionLines = await highlightLines(
+      joinPatchLines(file.additionLines),
+      language,
+      shikiTheme,
+    );
+    await waitForNextFrame();
+    const deletionLines = await highlightLines(
+      joinPatchLines(file.deletionLines),
+      language,
+      shikiTheme,
+    );
+    await waitForNextFrame();
 
-    const highlighted = { additionLines, deletionLines };
+    const highlighted = applyWordAltDiffHighlightsToFile(file, { additionLines, deletionLines });
     if (!REVIEW_HIGHLIGHTER_DISABLE_RESULT_CACHE) {
-      resolvedHighlightCache.set(cacheKey, highlighted);
+      storeResolvedHighlightedFile(cacheKey, highlighted);
     }
+    logReviewHighlighterDiagnostic("file highlight complete", {
+      fileId: file.id,
+      filePath: file.path,
+      theme,
+      language,
+      highlightedAdditionLineCount: highlighted.additionLines.length,
+      highlightedDeletionLineCount: highlighted.deletionLines.length,
+      durationMs: Date.now() - startedAt,
+    });
     return highlighted;
   })();
 
   if (!REVIEW_HIGHLIGHTER_DISABLE_RESULT_CACHE) {
     highlightCache.set(cacheKey, promise);
   }
-  return promise;
+  return promise.finally(() => {
+    if (!REVIEW_HIGHLIGHTER_DISABLE_RESULT_CACHE) {
+      highlightCache.delete(cacheKey);
+    }
+  });
 }
 
 export async function highlightReviewSelectedLines(input: {
@@ -483,5 +745,8 @@ export async function highlightReviewSelectedLines(input: {
     additionIndex += 1;
   });
 
-  return tokenMap;
+  return applyWordAltDiffHighlightsToSelectedLines({
+    lines: input.lines,
+    tokenMap,
+  });
 }

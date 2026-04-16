@@ -13,6 +13,7 @@ describe("resolveReviewHighlighterEnginePreference", () => {
 
   it("accepts supported values", () => {
     expect(resolveReviewHighlighterEnginePreference("javascript")).toBe("javascript");
+    expect(resolveReviewHighlighterEnginePreference("js")).toBe("javascript");
     expect(resolveReviewHighlighterEnginePreference("native")).toBe("native");
   });
 });

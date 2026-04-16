@@ -5,9 +5,11 @@ export function resolveReviewHighlighterEnginePreference(
   value: string | undefined,
 ): ReviewHighlighterEnginePreference {
   switch (value) {
+    case "js":
     case "javascript":
+      return "javascript";
     case "native":
-      return value;
+      return "native";
     default:
       return "javascript";
   }

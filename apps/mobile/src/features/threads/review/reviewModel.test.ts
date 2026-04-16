@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  buildReviewListItems,
   buildReviewParsedDiff,
   buildReviewSectionItems,
   getDefaultReviewSectionId,
@@ -138,6 +139,7 @@ describe("buildReviewParsedDiff", () => {
         oldLineNumber: 1,
         newLineNumber: null,
         content: "const before = 1;",
+        comparison: { change: "add", tokenIndex: 0 },
       }),
       expect.objectContaining({
         kind: "line",
@@ -145,6 +147,7 @@ describe("buildReviewParsedDiff", () => {
         oldLineNumber: null,
         newLineNumber: 1,
         content: "const after = 2;",
+        comparison: { change: "delete", tokenIndex: 0 },
       }),
       expect.objectContaining({
         kind: "line",
@@ -152,6 +155,7 @@ describe("buildReviewParsedDiff", () => {
         oldLineNumber: null,
         newLineNumber: 2,
         content: "console.log(after);",
+        comparison: null,
       }),
       expect.objectContaining({
         kind: "line",
@@ -159,6 +163,7 @@ describe("buildReviewParsedDiff", () => {
         oldLineNumber: 2,
         newLineNumber: 3,
         content: "return true;",
+        comparison: null,
       }),
     ]);
   });
@@ -220,6 +225,7 @@ describe("buildReviewParsedDiff", () => {
           content: `const line${index} = ${index};`,
           additionTokenIndex: index,
           deletionTokenIndex: null,
+          comparison: null,
         })),
       }),
     );
@@ -230,5 +236,74 @@ describe("buildReviewParsedDiff", () => {
       title: "Large diff",
       actionLabel: "Load diff",
     });
+  });
+
+  it("flattens expanded files into virtualizable review items", () => {
+    const file = makeRenderableFile({
+      path: "apps/mobile/src/a.ts",
+      rows: [
+        {
+          kind: "hunk",
+          id: "hunk-1",
+          header: "@@ -1,1 +1,2 @@",
+          context: null,
+        },
+        {
+          kind: "line",
+          id: "line-1",
+          change: "add",
+          oldLineNumber: null,
+          newLineNumber: 1,
+          content: "const after = 2;",
+          additionTokenIndex: 0,
+          deletionTokenIndex: null,
+          comparison: null,
+        },
+      ],
+    });
+
+    const items = buildReviewListItems({
+      files: [file],
+      expandedFileIds: [file.id],
+      revealedLargeFileIds: [],
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "file-header", fileId: file.id, expanded: true }),
+      expect.objectContaining({ kind: "hunk", fileId: file.id, row: file.rows[0] }),
+      expect.objectContaining({ kind: "line", fileId: file.id, row: file.rows[1] }),
+    ]);
+  });
+
+  it("keeps large diffs collapsed into a placeholder item until revealed", () => {
+    const file = makeRenderableFile({
+      path: "apps/mobile/src/big.ts",
+      rows: Array.from({ length: 401 }, (_, index) => ({
+        kind: "line" as const,
+        id: `line-${index}`,
+        change: "add" as const,
+        oldLineNumber: null,
+        newLineNumber: index + 1,
+        content: `const line${index} = ${index};`,
+        additionTokenIndex: index,
+        deletionTokenIndex: null,
+        comparison: null,
+      })),
+    });
+
+    const items = buildReviewListItems({
+      files: [file],
+      expandedFileIds: [file.id],
+      revealedLargeFileIds: [],
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "file-header", fileId: file.id, expanded: true }),
+      expect.objectContaining({
+        kind: "file-suppressed",
+        fileId: file.id,
+        actionLabel: "Load diff",
+      }),
+    ]);
   });
 });

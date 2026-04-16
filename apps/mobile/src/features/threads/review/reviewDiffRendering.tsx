@@ -1,4 +1,4 @@
-import { Platform, Text as NativeText } from "react-native";
+import { Platform, Text as NativeText, View } from "react-native";
 
 import { cn } from "../../../lib/cn";
 
@@ -17,14 +17,47 @@ export function renderVisibleWhitespace(value: string): string {
 }
 
 export function changeTone(change: ReviewRenderableLineRow["change"]): string {
-  if (change === "add") return "bg-emerald-500/12";
-  if (change === "delete") return "bg-rose-500/12";
+  if (change === "add") return "bg-emerald-500/10";
+  if (change === "delete") return "bg-rose-500/10";
   return "bg-card";
+}
+
+export function changeBarTone(change: ReviewRenderableLineRow["change"]): string {
+  if (change === "add") return "bg-emerald-400";
+  if (change === "delete") return "bg-rose-400";
+  return "bg-border/50";
+}
+
+function diffHighlightColor(change: ReviewRenderableLineRow["change"]): string | undefined {
+  if (change === "add") return "rgba(16, 185, 129, 0.24)";
+  if (change === "delete") return "rgba(244, 63, 94, 0.24)";
+  return undefined;
+}
+
+export function ReviewChangeBar(props: { readonly change: ReviewRenderableLineRow["change"] }) {
+  if (props.change === "delete") {
+    return (
+      <View className="w-[5px] self-stretch overflow-hidden">
+        <View className="flex-1 justify-between">
+          {Array.from({ length: 6 }, (_, index) => (
+            <View key={index} className="h-[2px] w-[5px] bg-rose-400" />
+          ))}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View className="w-[5px] self-stretch overflow-hidden">
+      <View className={cn("h-full w-[5px] flex-1", changeBarTone(props.change))} />
+    </View>
+  );
 }
 
 export function DiffTokenText(props: {
   readonly tokens: ReadonlyArray<ReviewHighlightedToken> | null;
   readonly fallback: string;
+  readonly change?: ReviewRenderableLineRow["change"];
   readonly className?: string;
 }) {
   if (!props.tokens || props.tokens.length === 0) {
@@ -70,6 +103,11 @@ export function DiffTokenText(props: {
                 fontFamily: REVIEW_MONO_FONT_FAMILY,
                 fontWeight,
                 fontStyle,
+                backgroundColor:
+                  token.diffHighlight && props.change
+                    ? diffHighlightColor(props.change)
+                    : undefined,
+                borderRadius: token.diffHighlight ? 4 : undefined,
               }}
             >
               {token.content.length > 0 ? renderVisibleWhitespace(token.content) : " "}

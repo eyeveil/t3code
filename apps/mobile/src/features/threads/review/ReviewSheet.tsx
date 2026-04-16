@@ -1,14 +1,17 @@
 import { ThreadId, type OrchestrationCheckpointSummary } from "@t3tools/contracts";
-import { LegendList } from "@legendapp/list/react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import Stack from "expo-router/stack";
 import { SymbolView } from "expo-symbols";
-import { memo, type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  FlatList,
+  InteractionManager,
+  type ListRenderItemInfo,
   Pressable,
   ScrollView,
   Text as NativeText,
+  type ViewToken,
   useColorScheme,
   useWindowDimensions,
   View,
@@ -32,16 +35,19 @@ import {
   useReviewCacheForThread,
 } from "./reviewState";
 import {
+  buildReviewListItems,
   getReadyReviewCheckpoints,
   buildReviewSectionItems,
   getDefaultReviewSectionId,
   getReviewFilePreviewState,
   getReviewSectionIdForCheckpoint,
+  type ReviewListItem,
   type ReviewParsedDiff,
   type ReviewRenderableFile,
   type ReviewRenderableLineRow,
 } from "./reviewModel";
 import {
+  clearReviewHighlightFileCache,
   getCachedHighlightedReviewFile,
   highlightReviewFile,
   type ReviewDiffTheme,
@@ -53,14 +59,17 @@ import {
   clearReviewCommentTarget,
   countReviewCommentContexts,
   formatReviewSelectedRangeLabel,
-  getReviewChangeMarker,
   getReviewUnifiedLineNumber,
-  getSelectedReviewCommentLines,
   setReviewCommentTarget,
   type ReviewCommentTarget,
   useReviewCommentTarget,
 } from "./reviewCommentSelection";
-import { changeTone, DiffTokenText } from "./reviewDiffRendering";
+import {
+  changeTone,
+  DiffTokenText,
+  REVIEW_MONO_FONT_FAMILY,
+  ReviewChangeBar,
+} from "./reviewDiffRendering";
 
 interface PendingCommentSelection {
   readonly sectionTitle: string;
@@ -77,20 +86,62 @@ interface ReviewLineActionInput {
 }
 
 const IOS_NAV_BAR_HEIGHT = 44;
-const REVIEW_HEADER_SPACING = 32;
+const REVIEW_HEADER_SPACING = 0;
+const REVIEW_LINE_GUTTER_WIDTH = 62;
+const REVIEW_CHARACTER_WIDTH_ESTIMATE = 8.4;
+const REVIEW_MAX_CONTENT_WIDTH = 4_800;
+const REVIEW_INITIAL_HIGHLIGHT_FILE_COUNT = 2;
+const REVIEW_HIGHLIGHT_BACKTRACK_COUNT = 0;
+const REVIEW_HIGHLIGHT_LOOKAHEAD_COUNT = 1;
+const loggedMissingReviewTokenKeys = new Set<string>();
 
-function changeTypeLabel(type: ReviewRenderableFile["changeType"]): string {
-  switch (type) {
+function isReviewDiffDebugLoggingEnabled(): boolean {
+  return typeof __DEV__ !== "undefined" ? __DEV__ : false;
+}
+
+function logReviewDiffDiagnostic(message: string, details?: Record<string, unknown>): void {
+  if (!isReviewDiffDebugLoggingEnabled()) {
+    return;
+  }
+
+  if (details) {
+    console.log(`[review-sheet] ${message}`, details);
+    return;
+  }
+
+  console.log(`[review-sheet] ${message}`);
+}
+
+function getFileHeaderChrome(changeType: ReviewRenderableFile["changeType"]): {
+  readonly rail: string;
+  readonly dot: string;
+} {
+  switch (changeType) {
     case "new":
-      return "Added";
+      return {
+        rail: "bg-emerald-400",
+        dot: "bg-emerald-400",
+      };
     case "deleted":
-      return "Deleted";
+      return {
+        rail: "bg-rose-400",
+        dot: "bg-rose-400",
+      };
     case "rename-pure":
-      return "Renamed";
+      return {
+        rail: "bg-amber-400",
+        dot: "bg-amber-400",
+      };
     case "rename-changed":
-      return "Renamed + edited";
+      return {
+        rail: "bg-sky-400",
+        dot: "bg-sky-400",
+      };
     default:
-      return "Edited";
+      return {
+        rail: "bg-sky-400",
+        dot: "bg-sky-400",
+      };
   }
 }
 
@@ -108,10 +159,68 @@ function formatHeaderDiffSummary(parsedDiff: ReviewParsedDiff): {
   };
 }
 
+function computeReviewListContentWidth(
+  items: ReadonlyArray<ReviewListItem>,
+  viewportWidth: number,
+): number {
+  let maxTextLength = 0;
+
+  items.forEach((item) => {
+    switch (item.kind) {
+      case "file-header":
+        maxTextLength = Math.max(
+          maxTextLength,
+          item.file.path.length,
+          item.file.previousPath?.length ?? 0,
+        );
+        break;
+      case "file-suppressed":
+        maxTextLength = Math.max(maxTextLength, item.message.length, item.actionLabel?.length ?? 0);
+        break;
+      case "hunk":
+        maxTextLength = Math.max(
+          maxTextLength,
+          item.row.header.length + (item.row.context ? item.row.context.length + 1 : 0),
+        );
+        break;
+      case "line":
+        maxTextLength = Math.max(maxTextLength, item.row.content.length);
+        break;
+    }
+  });
+
+  return Math.max(
+    viewportWidth,
+    Math.min(
+      REVIEW_MAX_CONTENT_WIDTH,
+      Math.ceil(REVIEW_LINE_GUTTER_WIDTH + 48 + maxTextLength * REVIEW_CHARACTER_WIDTH_ESTIMATE),
+    ),
+  );
+}
+
 function getDefaultExpandedFileIds(
   files: ReadonlyArray<ReviewRenderableFile>,
 ): ReadonlyArray<string> {
   return files.map((file) => file.id);
+}
+
+function getHighlightedTokensForLine(
+  line: ReviewRenderableLineRow,
+  highlightedFile: ReviewHighlightedFile | null,
+): ReadonlyArray<ReviewHighlightedToken> | null {
+  if (!highlightedFile) {
+    return null;
+  }
+
+  if (line.additionTokenIndex !== null) {
+    return highlightedFile.additionLines[line.additionTokenIndex] ?? null;
+  }
+
+  if (line.deletionTokenIndex !== null) {
+    return highlightedFile.deletionLines[line.deletionTokenIndex] ?? null;
+  }
+
+  return null;
 }
 
 const ReviewLineRow = memo(function ReviewLineRow(props: {
@@ -145,17 +254,19 @@ const ReviewLineRow = memo(function ReviewLineRow(props: {
       onPress={props.onComment}
       style={{ minWidth: props.viewportWidth }}
     >
-      <Text className="w-9 px-1 py-1 text-right text-[11px] font-t3-medium text-foreground-muted">
+      <ReviewChangeBar change={props.line.change} />
+      <Text
+        className="w-9 py-1 pr-1 text-right text-[11px] font-t3-medium text-foreground-muted"
+        style={{ fontFamily: REVIEW_MONO_FONT_FAMILY }}
+      >
         {lineNumber ?? ""}
       </Text>
-      <Text
-        className="px-0.5 py-1 text-center font-mono text-[12px] text-foreground-muted"
-        style={{ width: 18 }}
-      >
-        {getReviewChangeMarker(props.line.change)}
-      </Text>
       <View className="min-w-0 flex-1 flex-shrink-0 px-1 py-1">
-        <DiffTokenText tokens={props.tokens} fallback={props.line.content} />
+        <DiffTokenText
+          tokens={props.tokens}
+          fallback={props.line.content}
+          change={props.line.change}
+        />
       </View>
     </Pressable>
   );
@@ -165,41 +276,55 @@ const ReviewFileCard = memo(function ReviewFileCard(props: {
   readonly file: ReviewRenderableFile;
   readonly fileId: string;
   readonly expanded: boolean;
+  readonly viewportWidth: number;
   readonly onToggleFile: (fileId: string) => void;
 }) {
+  const chrome = getFileHeaderChrome(props.file.changeType);
+
   return (
-    <View className="border-b border-border bg-card" style={{ zIndex: 1 }}>
-      <Pressable
-        className="flex-row items-start gap-2 px-3 py-3"
-        onPress={() => props.onToggleFile(props.fileId)}
-      >
-        <View className="pt-0.5">
-          <SymbolView
-            name={props.expanded ? "chevron.down" : "chevron.right"}
-            size={14}
-            tintColor="#8a8a8a"
-            type="monochrome"
-          />
-        </View>
-        <View className="min-w-0 flex-1 gap-1">
-          <Text className="font-mono text-[13px] leading-[18px] text-foreground">
-            {props.file.path}
-          </Text>
-          {props.file.previousPath && props.file.previousPath !== props.file.path ? (
-            <Text className="font-mono text-[11px] leading-[16px] text-foreground-muted">
-              {props.file.previousPath}
-            </Text>
-          ) : null}
-        </View>
-        <View className="items-end gap-1 pl-2">
-          <Text className="text-[11px] font-t3-bold uppercase text-foreground-muted">
-            {changeTypeLabel(props.file.changeType)}
-          </Text>
-          <View className="flex-row items-center gap-2">
-            <Text className="text-[12px] font-t3-bold text-emerald-600">
+    <View
+      className="border-b border-border/70 bg-card"
+      style={{
+        zIndex: 1,
+        width: props.viewportWidth,
+        shadowColor: "#000000",
+        shadowOpacity: 0.08,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 6 },
+        elevation: 4,
+      }}
+    >
+      <Pressable className="flex-row items-center" onPress={() => props.onToggleFile(props.fileId)}>
+        <View className={cn("w-1 self-stretch", chrome.rail)} />
+        <View className="flex-1 flex-row items-center px-3 py-1.5">
+          <View className="size-7 items-center justify-center rounded-full bg-subtle">
+            <SymbolView
+              name={props.expanded ? "chevron.down" : "chevron.right"}
+              size={12}
+              tintColor="#8a8a8a"
+              type="monochrome"
+            />
+          </View>
+          <View className="ml-2 min-w-0 flex-1 flex-row items-center gap-2">
+            <View className={cn("size-2 rounded-full", chrome.dot)} />
+            <View className="min-w-0 flex-1">
+              <Text className="font-mono text-[13px] leading-[18px] text-foreground">
+                {props.file.path}
+              </Text>
+              {props.file.previousPath && props.file.previousPath !== props.file.path ? (
+                <Text className="font-mono text-[10px] leading-[14px] text-foreground-muted">
+                  {props.file.previousPath}
+                </Text>
+              ) : null}
+            </View>
+          </View>
+          <View className="ml-3 flex-row items-center justify-end gap-2">
+            <Text className="font-mono text-[12px] font-t3-bold text-emerald-600 dark:text-emerald-300">
               +{props.file.additions}
             </Text>
-            <Text className="text-[12px] font-t3-bold text-rose-600">-{props.file.deletions}</Text>
+            <Text className="font-mono text-[12px] font-t3-bold text-rose-600 dark:text-rose-300">
+              -{props.file.deletions}
+            </Text>
           </View>
         </View>
       </Pressable>
@@ -207,117 +332,18 @@ const ReviewFileCard = memo(function ReviewFileCard(props: {
   );
 });
 
-const ReviewFileBody = memo(function ReviewFileBody(props: {
-  readonly file: ReviewRenderableFile;
-  readonly sectionTitle: string;
-  readonly highlightedFile: ReviewHighlightedFile | null;
-  readonly viewportWidth: number;
-  readonly pendingSelection: PendingCommentSelection | null;
-  readonly selectedTarget: ReviewCommentTarget | null;
-  readonly onPressLine: (input: ReviewLineActionInput) => void;
-  readonly onStartRangeSelection: (input: ReviewLineActionInput) => void;
-}) {
-  const commentableLines = useMemo(
-    () => props.file.rows.filter((row): row is ReviewRenderableLineRow => row.kind === "line"),
-    [props.file.rows],
-  );
-  const lineIndexById = useMemo(
-    () => new Map(commentableLines.map((line, index) => [line.id, index])),
-    [commentableLines],
-  );
-  const anchorLineId = useMemo(
-    () =>
-      props.pendingSelection &&
-      props.pendingSelection.sectionTitle === props.sectionTitle &&
-      props.pendingSelection.filePath === props.file.path
-        ? (props.pendingSelection.lines[props.pendingSelection.anchorIndex]?.id ?? null)
-        : null,
-    [props.file.path, props.pendingSelection, props.sectionTitle],
-  );
-  const selectedLineIds = useMemo(
-    () =>
-      props.selectedTarget &&
-      props.selectedTarget.sectionTitle === props.sectionTitle &&
-      props.selectedTarget.filePath === props.file.path
-        ? new Set(getSelectedReviewCommentLines(props.selectedTarget).map((line) => line.id))
-        : null,
-    [props.file.path, props.sectionTitle, props.selectedTarget],
-  );
-
-  return (
-    <ScrollView
-      horizontal
-      bounces={false}
-      showsHorizontalScrollIndicator={false}
-      className="border-b border-border bg-card"
-    >
-      <View style={{ minWidth: props.viewportWidth }}>
-        {props.file.rows.map((row) => {
-          if (row.kind === "hunk") {
-            return (
-              <View
-                key={row.id}
-                className="border-b border-border/60 bg-sky-500/10 px-2 py-2"
-                style={{ minWidth: props.viewportWidth }}
-              >
-                <Text className="font-mono text-[12px] leading-[18px] text-sky-700 dark:text-sky-300">
-                  {row.header}
-                  {row.context ? ` ${row.context}` : ""}
-                </Text>
-              </View>
-            );
-          }
-
-          const tokens =
-            row.change === "delete"
-              ? (props.highlightedFile?.deletionLines[row.deletionTokenIndex ?? -1] ?? null)
-              : (props.highlightedFile?.additionLines[row.additionTokenIndex ?? -1] ?? null);
-
-          return (
-            <ReviewLineRow
-              key={row.id}
-              line={row}
-              tokens={tokens}
-              viewportWidth={props.viewportWidth}
-              selectionState={
-                anchorLineId === row.id
-                  ? "anchor"
-                  : selectedLineIds?.has(row.id)
-                    ? "selected"
-                    : null
-              }
-              onComment={() => {
-                props.onPressLine({
-                  sectionTitle: props.sectionTitle,
-                  filePath: props.file.path,
-                  lines: commentableLines,
-                  lineIndex: lineIndexById.get(row.id) ?? 0,
-                });
-              }}
-              onStartRangeSelection={() => {
-                props.onStartRangeSelection({
-                  sectionTitle: props.sectionTitle,
-                  filePath: props.file.path,
-                  lines: commentableLines,
-                  lineIndex: lineIndexById.get(row.id) ?? 0,
-                });
-              }}
-            />
-          );
-        })}
-      </View>
-    </ScrollView>
-  );
-});
-
 const ReviewFileSuppressedBody = memo(function ReviewFileSuppressedBody(props: {
   readonly message: string;
   readonly actionLabel?: string | null;
   readonly fileId: string;
+  readonly viewportWidth: number;
   readonly onLoadDiffFile?: (fileId: string) => void;
 }) {
   return (
-    <View className="gap-2 border-b border-border bg-card px-4 py-3">
+    <View
+      className="gap-2 border-b border-border bg-card px-4 py-3"
+      style={{ minWidth: props.viewportWidth }}
+    >
       <Text className="text-[12px] leading-[18px] text-foreground-muted">{props.message}</Text>
       {props.actionLabel && props.onLoadDiffFile ? (
         <Pressable
@@ -331,91 +357,21 @@ const ReviewFileSuppressedBody = memo(function ReviewFileSuppressedBody(props: {
   );
 });
 
-const ReviewFileItem = memo(function ReviewFileItem(props: {
-  readonly file: ReviewRenderableFile;
-  readonly expanded: boolean;
-  readonly sectionTitle: string;
-  readonly selectedTheme: ReviewDiffTheme;
-  readonly pendingSelection: PendingCommentSelection | null;
-  readonly selectedTarget: ReviewCommentTarget | null;
+const ReviewHunkRow = memo(function ReviewHunkRow(props: {
+  readonly header: string;
+  readonly context: string | null;
   readonly viewportWidth: number;
-  readonly revealedLarge: boolean;
-  readonly onToggleFile: (fileId: string) => void;
-  readonly onLoadDiffFile: (fileId: string) => void;
-  readonly onPressLine: (input: ReviewLineActionInput) => void;
-  readonly onStartRangeSelection: (input: ReviewLineActionInput) => void;
 }) {
-  const previewState = useMemo(() => getReviewFilePreviewState(props.file), [props.file]);
-  const shouldRenderBody =
-    previewState.kind === "render" || (previewState.reason === "large" && props.revealedLarge);
-  const highlightCacheKey = `${props.selectedTheme}:${props.file.cacheKey}`;
-  const [highlightedFile, setHighlightedFile] = useState<ReviewHighlightedFile | null>(() =>
-    getCachedHighlightedReviewFile(props.file, props.selectedTheme),
-  );
-
-  useEffect(() => {
-    setHighlightedFile(getCachedHighlightedReviewFile(props.file, props.selectedTheme));
-  }, [highlightCacheKey, props.file, props.selectedTheme]);
-
-  useEffect(() => {
-    if (!props.expanded || !shouldRenderBody) {
-      return;
-    }
-
-    const cached = getCachedHighlightedReviewFile(props.file, props.selectedTheme);
-    if (cached) {
-      setHighlightedFile(cached);
-      return;
-    }
-
-    let cancelled = false;
-    void highlightReviewFile(props.file, props.selectedTheme)
-      .then((result) => {
-        if (!cancelled) {
-          setHighlightedFile(result);
-        }
-      })
-      .catch(() => {
-        if (cancelled) {
-          return;
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [highlightCacheKey, props.expanded, props.file, props.selectedTheme, shouldRenderBody]);
-
   return (
-    <>
-      <ReviewFileCard
-        file={props.file}
-        fileId={props.file.id}
-        expanded={props.expanded}
-        onToggleFile={props.onToggleFile}
-      />
-      {props.expanded ? (
-        shouldRenderBody ? (
-          <ReviewFileBody
-            file={props.file}
-            sectionTitle={props.sectionTitle}
-            highlightedFile={highlightedFile}
-            pendingSelection={props.pendingSelection}
-            selectedTarget={props.selectedTarget}
-            viewportWidth={props.viewportWidth}
-            onPressLine={props.onPressLine}
-            onStartRangeSelection={props.onStartRangeSelection}
-          />
-        ) : (
-          <ReviewFileSuppressedBody
-            message={previewState.message}
-            actionLabel={previewState.actionLabel}
-            fileId={props.file.id}
-            onLoadDiffFile={previewState.actionLabel ? props.onLoadDiffFile : undefined}
-          />
-        )
-      ) : null}
-    </>
+    <View
+      className="border-b border-border/60 bg-sky-500/10 px-2 py-2"
+      style={{ minWidth: props.viewportWidth }}
+    >
+      <Text className="font-mono text-[12px] leading-[18px] text-sky-700 dark:text-sky-300">
+        {props.header}
+        {props.context ? ` ${props.context}` : ""}
+      </Text>
+    </View>
   );
 });
 
@@ -496,7 +452,18 @@ export function ReviewSheet() {
   const [error, setError] = useState<string | null>(null);
   const [pendingCommentSelection, setPendingCommentSelection] =
     useState<PendingCommentSelection | null>(null);
+  const [highlightedFilesById, setHighlightedFilesById] = useState<
+    Record<string, ReviewHighlightedFile | null>
+  >({});
+  const [visibleFileIds, setVisibleFileIds] = useState<ReadonlyArray<string>>([]);
   const activeCommentTarget = useReviewCommentTarget();
+  const selectedTheme = (colorScheme === "dark" ? "dark" : "light") satisfies ReviewDiffTheme;
+  const highlightQueueRef = useRef<string[]>([]);
+  const highlightRequestedFileIdsRef = useRef<Set<string>>(new Set());
+  const highlightQueueGenerationRef = useRef(0);
+  const highlightQueueActiveRef = useRef(false);
+  const highlightableFilesByIdRef = useRef<ReadonlyMap<string, ReviewRenderableFile>>(new Map());
+  const selectedThemeRef = useRef<ReviewDiffTheme>(selectedTheme);
 
   const cwd = selectedThread?.worktreePath ?? selectedThreadProject?.workspaceRoot ?? null;
   const readyCheckpoints = useMemo(
@@ -544,7 +511,6 @@ export function ReviewSheet() {
     [draftMessage],
   );
 
-  const selectedTheme = (colorScheme === "dark" ? "dark" : "light") satisfies ReviewDiffTheme;
   const expandedFileIds = useMemo(
     () =>
       selectedSection?.id && parsedDiff.kind === "files"
@@ -559,6 +525,120 @@ export function ReviewSheet() {
         ? (reviewCache.revealedLargeFileIdsBySection[selectedSection.id] ?? [])
         : [],
     [reviewCache.revealedLargeFileIdsBySection, selectedSection?.id],
+  );
+  const reviewListItems = useMemo(
+    () =>
+      selectedSection && parsedDiff.kind === "files"
+        ? buildReviewListItems({
+            files: parsedDiff.files,
+            expandedFileIds,
+            revealedLargeFileIds,
+          })
+        : [],
+    [expandedFileIds, parsedDiff, revealedLargeFileIds, selectedSection],
+  );
+  const reviewFileById = useMemo(() => {
+    if (parsedDiff.kind !== "files") {
+      return new Map<string, ReviewRenderableFile>();
+    }
+
+    return new Map(parsedDiff.files.map((file) => [file.id, file] as const));
+  }, [parsedDiff]);
+  const reviewLineRowsByFileId = useMemo(() => {
+    if (parsedDiff.kind !== "files") {
+      return new Map<string, ReadonlyArray<ReviewRenderableLineRow>>();
+    }
+
+    return new Map(
+      parsedDiff.files.map((file) => [
+        file.id,
+        file.rows.filter((row): row is ReviewRenderableLineRow => row.kind === "line"),
+      ]),
+    );
+  }, [parsedDiff]);
+  const reviewLineIndexByRowId = useMemo(() => {
+    const map = new Map<string, number>();
+
+    reviewLineRowsByFileId.forEach((rows) => {
+      rows.forEach((row, index) => {
+        map.set(row.id, index);
+      });
+    });
+
+    return map;
+  }, [reviewLineRowsByFileId]);
+  const highlightableFiles = useMemo(() => {
+    if (parsedDiff.kind !== "files") {
+      return [] as ReadonlyArray<ReviewRenderableFile>;
+    }
+
+    const expandedFileIdSet = new Set(expandedFileIds);
+    const revealedLargeFileIdSet = new Set(revealedLargeFileIds);
+
+    return parsedDiff.files.filter((file) => {
+      if (!expandedFileIdSet.has(file.id)) {
+        return false;
+      }
+
+      const previewState = getReviewFilePreviewState(file);
+      return (
+        previewState.kind === "render" ||
+        (previewState.reason === "large" && revealedLargeFileIdSet.has(file.id))
+      );
+    });
+  }, [expandedFileIds, parsedDiff, revealedLargeFileIds]);
+  const highlightableFileIds = useMemo(
+    () => new Set(highlightableFiles.map((file) => file.id)),
+    [highlightableFiles],
+  );
+  const priorityHighlightFileIds = useMemo(() => {
+    if (parsedDiff.kind !== "files" || highlightableFiles.length === 0) {
+      return [] as ReadonlyArray<string>;
+    }
+
+    const fileIdsInPriorityOrder =
+      visibleFileIds.length > 0
+        ? visibleFileIds.filter((fileId) => highlightableFileIds.has(fileId))
+        : parsedDiff.files
+            .slice(0, REVIEW_INITIAL_HIGHLIGHT_FILE_COUNT)
+            .map((file) => file.id)
+            .filter((fileId) => highlightableFileIds.has(fileId));
+
+    if (fileIdsInPriorityOrder.length === 0) {
+      return [] as ReadonlyArray<string>;
+    }
+
+    const firstVisibleIndex = parsedDiff.files.findIndex(
+      (file) => file.id === fileIdsInPriorityOrder[0],
+    );
+    const lastVisibleIndex = parsedDiff.files.findIndex(
+      (file) => file.id === fileIdsInPriorityOrder[fileIdsInPriorityOrder.length - 1],
+    );
+
+    if (firstVisibleIndex < 0 || lastVisibleIndex < 0) {
+      return fileIdsInPriorityOrder;
+    }
+
+    const startIndex = Math.max(0, firstVisibleIndex - REVIEW_HIGHLIGHT_BACKTRACK_COUNT);
+    const endIndex = Math.min(
+      parsedDiff.files.length - 1,
+      lastVisibleIndex + REVIEW_HIGHLIGHT_LOOKAHEAD_COUNT,
+    );
+
+    const queuedIds: string[] = [];
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      const fileId = parsedDiff.files[index]?.id;
+      if (fileId && highlightableFileIds.has(fileId)) {
+        queuedIds.push(fileId);
+      }
+    }
+
+    return queuedIds;
+  }, [highlightableFileIds, highlightableFiles.length, parsedDiff, visibleFileIds]);
+  const viewportWidth = Math.max(width, 280);
+  const reviewListContentWidth = useMemo(
+    () => computeReviewListContentWidth(reviewListItems, viewportWidth),
+    [reviewListItems, viewportWidth],
   );
   const loadGitDiffs = useCallback(async () => {
     if (!environmentId || !cwd) {
@@ -633,6 +713,100 @@ export function ReviewSheet() {
   useEffect(() => {
     void loadGitDiffs();
   }, [loadGitDiffs]);
+
+  useEffect(() => {
+    selectedThemeRef.current = selectedTheme;
+  }, [selectedTheme]);
+
+  useEffect(() => {
+    highlightableFilesByIdRef.current = new Map(highlightableFiles.map((file) => [file.id, file]));
+  }, [highlightableFiles]);
+
+  const startHighlightQueueRunner = useCallback(function startHighlightQueueRunner() {
+    if (highlightQueueActiveRef.current) {
+      return;
+    }
+
+    const generation = highlightQueueGenerationRef.current;
+    highlightQueueActiveRef.current = true;
+
+    void (async () => {
+      try {
+        while (generation === highlightQueueGenerationRef.current) {
+          const nextFileId = highlightQueueRef.current.shift();
+          if (!nextFileId) {
+            break;
+          }
+
+          const file = highlightableFilesByIdRef.current.get(nextFileId);
+          if (!file) {
+            continue;
+          }
+
+          const theme = selectedThemeRef.current;
+          const cached = getCachedHighlightedReviewFile(file, theme);
+          if (cached) {
+            logReviewDiffDiagnostic("using cached highlighted file", {
+              fileId: file.id,
+              filePath: file.path,
+              theme,
+            });
+            setHighlightedFilesById((current) =>
+              current[file.id] === cached ? current : { ...current, [file.id]: cached },
+            );
+            continue;
+          }
+
+          logReviewDiffDiagnostic("requesting highlighted file", {
+            fileId: file.id,
+            filePath: file.path,
+            theme,
+          });
+
+          try {
+            await new Promise<void>((resolve) => {
+              InteractionManager.runAfterInteractions(() => resolve());
+            });
+            const result = await highlightReviewFile(file, theme);
+            if (generation !== highlightQueueGenerationRef.current) {
+              logReviewDiffDiagnostic("discarding highlighted file after cancellation", {
+                fileId: file.id,
+                filePath: file.path,
+              });
+              return;
+            }
+
+            logReviewDiffDiagnostic("received highlighted file", {
+              fileId: file.id,
+              filePath: file.path,
+              additionLines: result.additionLines.length,
+              deletionLines: result.deletionLines.length,
+            });
+            setHighlightedFilesById((current) => {
+              if (current[file.id] === result) {
+                return current;
+              }
+              return { ...current, [file.id]: result };
+            });
+          } catch (error) {
+            logReviewDiffDiagnostic("highlight request failed", {
+              fileId: file.id,
+              filePath: file.path,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      } finally {
+        highlightQueueActiveRef.current = false;
+        if (
+          generation === highlightQueueGenerationRef.current &&
+          highlightQueueRef.current.length > 0
+        ) {
+          startHighlightQueueRunner();
+        }
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (reviewSections.length === 0) {
@@ -710,6 +884,71 @@ export function ReviewSheet() {
       return validIds;
     });
   }, [parsedDiff, reviewCache.threadKey, selectedSection?.id]);
+
+  useEffect(() => {
+    setHighlightedFilesById({});
+    setVisibleFileIds([]);
+    highlightQueueGenerationRef.current += 1;
+    highlightQueueRef.current = [];
+    highlightRequestedFileIdsRef.current = new Set();
+    highlightQueueActiveRef.current = false;
+    clearReviewHighlightFileCache();
+    loggedMissingReviewTokenKeys.clear();
+    logReviewDiffDiagnostic("reset highlighted files", {
+      selectedSectionId: selectedSection?.id ?? null,
+      selectedTheme,
+    });
+  }, [selectedSection?.id, selectedTheme]);
+
+  useEffect(() => {
+    if (parsedDiff.kind !== "files") {
+      return;
+    }
+
+    logReviewDiffDiagnostic("parsed diff files", {
+      selectedSectionId: selectedSection?.id ?? null,
+      fileCount: parsedDiff.fileCount,
+      renderableFileCount: parsedDiff.files.length,
+    });
+  }, [parsedDiff, selectedSection?.id]);
+
+  useEffect(() => {
+    if (priorityHighlightFileIds.length === 0) {
+      logReviewDiffDiagnostic("no highlightable files", {
+        selectedSectionId: selectedSection?.id ?? null,
+        parsedDiffKind: parsedDiff.kind,
+        requestedFileCount: 0,
+      });
+      return;
+    }
+
+    const queuedFileIds: string[] = [];
+    priorityHighlightFileIds.forEach((fileId) => {
+      if (highlightRequestedFileIdsRef.current.has(fileId)) {
+        return;
+      }
+
+      const file = highlightableFilesByIdRef.current.get(fileId);
+      if (!file) {
+        return;
+      }
+
+      highlightRequestedFileIdsRef.current.add(fileId);
+      highlightQueueRef.current.push(fileId);
+      queuedFileIds.push(fileId);
+    });
+
+    if (queuedFileIds.length === 0) {
+      return;
+    }
+
+    logReviewDiffDiagnostic("scheduling file highlights", {
+      selectedSectionId: selectedSection?.id ?? null,
+      fileCount: queuedFileIds.length,
+      fileIds: queuedFileIds,
+    });
+    startHighlightQueueRunner();
+  }, [parsedDiff.kind, priorityHighlightFileIds, selectedSection?.id, startHighlightQueueRunner]);
 
   const refreshSelectedSection = useCallback(async () => {
     if (!selectedSection) {
@@ -841,76 +1080,165 @@ export function ReviewSheet() {
 
     return <>{children}</>;
   }, [error, parsedDiffNotice]);
+  const stickyHeaderIndices = useMemo(() => {
+    const itemOffset = listHeader ? 1 : 0;
 
-  const renderFileItem = useCallback(
-    ({ item }: { item: ReviewRenderableFile; index: number }) => {
+    return reviewListItems.flatMap((item, index) =>
+      item.kind === "file-header" ? [index + itemOffset] : [],
+    );
+  }, [listHeader, reviewListItems]);
+
+  const viewabilityConfigRef = useRef({
+    itemVisiblePercentThreshold: 10,
+  });
+  const onViewableItemsChangedRef = useRef(
+    ({
+      viewableItems,
+    }: {
+      readonly viewableItems: Array<ViewToken<ReviewListItem>>;
+      readonly changed: Array<ViewToken<ReviewListItem>>;
+    }) => {
+      const nextVisibleFileIds = Array.from(
+        new Set(
+          viewableItems
+            .filter((token) => token.isViewable && token.item !== undefined)
+            .map((token) => token.item.fileId),
+        ),
+      );
+
+      setVisibleFileIds(nextVisibleFileIds);
+    },
+  );
+
+  const renderReviewListItem = useCallback(
+    ({ item }: ListRenderItemInfo<ReviewListItem>) => {
       if (!selectedSection) {
         return null;
       }
-      const pendingSelectionForFile =
-        pendingCommentSelection &&
-        pendingCommentSelection.sectionTitle === selectedSection.title &&
-        pendingCommentSelection.filePath === item.path
-          ? pendingCommentSelection
-          : null;
-      const selectedTargetForFile =
-        activeCommentTarget &&
-        activeCommentTarget.sectionTitle === selectedSection.title &&
-        activeCommentTarget.filePath === item.path
-          ? activeCommentTarget
-          : null;
 
-      return (
-        <ReviewFileItem
-          file={item}
-          expanded={expandedFileIds.includes(item.id)}
-          sectionTitle={selectedSection.title}
-          selectedTheme={selectedTheme}
-          pendingSelection={pendingSelectionForFile}
-          selectedTarget={selectedTargetForFile}
-          viewportWidth={Math.max(width, 280)}
-          revealedLarge={revealedLargeFileIds.includes(item.id)}
-          onToggleFile={handleToggleExpandedFile}
-          onLoadDiffFile={handleRevealLargeDiff}
-          onPressLine={handlePressLine}
-          onStartRangeSelection={handleStartRangeSelection}
-        />
-      );
+      switch (item.kind) {
+        case "file-header":
+          return (
+            <ReviewFileCard
+              file={item.file}
+              fileId={item.fileId}
+              expanded={item.expanded}
+              viewportWidth={reviewListContentWidth}
+              onToggleFile={handleToggleExpandedFile}
+            />
+          );
+        case "file-suppressed":
+          return (
+            <ReviewFileSuppressedBody
+              message={item.message}
+              actionLabel={item.actionLabel}
+              fileId={item.fileId}
+              viewportWidth={reviewListContentWidth}
+              onLoadDiffFile={handleRevealLargeDiff}
+            />
+          );
+        case "hunk":
+          return (
+            <ReviewHunkRow
+              header={item.row.header}
+              context={item.row.context}
+              viewportWidth={reviewListContentWidth}
+            />
+          );
+        case "line": {
+          const file = reviewFileById.get(item.fileId);
+          if (!file) {
+            return null;
+          }
+
+          const fileLineRows = reviewLineRowsByFileId.get(file.id) ?? [];
+          const lineIndex = reviewLineIndexByRowId.get(item.row.id);
+          if (lineIndex === undefined) {
+            return null;
+          }
+
+          const pendingSelectionForFile =
+            pendingCommentSelection &&
+            pendingCommentSelection.sectionTitle === selectedSection.title &&
+            pendingCommentSelection.filePath === file.path
+              ? pendingCommentSelection
+              : null;
+          const selectedTargetForFile =
+            activeCommentTarget &&
+            activeCommentTarget.sectionTitle === selectedSection.title &&
+            activeCommentTarget.filePath === file.path
+              ? activeCommentTarget
+              : null;
+          const highlightedFile =
+            highlightedFilesById[file.id] ??
+            getCachedHighlightedReviewFile(file, selectedTheme) ??
+            null;
+
+          if (highlightedFile === null) {
+            const missingTokenKey = `${selectedSection.id}:${file.id}`;
+            if (!loggedMissingReviewTokenKeys.has(missingTokenKey)) {
+              loggedMissingReviewTokenKeys.add(missingTokenKey);
+              logReviewDiffDiagnostic("rendering file without tokens", {
+                sectionId: selectedSection.id,
+                fileId: file.id,
+                filePath: file.path,
+                highlightedFileKnownInState: highlightedFilesById[file.id] !== undefined,
+              });
+            }
+          }
+
+          const selectionState =
+            pendingSelectionForFile?.anchorIndex === lineIndex
+              ? ("anchor" as const)
+              : selectedTargetForFile &&
+                  lineIndex >= selectedTargetForFile.startIndex &&
+                  lineIndex <= selectedTargetForFile.endIndex
+                ? ("selected" as const)
+                : null;
+
+          return (
+            <ReviewLineRow
+              line={item.row}
+              tokens={getHighlightedTokensForLine(item.row, highlightedFile)}
+              viewportWidth={reviewListContentWidth}
+              selectionState={selectionState}
+              onComment={() =>
+                handlePressLine({
+                  sectionTitle: selectedSection.title,
+                  filePath: file.path,
+                  lines: fileLineRows,
+                  lineIndex,
+                })
+              }
+              onStartRangeSelection={() =>
+                handleStartRangeSelection({
+                  sectionTitle: selectedSection.title,
+                  filePath: file.path,
+                  lines: fileLineRows,
+                  lineIndex,
+                })
+              }
+            />
+          );
+        }
+      }
     },
     [
       activeCommentTarget,
-      expandedFileIds,
       handlePressLine,
       handleRevealLargeDiff,
       handleStartRangeSelection,
       handleToggleExpandedFile,
+      highlightedFilesById,
       pendingCommentSelection,
-      revealedLargeFileIds,
+      reviewFileById,
+      reviewLineIndexByRowId,
+      reviewLineRowsByFileId,
+      reviewListContentWidth,
       selectedSection,
       selectedTheme,
-      width,
     ],
   );
-
-  const visibleListExtraData = useMemo(() => {
-    return {
-      selectedSectionId: selectedSection?.id ?? null,
-      selectedTheme,
-      expandedFileIds,
-      revealedLargeFileIds,
-      pendingSelection: pendingCommentSelection,
-      selectedTarget: activeCommentTarget,
-      viewportWidth: Math.max(width, 280),
-    };
-  }, [
-    activeCommentTarget,
-    expandedFileIds,
-    pendingCommentSelection,
-    revealedLargeFileIds,
-    selectedSection,
-    selectedTheme,
-    width,
-  ]);
 
   return (
     <>
@@ -1045,20 +1373,26 @@ export function ReviewSheet() {
 
       <View className="flex-1 bg-sheet">
         {selectedSection && parsedDiff.kind === "files" ? (
-          <LegendList
+          <FlatList
             style={{ flex: 1 }}
             contentInsetAdjustmentBehavior="never"
             contentInset={{ top: topContentInset }}
+            contentOffset={{ x: 0, y: -topContentInset }}
             scrollIndicatorInsets={{ top: topContentInset }}
-            data={parsedDiff.files as ReviewRenderableFile[]}
-            renderItem={renderFileItem}
-            keyExtractor={(file) => file.id}
-            extraData={visibleListExtraData}
+            data={reviewListItems}
+            renderItem={renderReviewListItem}
+            keyExtractor={(item) => item.id}
             keyboardShouldPersistTaps="handled"
-            estimatedItemSize={220}
-            drawDistance={900}
-            recycleItems
             ListHeaderComponent={listHeader}
+            stickyHeaderIndices={stickyHeaderIndices}
+            removeClippedSubviews={false}
+            initialNumToRender={24}
+            maxToRenderPerBatch={16}
+            updateCellsBatchingPeriod={16}
+            windowSize={10}
+            scrollEventThrottle={16}
+            onViewableItemsChanged={onViewableItemsChangedRef.current}
+            viewabilityConfig={viewabilityConfigRef.current}
             contentContainerStyle={{
               paddingTop: REVIEW_HEADER_SPACING,
               paddingBottom: Math.max(insets.bottom, 18) + 18,
