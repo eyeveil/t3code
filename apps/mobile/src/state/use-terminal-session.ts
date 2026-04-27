@@ -13,6 +13,7 @@ import {
 import type {
   EnvironmentId,
   TerminalAttachInput,
+  TerminalAttachStreamEvent,
   TerminalMetadataStreamEvent,
   TerminalSessionSnapshot,
 } from "@t3tools/contracts";
@@ -43,12 +44,14 @@ export function attachTerminalSession(input: {
   readonly client: Parameters<typeof terminalSessionManager.attach>[0]["client"];
   readonly terminal: TerminalAttachInput;
   readonly onSnapshot?: (snapshot: TerminalSessionSnapshot) => void;
+  readonly onEvent?: (event: TerminalAttachStreamEvent) => void;
 }) {
   return terminalSessionManager.attach({
     environmentId: input.environmentId,
     client: input.client,
     terminal: input.terminal,
     ...(input.onSnapshot ? { onSnapshot: input.onSnapshot } : {}),
+    ...(input.onEvent ? { onEvent: input.onEvent } : {}),
   });
 }
 

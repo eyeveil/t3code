@@ -201,7 +201,10 @@ interface CreateManagerOptions {
   shellResolver?: () => string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
-  subprocessChecker?: (terminalPid: number) => Effect.Effect<boolean>;
+  subprocessInspector?: (terminalPid: number) => Effect.Effect<{
+    readonly hasRunningSubprocess: boolean;
+    readonly childCommand: string | null;
+  }>;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
@@ -238,8 +241,8 @@ const createManager = (
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
         ...(options.platform !== undefined ? { platform: options.platform } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
-        ...(options.subprocessChecker !== undefined
-          ? { subprocessChecker: options.subprocessChecker }
+        ...(options.subprocessInspector !== undefined
+          ? { subprocessInspector: options.subprocessInspector }
           : {}),
         ...(options.subprocessPollIntervalMs !== undefined
           ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
@@ -283,7 +286,7 @@ it.layer(
       const third = yield* manager.open(openInput());
 
       assert.equal(first.threadId, "thread-1");
-      assert.equal(first.terminalId, "default");
+      assert.equal(first.terminalId, DEFAULT_TERMINAL_ID);
       assert.equal(second.threadId, "thread-1");
       assert.equal(third.threadId, "thread-1");
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
@@ -465,7 +468,7 @@ it.layer(
           (event) =>
             event.type === "cleared" &&
             event.threadId === "thread-1" &&
-            event.terminalId === "default",
+            event.terminalId === DEFAULT_TERMINAL_ID,
         ),
       ).toBe(true);
     }),
@@ -662,27 +665,40 @@ it.layer(
 
   it.effect("emits subprocess activity events when child-process state changes", () =>
     Effect.gen(function* () {
-      let hasRunningSubprocess = false;
+      let inspect: {
+        readonly hasRunningSubprocess: boolean;
+        readonly childCommand: string | null;
+      } = { hasRunningSubprocess: false, childCommand: null };
       const { manager, getEvents } = yield* createManager(5, {
-        subprocessChecker: () => Effect.succeed(hasRunningSubprocess),
+        subprocessInspector: () => Effect.succeed(inspect),
         subprocessPollIntervalMs: 20,
       });
 
       yield* manager.open(openInput());
       expect((yield* getEvents).some((event) => event.type === "activity")).toBe(false);
 
-      hasRunningSubprocess = true;
+      inspect = { hasRunningSubprocess: true, childCommand: "vim" };
       yield* waitFor(
         Effect.map(getEvents, (events) =>
-          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === true),
+          events.some(
+            (event) =>
+              event.type === "activity" &&
+              event.hasRunningSubprocess === true &&
+              event.label === "vim",
+          ),
         ),
         "1200 millis",
       );
 
-      hasRunningSubprocess = false;
+      inspect = { hasRunningSubprocess: false, childCommand: null };
       yield* waitFor(
         Effect.map(getEvents, (events) =>
-          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === false),
+          events.some(
+            (event) =>
+              event.type === "activity" &&
+              event.hasRunningSubprocess === false &&
+              event.label === "Terminal 1",
+          ),
         ),
         "1200 millis",
       );
@@ -693,9 +709,9 @@ it.layer(
     Effect.gen(function* () {
       let checks = 0;
       const { manager } = yield* createManager(5, {
-        subprocessChecker: () => {
+        subprocessInspector: () => {
           checks += 1;
-          return Effect.succeed(false);
+          return Effect.succeed({ hasRunningSubprocess: false, childCommand: null });
         },
         subprocessPollIntervalMs: 20,
       });

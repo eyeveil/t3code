@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import { pipe } from "effect/Function";
 import { Atom } from "effect/unstable/reactivity";
 import { type SavedRemoteConnection, bootstrapRemoteConnection } from "../lib/connection";
+import { terminalDebugLog } from "../features/terminal/terminalDebugLog";
 import { clearSavedConnection, loadSavedConnections, saveConnection } from "../lib/storage";
 import { appAtomRegistry } from "./atom-registry";
 import { type ConnectedEnvironmentSummary, type EnvironmentSession } from "./remote-runtime-types";
@@ -268,6 +269,9 @@ export async function connectSavedEnvironment(
       client,
     }),
   );
+  terminalDebugLog("registry:terminal-metadata-subscribed", {
+    environmentId: connection.environmentId,
+  });
   notifyEnvironmentConnectionListeners();
 
   try {

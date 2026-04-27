@@ -11,7 +11,6 @@ import { Alert, Linking } from "react-native";
 import { buildThreadReviewRoutePath } from "../../lib/routes";
 import {
   basename,
-  getTerminalLabel,
   getTerminalStatusLabel,
   projectScriptMenuIcon,
   projectScriptMenuLabel,
@@ -183,19 +182,16 @@ export function ThreadGitControls(props: {
     <Stack.Toolbar placement="right">
       <Stack.Toolbar.Menu icon="terminal" disabled={!props.canOpenTerminal} separateBackground>
         {props.projectScripts.length > 0 ? (
-          <Stack.Toolbar.Menu icon="play" inline title="Project scripts">
-            <Stack.Toolbar.Label>Project scripts</Stack.Toolbar.Label>
-            {props.projectScripts.map((script) => (
-              <Stack.Toolbar.MenuAction
-                key={script.id}
-                icon={projectScriptMenuIcon(script.icon)}
-                onPress={() => void props.onRunProjectScript(script)}
-                subtitle={script.command}
-              >
-                <Stack.Toolbar.Label>{projectScriptMenuLabel(script)}</Stack.Toolbar.Label>
-              </Stack.Toolbar.MenuAction>
-            ))}
-          </Stack.Toolbar.Menu>
+          props.projectScripts.map((script) => (
+            <Stack.Toolbar.MenuAction
+              key={script.id}
+              icon={projectScriptMenuIcon(script.icon)}
+              onPress={() => void props.onRunProjectScript(script)}
+              subtitle={script.command}
+            >
+              <Stack.Toolbar.Label>{projectScriptMenuLabel(script)}</Stack.Toolbar.Label>
+            </Stack.Toolbar.MenuAction>
+          ))
         ) : (
           <Stack.Toolbar.MenuAction
             icon="play"
@@ -206,34 +202,31 @@ export function ThreadGitControls(props: {
             <Stack.Toolbar.Label>No project scripts</Stack.Toolbar.Label>
           </Stack.Toolbar.MenuAction>
         )}
-        <Stack.Toolbar.Menu icon="terminal" inline title="Terminals">
-          <Stack.Toolbar.Label>Terminals</Stack.Toolbar.Label>
-          {props.terminalSessions.map((session) => (
-            <Stack.Toolbar.MenuAction
-              key={session.terminalId}
-              icon="terminal"
-              onPress={() => props.onOpenTerminal(session.terminalId)}
-              subtitle={[
-                getTerminalStatusLabel({
-                  status: session.status,
-                  hasRunningSubprocess: session.hasRunningSubprocess,
-                }),
-                basename(session.cwd),
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            >
-              <Stack.Toolbar.Label>{getTerminalLabel(session.terminalId)}</Stack.Toolbar.Label>
-            </Stack.Toolbar.MenuAction>
-          ))}
+        {props.terminalSessions.map((session) => (
           <Stack.Toolbar.MenuAction
-            icon="plus"
-            onPress={props.onOpenNewTerminal}
-            subtitle="Start another shell for this thread"
+            key={session.terminalId}
+            icon="terminal"
+            onPress={() => props.onOpenTerminal(session.terminalId)}
+            subtitle={[
+              getTerminalStatusLabel({
+                status: session.status,
+                hasRunningSubprocess: session.hasRunningSubprocess,
+              }),
+              basename(session.cwd),
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           >
-            <Stack.Toolbar.Label>Open new terminal</Stack.Toolbar.Label>
+            <Stack.Toolbar.Label>{session.displayLabel}</Stack.Toolbar.Label>
           </Stack.Toolbar.MenuAction>
-        </Stack.Toolbar.Menu>
+        ))}
+        <Stack.Toolbar.MenuAction
+          icon="plus"
+          onPress={props.onOpenNewTerminal}
+          subtitle="Start another shell for this thread"
+        >
+          <Stack.Toolbar.Label>Open new terminal</Stack.Toolbar.Label>
+        </Stack.Toolbar.MenuAction>
       </Stack.Toolbar.Menu>
       <Stack.Toolbar.Menu icon="point.topleft.down.curvedto.point.bottomright.up">
         <Stack.Toolbar.MenuAction

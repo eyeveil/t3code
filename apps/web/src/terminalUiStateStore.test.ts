@@ -20,7 +20,7 @@ describe("terminalUiStateStore actions", () => {
     });
   });
 
-  it("returns a closed default terminal UI state for unknown threads", () => {
+  it("returns an empty default terminal UI state for unknown threads", () => {
     const terminalUiState = selectThreadTerminalUiState(
       useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
       THREAD_REF,
@@ -28,10 +28,10 @@ describe("terminalUiStateStore actions", () => {
     expect(terminalUiState).toEqual({
       terminalOpen: false,
       terminalHeight: 280,
-      terminalIds: ["default"],
-      activeTerminalId: "default",
-      terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
-      activeTerminalGroupId: "group-default",
+      terminalIds: [],
+      activeTerminalId: "",
+      terminalGroups: [],
+      activeTerminalGroupId: "",
     });
   });
 
@@ -45,10 +45,10 @@ describe("terminalUiStateStore actions", () => {
       THREAD_REF,
     );
     expect(terminalUiState.terminalOpen).toBe(true);
-    expect(terminalUiState.terminalIds).toEqual(["default", "terminal-2"]);
+    expect(terminalUiState.terminalIds).toEqual(["terminal-2"]);
     expect(terminalUiState.activeTerminalId).toBe("terminal-2");
     expect(terminalUiState.terminalGroups).toEqual([
-      { id: "group-default", terminalIds: ["default", "terminal-2"] },
+      { id: "group-terminal-2", terminalIds: ["terminal-2"] },
     ]);
   });
 
@@ -58,19 +58,23 @@ describe("terminalUiStateStore actions", () => {
     store.splitTerminal(THREAD_REF, "terminal-3");
     store.splitTerminal(THREAD_REF, "terminal-4");
     store.splitTerminal(THREAD_REF, "terminal-5");
+    store.splitTerminal(THREAD_REF, "terminal-6");
 
     const terminalUiState = selectThreadTerminalUiState(
       useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
       THREAD_REF,
     );
     expect(terminalUiState.terminalIds).toEqual([
-      "default",
       "terminal-2",
       "terminal-3",
       "terminal-4",
+      "terminal-5",
     ]);
     expect(terminalUiState.terminalGroups).toEqual([
-      { id: "group-default", terminalIds: ["default", "terminal-2", "terminal-3", "terminal-4"] },
+      {
+        id: "group-terminal-2",
+        terminalIds: ["terminal-2", "terminal-3", "terminal-4", "terminal-5"],
+      },
     ]);
   });
 
@@ -81,11 +85,10 @@ describe("terminalUiStateStore actions", () => {
       useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
       THREAD_REF,
     );
-    expect(terminalUiState.terminalIds).toEqual(["default", "terminal-2"]);
+    expect(terminalUiState.terminalIds).toEqual(["terminal-2"]);
     expect(terminalUiState.activeTerminalId).toBe("terminal-2");
     expect(terminalUiState.activeTerminalGroupId).toBe("group-terminal-2");
     expect(terminalUiState.terminalGroups).toEqual([
-      { id: "group-default", terminalIds: ["default"] },
       { id: "group-terminal-2", terminalIds: ["terminal-2"] },
     ]);
   });
@@ -99,10 +102,9 @@ describe("terminalUiStateStore actions", () => {
       THREAD_REF,
     );
     expect(terminalUiState.terminalOpen).toBe(true);
-    expect(terminalUiState.terminalIds).toEqual(["default", "setup-setup"]);
+    expect(terminalUiState.terminalIds).toEqual(["setup-setup"]);
     expect(terminalUiState.activeTerminalId).toBe("setup-setup");
     expect(terminalUiState.terminalGroups).toEqual([
-      { id: "group-default", terminalIds: ["default"] },
       { id: "group-setup-setup", terminalIds: ["setup-setup"] },
     ]);
   });
@@ -123,28 +125,28 @@ describe("terminalUiStateStore actions", () => {
         useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
         OTHER_THREAD_REF,
       ).terminalIds,
-    ).toEqual(["default", "env-b-terminal"]);
+    ).toEqual(["env-b-terminal"]);
   });
 
-  it("migrates legacy persisted terminal UI state using the stored version", () => {
+  it("drops persisted entries whose thread keys are not valid scoped keys", () => {
     const migrated = migratePersistedTerminalUiStateStoreState(
       {
         terminalStateByThreadKey: {
           [scopedThreadKey(THREAD_REF)]: {
             terminalOpen: true,
             terminalHeight: 320,
-            terminalIds: ["default"],
-            activeTerminalId: "default",
-            terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
-            activeTerminalGroupId: "group-default",
+            terminalIds: ["term-1"],
+            activeTerminalId: "term-1",
+            terminalGroups: [{ id: "group-term-1", terminalIds: ["term-1"] }],
+            activeTerminalGroupId: "group-term-1",
           },
           "legacy-thread-id": {
             terminalOpen: true,
             terminalHeight: 320,
-            terminalIds: ["default"],
-            activeTerminalId: "default",
-            terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
-            activeTerminalGroupId: "group-default",
+            terminalIds: ["term-1"],
+            activeTerminalId: "term-1",
+            terminalGroups: [{ id: "group-term-1", terminalIds: ["term-1"] }],
+            activeTerminalGroupId: "group-term-1",
           },
         },
       },
@@ -156,10 +158,10 @@ describe("terminalUiStateStore actions", () => {
         [scopedThreadKey(THREAD_REF)]: {
           terminalOpen: true,
           terminalHeight: 320,
-          terminalIds: ["default"],
-          activeTerminalId: "default",
-          terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
-          activeTerminalGroupId: "group-default",
+          terminalIds: ["term-1"],
+          activeTerminalId: "term-1",
+          terminalGroups: [{ id: "group-term-1", terminalIds: ["term-1"] }],
+          activeTerminalGroupId: "group-term-1",
         },
       },
     });
@@ -167,7 +169,8 @@ describe("terminalUiStateStore actions", () => {
 
   it("resets to default and clears persisted entry when closing the last terminal", () => {
     const store = useTerminalUiStateStore.getState();
-    store.closeTerminal(THREAD_REF, "default");
+    store.newTerminal(THREAD_REF, "terminal-only");
+    store.closeTerminal(THREAD_REF, "terminal-only");
 
     expect(
       useTerminalUiStateStore.getState().terminalUiStateByThreadKey[scopedThreadKey(THREAD_REF)],
@@ -177,7 +180,7 @@ describe("terminalUiStateStore actions", () => {
         useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
         THREAD_REF,
       ).terminalIds,
-    ).toEqual(["default"]);
+    ).toEqual([]);
   });
 
   it("keeps a valid active terminal after closing an active split terminal", () => {
@@ -191,9 +194,26 @@ describe("terminalUiStateStore actions", () => {
       THREAD_REF,
     );
     expect(terminalUiState.activeTerminalId).toBe("terminal-2");
-    expect(terminalUiState.terminalIds).toEqual(["default", "terminal-2"]);
+    expect(terminalUiState.terminalIds).toEqual(["terminal-2"]);
     expect(terminalUiState.terminalGroups).toEqual([
-      { id: "group-default", terminalIds: ["default", "terminal-2"] },
+      { id: "group-terminal-2", terminalIds: ["terminal-2"] },
+    ]);
+  });
+
+  it("reconciles terminal ids from an external ordered list", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.setTerminalOpen(THREAD_REF, true);
+    store.reconcileTerminalIds(THREAD_REF, ["term-a", "term-b"]);
+
+    const terminalUiState = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      THREAD_REF,
+    );
+    expect(terminalUiState.terminalIds).toEqual(["term-a", "term-b"]);
+    expect(terminalUiState.activeTerminalId).toBe("term-a");
+    expect(terminalUiState.terminalGroups).toEqual([
+      { id: "group-term-a", terminalIds: ["term-a"] },
+      { id: "group-term-b", terminalIds: ["term-b"] },
     ]);
   });
 

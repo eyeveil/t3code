@@ -12,7 +12,7 @@ import { dismissGitActionResult, useGitActionProgress } from "../../state/use-gi
 
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
-import { buildThreadRoutePath, buildThreadTerminalRoutePath } from "../../lib/routes";
+import { buildThreadRoutePath, buildThreadTerminalNavigation } from "../../lib/routes";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { connectionTone } from "../connection/connectionTone";
 
@@ -27,13 +27,14 @@ import { useThreadSelection } from "../../state/use-thread-selection";
 import { GitActionProgressOverlay } from "./GitActionProgressOverlay";
 import {
   buildTerminalMenuSessions,
-  nextTerminalId,
+  nextOpenTerminalId,
   resolveProjectScriptTerminalId,
 } from "../terminal/terminalMenu";
 import {
   resolvePreferredThreadWorktreePath,
   stagePendingTerminalLaunch,
 } from "../terminal/terminalLaunchContext";
+import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen } from "./ThreadDetailScreen";
 import { ThreadGitControls } from "./ThreadGitControls";
 import { ThreadNavigationDrawer } from "./ThreadNavigationDrawer";
@@ -145,27 +146,52 @@ export function ThreadRouteScreen() {
 
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
+      terminalDebugLog("terminal-menu:open-existing", {
+        terminalId: nextTerminalId ?? null,
+        hasThread: Boolean(selectedThread),
+        hasWorkspaceRoot: Boolean(selectedThreadProject?.workspaceRoot),
+      });
+
       if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
         return;
       }
 
-      void router.push(buildThreadTerminalRoutePath(selectedThread, nextTerminalId));
+      void router.push(buildThreadTerminalNavigation(selectedThread, nextTerminalId));
     },
     [router, selectedThread, selectedThreadProject?.workspaceRoot],
   );
 
   const handleOpenNewTerminal = useCallback(() => {
+    terminalDebugLog("terminal-menu:open-new", {
+      hasThread: Boolean(selectedThread),
+      hasWorkspaceRoot: Boolean(selectedThreadProject?.workspaceRoot),
+      listedTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
+    });
+
     if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
       return;
     }
 
-    const nextId = nextTerminalId(terminalMenuSessions.map((session) => session.terminalId));
-    void router.push(buildThreadTerminalRoutePath(selectedThread, nextId));
+    const nextId = nextOpenTerminalId({
+      listedTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
+    });
+    void router.push(buildThreadTerminalNavigation(selectedThread, nextId));
   }, [router, selectedThread, selectedThreadProject?.workspaceRoot, terminalMenuSessions]);
 
   const handleRunProjectScript = useCallback(
     async (script: ProjectScript) => {
+      terminalDebugLog("project-script:press", {
+        scriptId: script.id,
+        command: script.command,
+        hasThread: Boolean(selectedThread),
+        hasWorkspaceRoot: Boolean(selectedThreadProject?.workspaceRoot),
+      });
+
       if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
+        terminalDebugLog("project-script:abort", {
+          scriptId: script.id,
+          reason: "no-thread-or-workspace",
+        });
         return;
       }
 
@@ -200,8 +226,14 @@ export function ThreadRouteScreen() {
           initialInput: `${script.command}\r`,
         },
       });
+      terminalDebugLog("project-script:staged", {
+        scriptId: script.id,
+        terminalId: targetTerminalId,
+        cwd,
+        worktreePath: preferredWorktreePath,
+      });
 
-      void router.push(buildThreadTerminalRoutePath(selectedThread, targetTerminalId));
+      void router.push(buildThreadTerminalNavigation(selectedThread, targetTerminalId));
     },
     [
       router,

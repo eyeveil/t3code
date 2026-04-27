@@ -12,7 +12,7 @@ describe("terminalBufferReplay", () => {
     ).toBe("env-1:thread-1:default:10");
   });
 
-  it("holds back terminal history until the measured surface is ready", () => {
+  it("shows terminal history while replay key is unset (initial mount / after key change)", () => {
     const replayKey = getTerminalBufferReplayKey({
       terminalKey: "env-1:thread-1:default",
       fontSize: 10,
@@ -24,7 +24,7 @@ describe("terminalBufferReplay", () => {
         replayKey,
         readyReplayKey: null,
       }),
-    ).toBe("");
+    ).toBe("fastfetch output");
     expect(
       getTerminalSurfaceReplayBuffer({
         buffer: "fastfetch output",

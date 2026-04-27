@@ -383,6 +383,7 @@ describe("wsApi", () => {
         exitCode: null,
         exitSignal: null,
         hasRunningSubprocess: true,
+        label: "terminal-1",
         updatedAt: "2026-02-24T00:00:00.000Z",
       },
     } satisfies TerminalMetadataStreamEvent;

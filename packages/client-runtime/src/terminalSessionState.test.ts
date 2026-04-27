@@ -28,7 +28,7 @@ function resetAtomRegistry() {
 const TARGET = {
   environmentId: EnvironmentId.make("env-local"),
   threadId: ThreadId.make("thread-1"),
-  terminalId: "default",
+  terminalId: "term-1",
 } as const;
 
 const BASE_SNAPSHOT: TerminalSessionSnapshot = {
@@ -41,6 +41,7 @@ const BASE_SNAPSHOT: TerminalSessionSnapshot = {
   history: "hello",
   exitCode: null,
   exitSignal: null,
+  label: "Terminal 1",
   updatedAt: "2026-04-01T00:00:00.000Z",
 };
 
@@ -161,7 +162,7 @@ describe("createTerminalSessionManager", () => {
     const otherTarget = {
       environmentId: EnvironmentId.make("env-remote"),
       threadId: ThreadId.make("thread-1"),
-      terminalId: "default",
+      terminalId: "term-1",
     } as const;
 
     for (const target of [TARGET, otherTarget]) {
@@ -181,7 +182,7 @@ describe("createTerminalSessionManager", () => {
     expect(manager.getSnapshot(otherTarget).buffer).toBe("env-remote");
   });
 
-  it("lists known sessions for a thread ordered by recency", () => {
+  it("lists known sessions for a thread ordered by terminal id (numeric-aware)", () => {
     const manager = createTerminalSessionManager({
       getRegistry: () => atomRegistry,
     });
@@ -190,6 +191,19 @@ describe("createTerminalSessionManager", () => {
       {
         type: "snapshot",
         terminals: [
+          {
+            threadId: TARGET.threadId,
+            terminalId: "term-10",
+            cwd: "/repo",
+            worktreePath: null,
+            status: "running",
+            pid: 125,
+            exitCode: null,
+            exitSignal: null,
+            updatedAt: "2026-04-01T00:00:05.000Z",
+            hasRunningSubprocess: false,
+            label: "Terminal 10",
+          },
           {
             threadId: TARGET.threadId,
             terminalId: TARGET.terminalId,
@@ -201,6 +215,7 @@ describe("createTerminalSessionManager", () => {
             exitSignal: null,
             updatedAt: "2026-04-01T00:00:00.000Z",
             hasRunningSubprocess: false,
+            label: "Terminal 1",
           },
           {
             threadId: TARGET.threadId,
@@ -213,6 +228,7 @@ describe("createTerminalSessionManager", () => {
             exitSignal: null,
             updatedAt: "2026-04-01T00:00:02.000Z",
             hasRunningSubprocess: false,
+            label: "Terminal 2",
           },
         ],
       },
@@ -225,7 +241,7 @@ describe("createTerminalSessionManager", () => {
           threadId: TARGET.threadId,
         })
         .map((session) => session.target.terminalId),
-    ).toEqual(["term-2", "default"]);
+    ).toEqual(["term-1", "term-2", "term-10"]);
   });
 
   it("drops known sessions when an environment is invalidated", () => {
@@ -271,6 +287,7 @@ describe("createTerminalSessionManager", () => {
           exitSignal: null,
           updatedAt: BASE_SNAPSHOT.updatedAt,
           hasRunningSubprocess: false,
+          label: "Terminal 1",
         },
       },
     ]);
@@ -384,6 +401,7 @@ describe("createTerminalSessionManager", () => {
           snapshot: {
             ...BASE_SNAPSHOT,
             terminalId: "term-2",
+            label: "Terminal 2",
             updatedAt: "2026-04-01T00:00:02.000Z",
           },
         },
@@ -405,6 +423,7 @@ describe("createTerminalSessionManager", () => {
             exitSignal: null,
             updatedAt: "2026-04-01T00:00:05.000Z",
             hasRunningSubprocess: true,
+            label: "Terminal 2",
           },
         ],
       },
@@ -452,6 +471,7 @@ describe("createTerminalSessionManager", () => {
           exitSignal: null,
           updatedAt: BASE_SNAPSHOT.updatedAt,
           hasRunningSubprocess: false,
+          label: "Terminal 1",
         },
       },
     ]);
@@ -470,6 +490,7 @@ describe("createTerminalSessionManager", () => {
           exitSignal: null,
           updatedAt: "2026-04-01T00:00:05.000Z",
           hasRunningSubprocess: true,
+          label: "Terminal 1",
         },
       },
     ]);
@@ -504,6 +525,7 @@ describe("createTerminalSessionManager", () => {
           exitSignal: null,
           updatedAt: BASE_SNAPSHOT.updatedAt,
           hasRunningSubprocess: true,
+          label: "Terminal 1",
         },
       },
     ]);

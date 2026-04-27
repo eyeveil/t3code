@@ -1,4 +1,4 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useEffect } from "react";
 import {
   Pressable,
   ScrollView,
@@ -17,6 +17,7 @@ import {
   getPierreTerminalTheme,
   type TerminalTheme,
 } from "./terminalTheme";
+import { terminalDebugLog } from "./terminalDebugLog";
 
 interface TerminalInputEvent {
   readonly data: string;
@@ -168,6 +169,16 @@ export const TerminalSurface = memo(function TerminalSurface(props: TerminalSurf
   const theme = props.theme ?? getPierreTerminalTheme(appearanceScheme);
   const { onInput, onResize } = props;
   const NativeTerminalSurfaceView = resolveNativeTerminalSurfaceView();
+  const hasNativeSurface = Boolean(NativeTerminalSurfaceView);
+
+  useEffect(() => {
+    terminalDebugLog("native:surface", {
+      terminalKey: props.terminalKey,
+      native: hasNativeSurface,
+      bufferLen: props.buffer.length,
+      isRunning: props.isRunning,
+    });
+  }, [hasNativeSurface, props.buffer.length, props.isRunning, props.terminalKey]);
   const handleNativeInput = useCallback(
     (event: NativeSyntheticEvent<TerminalInputEvent>) => {
       onInput(event.nativeEvent.data);

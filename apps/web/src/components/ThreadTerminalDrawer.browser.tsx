@@ -128,7 +128,7 @@ function createEnvironmentApi() {
     terminal: {
       open: vi.fn(async () => ({
         threadId: THREAD_ID,
-        terminalId: "default",
+        terminalId: "term-1",
         cwd: "/repo/project",
         worktreePath: null,
         status: "running" as const,
@@ -136,6 +136,7 @@ function createEnvironmentApi() {
         history: "",
         exitCode: null,
         exitSignal: null,
+        label: "Terminal 1",
         updatedAt: "2026-04-07T00:00:00.000Z",
       })),
       write: vi.fn(async () => undefined),
@@ -168,7 +169,7 @@ async function mountTerminalViewport(props: {
     <TerminalViewport
       threadRef={props.threadRef}
       threadId={THREAD_ID}
-      terminalId="default"
+      terminalId="term-1"
       terminalLabel="Terminal"
       cwd="/repo/project"
       onSessionExited={() => undefined}
@@ -188,7 +189,7 @@ async function mountTerminalViewport(props: {
         <TerminalViewport
           threadRef={nextProps.threadRef}
           threadId={THREAD_ID}
-          terminalId="default"
+          terminalId="term-1"
           terminalLabel="Terminal"
           cwd="/repo/project"
           onSessionExited={() => undefined}

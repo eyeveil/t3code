@@ -12,6 +12,7 @@ import {
 } from "../../state/use-terminal-session";
 import { TerminalSurface } from "./NativeTerminalSurface";
 import { hasNativeTerminalSurface } from "./nativeTerminalModule";
+import { terminalDebugLog } from "./terminalDebugLog";
 
 interface ThreadTerminalPanelProps {
   readonly environmentId: EnvironmentId;
@@ -51,8 +52,18 @@ export const ThreadTerminalPanel = memo(function ThreadTerminalPanel(
 
     const client = getEnvironmentClient(props.environmentId);
     if (!client) {
+      terminalDebugLog("panel:attach-skip", {
+        reason: "no-environment-client",
+        environmentId: props.environmentId,
+      });
       return;
     }
+
+    terminalDebugLog("panel:attach", {
+      environmentId: props.environmentId,
+      threadId: props.threadId,
+      terminalId,
+    });
 
     return attachTerminalSession({
       environmentId: props.environmentId,

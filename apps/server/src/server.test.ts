@@ -4272,6 +4272,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         history: "",
         exitCode: null,
         exitSignal: null,
+        label: "Primary",
         updatedAt: "2026-01-01T00:00:00.000Z",
       };
 

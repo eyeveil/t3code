@@ -1,8 +1,12 @@
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
-export const DEFAULT_TERMINAL_ID = "default";
+/**
+ * Client-side id for the first shell opened on a thread. Ids are uniformly
+ * `term-N`; there's no "default" intrinsic. Kept as a named constant so callers
+ * that want "the primary shell" don't hardcode `"term-1"`.
+ */
+export const DEFAULT_TERMINAL_ID = "term-1";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const TerminalColsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
@@ -20,18 +24,15 @@ const TerminalEnvSchema = Schema.Record(TerminalEnvKeySchema, TerminalEnvValueSc
   Schema.isMaxProperties(128),
 );
 
-const TerminalIdWithDefaultSchema = TerminalIdSchema.pipe(
-  Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_ID)),
-);
-
 export const TerminalThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyStringSchema,
 });
 export type TerminalThreadInput = typeof TerminalThreadInput.Type;
 
+/** Terminal ids are ALWAYS chosen by the client and sent explicitly — no server-side allocation. */
 const TerminalSessionInput = Schema.Struct({
   ...TerminalThreadInput.fields,
-  terminalId: TerminalIdWithDefaultSchema,
+  terminalId: TerminalIdSchema,
 });
 export type TerminalSessionInput = Schema.Codec.Encoded<typeof TerminalSessionInput>;
 
@@ -101,6 +102,8 @@ export const TerminalSessionSnapshot = Schema.Struct({
   history: Schema.String,
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
+  /** Server-computed display title (idle shell vs subprocess command). */
+  label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
   sequence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
@@ -116,6 +119,8 @@ export const TerminalSummary = Schema.Struct({
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
   hasRunningSubprocess: Schema.Boolean,
+  /** Server-computed display title (idle shell vs subprocess command). */
+  label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
 });
 export type TerminalSummary = typeof TerminalSummary.Type;
@@ -194,6 +199,7 @@ const TerminalActivityEvent = Schema.Struct({
   ...TerminalEventBaseSchema.fields,
   type: Schema.Literal("activity"),
   hasRunningSubprocess: Schema.Boolean,
+  label: Schema.String.check(Schema.isMaxLength(128)),
 });
 
 export const TerminalEvent = Schema.Union([

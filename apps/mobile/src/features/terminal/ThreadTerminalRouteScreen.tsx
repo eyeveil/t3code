@@ -1,4 +1,10 @@
-import { DEFAULT_TERMINAL_ID, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_TERMINAL_ID,
+  EnvironmentId,
+  type TerminalAttachStreamEvent,
+  ThreadId,
+} from "@t3tools/contracts";
+import type { KnownTerminalSession } from "@t3tools/client-runtime";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text as RNText, View, useColorScheme } from "react-native";
@@ -7,7 +13,7 @@ import Animated, { useAnimatedKeyboard, useAnimatedStyle } from "react-native-re
 
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
-import { buildThreadTerminalRoutePath } from "../../lib/routes";
+import { buildThreadTerminalNavigation } from "../../lib/routes";
 import {
   getEnvironmentClient,
   useRemoteEnvironmentState,
@@ -23,6 +29,7 @@ import { useSelectedThreadDetail } from "../../state/use-thread-detail";
 import { TerminalSurface } from "./NativeTerminalSurface";
 import { getPierreTerminalTheme } from "./terminalTheme";
 import { loadPreferences, savePreferencesPatch } from "../../lib/storage";
+import { terminalDebugLog } from "./terminalDebugLog";
 import {
   getTerminalBufferReplayKey,
   getTerminalSurfaceReplayBuffer,
@@ -37,9 +44,10 @@ import {
 import {
   basename,
   buildTerminalMenuSessions,
-  getTerminalLabel,
   getTerminalStatusLabel,
-  nextTerminalId,
+  nextOpenTerminalId,
+  resolveTerminalSessionLabel,
+  type TerminalMenuSession,
 } from "./terminalMenu";
 import {
   DEFAULT_TERMINAL_FONT_SIZE,
@@ -70,13 +78,6 @@ type TerminalToolbarAction =
       readonly label: string;
       readonly modifier: PendingModifier;
     };
-
-interface TerminalMenuSession {
-  readonly terminalId: string;
-  readonly cwd: string | null;
-  readonly status: "starting" | "running" | "exited" | "error" | "closed";
-  readonly updatedAt: string | null;
-}
 
 function getTerminalStatusTone(input: {
   readonly status: TerminalMenuSession["status"];
@@ -174,6 +175,22 @@ function withAlpha(hexColor: string, alpha: string): string {
   return /^#[0-9a-f]{6}$/i.test(hexColor) ? `${hexColor}${alpha}` : hexColor;
 }
 
+function pickRunningTerminalSessionForBootstrap(
+  sessions: ReadonlyArray<KnownTerminalSession>,
+): KnownTerminalSession | null {
+  const running = sessions.filter(
+    (session) => session.state.status === "running" || session.state.status === "starting",
+  );
+  if (running.length === 0) {
+    return null;
+  }
+  return (
+    running.find((session) => session.target.terminalId === DEFAULT_TERMINAL_ID) ??
+    running[0] ??
+    null
+  );
+}
+
 export function ThreadTerminalRouteScreen() {
   const router = useRouter();
   const keyboard = useAnimatedKeyboard();
@@ -217,12 +234,15 @@ export function ThreadTerminalRouteScreen() {
   const [fontSize, setFontSize] = useState(cachedFontSize ?? DEFAULT_TERMINAL_FONT_SIZE);
   const hasOpenedRef = useRef(false);
   const bufferReplayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const attachStreamLogCountRef = useRef(0);
+  const firstNonEmptyBufferLoggedRef = useRef(false);
   const lastBufferReplayKeyRef = useRef<string | null>(null);
   const [readyBufferReplayKey, setReadyBufferReplayKey] = useState<string | null>(null);
   const [hasResolvedFontPreference, setHasResolvedFontPreference] = useState(
     cachedFontSize !== null,
   );
-  const [hasMeasuredSurface, setHasMeasuredSurface] = useState(cachedRouteGridSize !== null);
+  /** Default grid is always valid for attach; onResize refines cols/rows. Requiring a cached size blocked bootstrap for new terminal routes. */
+  const [hasMeasuredSurface, setHasMeasuredSurface] = useState(true);
   const [pendingModifierState, setPendingModifierState] = useState<{
     readonly terminalId: string;
     readonly value: PendingModifier | null;
@@ -252,22 +272,79 @@ export function ThreadTerminalRouteScreen() {
     readyReplayKey: readyBufferReplayKey,
   });
   const isRunning = terminal.status === "running" || terminal.status === "starting";
+
+  useEffect(() => {
+    terminalDebugLog("surface:props", {
+      terminalKey,
+      atomBufferLen: terminal.buffer.length,
+      surfaceBufferLen: terminalSurfaceBuffer.length,
+      replayKey: bufferReplayKey,
+      readyReplayKey: readyBufferReplayKey,
+      status: terminal.status,
+      version: terminal.version,
+    });
+  }, [
+    bufferReplayKey,
+    readyBufferReplayKey,
+    terminal.buffer.length,
+    terminal.status,
+    terminal.version,
+    terminalKey,
+    terminalSurfaceBuffer.length,
+  ]);
+
+  useEffect(() => {
+    terminalDebugLog("session:status", {
+      terminalKey,
+      status: terminal.status,
+      error: terminal.error,
+      summary: terminal.summary?.cwd ?? null,
+      bufferLen: terminal.buffer.length,
+      version: terminal.version,
+    });
+  }, [
+    terminal.buffer.length,
+    terminal.error,
+    terminal.status,
+    terminal.summary?.cwd,
+    terminal.version,
+    terminalKey,
+  ]);
+
+  useEffect(() => {
+    if (terminal.buffer.length === 0 || firstNonEmptyBufferLoggedRef.current) {
+      return;
+    }
+    firstNonEmptyBufferLoggedRef.current = true;
+    terminalDebugLog("session:first-nonempty-buffer", {
+      terminalKey,
+      length: terminal.buffer.length,
+      preview: terminal.buffer.slice(0, 160),
+    });
+  }, [terminal.buffer, terminal.buffer.length, terminalKey]);
   const cwd = terminal.summary?.cwd ?? selectedThreadProject?.workspaceRoot ?? null;
   const hostPlatform = useMemo(
     () => inferHostPlatform(selectedEnvironmentConnection?.environmentLabel ?? null),
     [selectedEnvironmentConnection?.environmentLabel],
   );
   const runningSession = useMemo(
-    () =>
-      knownSessions.find(
-        (session) => session.state.status === "running" || session.state.status === "starting",
-      ) ?? null,
+    () => pickRunningTerminalSessionForBootstrap(knownSessions),
     [knownSessions],
   );
   const activeKnownSession = useMemo(
     () => knownSessions.find((session) => session.target.terminalId === terminalId) ?? null,
     [knownSessions, terminalId],
   );
+
+  const terminalAttachLaunchHintsRef = useRef({
+    terminalSummary: terminal.summary,
+    activeKnownSummary: activeKnownSession?.state.summary ?? null,
+  });
+  terminalAttachLaunchHintsRef.current = {
+    terminalSummary: terminal.summary,
+    activeKnownSummary: activeKnownSession?.state.summary ?? null,
+  };
+
   const terminalStatusTone = useMemo(
     () =>
       getTerminalStatusTone({
@@ -339,6 +416,7 @@ export function ThreadTerminalRouteScreen() {
           cwd: cwd ?? null,
           status: terminal.status,
           hasRunningSubprocess: terminal.hasRunningSubprocess,
+          displayLabel: resolveTerminalSessionLabel(terminalId, terminal.summary),
           updatedAt: terminal.updatedAt,
         },
       }),
@@ -347,19 +425,47 @@ export function ThreadTerminalRouteScreen() {
       knownSessions,
       selectedThreadProject?.workspaceRoot,
       terminal.hasRunningSubprocess,
+      terminal.summary,
       terminal.status,
       terminal.updatedAt,
       terminalId,
     ],
   );
 
+  const logAttachStreamEvent = useCallback((event: TerminalAttachStreamEvent) => {
+    const n = ++attachStreamLogCountRef.current;
+    if (event.type === "output" && n > 32 && n % 64 !== 0) {
+      return;
+    }
+    if (event.type === "snapshot") {
+      terminalDebugLog("attach:stream", {
+        n,
+        type: event.type,
+        status: event.snapshot.status,
+        historyLen: event.snapshot.history.length,
+        cwd: event.snapshot.cwd,
+      });
+      return;
+    }
+    if (event.type === "output") {
+      terminalDebugLog("attach:stream", { n, type: event.type, dataLen: event.data.length });
+      return;
+    }
+    terminalDebugLog("attach:stream", { n, type: event.type });
+  }, []);
+
   const attachTerminal = useCallback(() => {
     if (!selectedThread || !selectedThreadProject?.workspaceRoot) {
+      terminalDebugLog("attach:abort", { reason: "no-thread-or-workspace" });
       return null;
     }
 
     const client = getEnvironmentClient(selectedThread.environmentId);
     if (!client) {
+      terminalDebugLog("attach:abort", {
+        reason: "no-environment-client",
+        environmentId: selectedThread.environmentId,
+      });
       return null;
     }
 
@@ -378,12 +484,21 @@ export function ThreadTerminalRouteScreen() {
             worktreePath: pendingLaunch.worktreePath,
           }
         : resolveTerminalOpenLocation({
-            terminalLocation: terminal.summary,
-            activeSessionLocation: activeKnownSession?.state.summary ?? null,
+            terminalLocation: terminalAttachLaunchHintsRef.current.terminalSummary,
+            activeSessionLocation: terminalAttachLaunchHintsRef.current.activeKnownSummary,
             workspaceRoot: selectedThreadProject.workspaceRoot,
             threadShellWorktreePath: selectedThread.worktreePath ?? null,
             threadDetailWorktreePath: selectedThreadDetail?.worktreePath ?? null,
           });
+
+      terminalDebugLog("attach:start", {
+        terminalId,
+        threadId: selectedThread.id,
+        cols: lastGridSize.cols,
+        rows: lastGridSize.rows,
+        cwd: launchLocation.cwd,
+        worktreePath: launchLocation.worktreePath,
+      });
 
       return attachTerminalSession({
         environmentId: selectedThread.environmentId,
@@ -397,6 +512,7 @@ export function ThreadTerminalRouteScreen() {
           rows: lastGridSize.rows,
           env: pendingLaunch?.env,
         },
+        onEvent: logAttachStreamEvent,
         onSnapshot: () => {
           if (!pendingLaunch?.initialInput || initialInputSent) {
             return;
@@ -411,6 +527,9 @@ export function ThreadTerminalRouteScreen() {
         },
       });
     } catch (error) {
+      terminalDebugLog("attach:error", {
+        message: error instanceof Error ? error.message : String(error),
+      });
       if (pendingLaunch) {
         stagePendingTerminalLaunch({
           target: pendingLaunchTarget,
@@ -423,16 +542,34 @@ export function ThreadTerminalRouteScreen() {
   }, [
     lastGridSize.cols,
     lastGridSize.rows,
-    activeKnownSession?.state.summary,
+    logAttachStreamEvent,
     selectedThreadDetail?.worktreePath,
     selectedThread,
     selectedThreadProject?.workspaceRoot,
-    terminal.summary,
     terminalId,
   ]);
 
+  const attachTerminalRef = useRef(attachTerminal);
+  attachTerminalRef.current = attachTerminal;
+  const selectedThreadRef = useRef(selectedThread);
+  selectedThreadRef.current = selectedThread;
+  const selectedThreadProjectBootstrapRef = useRef(selectedThreadProject);
+  selectedThreadProjectBootstrapRef.current = selectedThreadProject;
+  const runningSessionRef = useRef(runningSession);
+  runningSessionRef.current = runningSession;
+  const terminalBootstrapRef = useRef({
+    status: terminal.status,
+    bufferLen: terminal.buffer.length,
+  });
+  terminalBootstrapRef.current = {
+    status: terminal.status,
+    bufferLen: terminal.buffer.length,
+  };
+
   useEffect(() => {
     hasOpenedRef.current = false;
+    attachStreamLogCountRef.current = 0;
+    firstNonEmptyBufferLoggedRef.current = false;
   }, [terminalKey]);
 
   const clearBufferReplayTimer = useCallback(() => {
@@ -445,9 +582,14 @@ export function ThreadTerminalRouteScreen() {
   const scheduleBufferReplayReady = useCallback(() => {
     clearBufferReplayTimer();
     const replayKey = bufferReplayKey;
+    terminalDebugLog("replay:schedule-ready", {
+      replayKey,
+      delayMs: TERMINAL_BUFFER_REPLAY_STABILITY_DELAY_MS,
+    });
     bufferReplayTimerRef.current = setTimeout(() => {
       bufferReplayTimerRef.current = null;
       setReadyBufferReplayKey(replayKey);
+      terminalDebugLog("replay:ready", { replayKey });
     }, TERMINAL_BUFFER_REPLAY_STABILITY_DELAY_MS);
   }, [bufferReplayKey, clearBufferReplayTimer]);
 
@@ -482,26 +624,8 @@ export function ThreadTerminalRouteScreen() {
         rows: DEFAULT_TERMINAL_ROWS,
       },
     );
-    setHasMeasuredSurface(
-      getCachedTerminalGridSize({
-        environmentId: routeEnvironmentId,
-        threadId: routeThreadId,
-        terminalId,
-      }) !== null,
-    );
+    setHasMeasuredSurface(true);
   }, [routeEnvironmentId, routeThreadId, terminalId]);
-
-  useEffect(() => {
-    setHasMeasuredSurface(
-      routeEnvironmentId !== null &&
-        routeThreadId !== null &&
-        getCachedTerminalGridSize({
-          environmentId: routeEnvironmentId,
-          threadId: routeThreadId,
-          terminalId,
-        }) !== null,
-    );
-  }, [fontSize, routeEnvironmentId, routeThreadId, terminalId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -539,50 +663,79 @@ export function ThreadTerminalRouteScreen() {
     });
   }, [fontSize, hasResolvedFontPreference]);
 
+  // Subscribes `terminal.attach` once per route+terminal until thread/env/attach args change.
+  // Use refs for `attachTerminal` / `selectedThread` / `runningSession`: their identities change when
+  // unrelated store updates (e.g. terminal buffer) re-render the parent, which was firing cleanup
+  // → detach immediately after the first snapshot.
   useEffect(() => {
     if (!hasResolvedFontPreference || !hasMeasuredSurface) {
       return;
     }
 
+    const thread = selectedThreadRef.current;
+    const project = selectedThreadProjectBootstrapRef.current;
+    const running = runningSessionRef.current;
+    const termSnap = terminalBootstrapRef.current;
+
     const bootstrapAction = resolveTerminalRouteBootstrap({
-      hasThread: selectedThread !== null,
-      hasWorkspaceRoot: Boolean(selectedThreadProject?.workspaceRoot),
+      hasThread: thread !== null,
+      hasWorkspaceRoot: Boolean(project?.workspaceRoot),
       hasOpened: hasOpenedRef.current,
       requestedTerminalId,
       currentTerminalId: terminalId,
-      runningTerminalId: runningSession?.target.terminalId ?? null,
-      currentTerminalStatus: terminal.status,
-      hasCurrentTerminalHydration: terminal.summary !== null || terminal.buffer.length > 0,
+      runningTerminalId: running?.target.terminalId ?? null,
+      currentTerminalStatus: termSnap.status,
+      // Metadata summary (cwd/status) is not scrollback. Only `terminal.attach` fills `buffer`;
+      // treating summary as "hydrated" skipped attach while status was running → empty surface.
+      hasCurrentTerminalHydration: termSnap.bufferLen > 0,
     });
-    if (bootstrapAction.kind === "idle" || !selectedThread) {
+    if (bootstrapAction.kind !== "idle") {
+      terminalDebugLog("bootstrap:action", {
+        kind: bootstrapAction.kind,
+        hasOpenedBefore: hasOpenedRef.current,
+        hasHydration: termSnap.bufferLen > 0,
+        terminalStatus: termSnap.status,
+        bufLen: termSnap.bufferLen,
+      });
+    }
+    if (bootstrapAction.kind === "idle" || !thread) {
       return;
     }
 
     if (bootstrapAction.kind === "redirect") {
-      router.replace(buildThreadTerminalRoutePath(selectedThread, bootstrapAction.terminalId));
+      router.replace(buildThreadTerminalNavigation(thread, bootstrapAction.terminalId));
       return;
     }
 
     hasOpenedRef.current = true;
     try {
-      return attachTerminal() ?? undefined;
-    } catch {
+      const detach = attachTerminalRef.current();
+      terminalDebugLog("bootstrap:subscribe", { hasDetach: Boolean(detach) });
+      if (!detach) {
+        hasOpenedRef.current = false;
+        return;
+      }
+      return () => {
+        detach();
+        hasOpenedRef.current = false;
+        terminalDebugLog("bootstrap:unsubscribe");
+      };
+    } catch (error) {
       hasOpenedRef.current = false;
+      terminalDebugLog("bootstrap:attach-threw", {
+        message: error instanceof Error ? error.message : String(error),
+      });
       return;
     }
   }, [
-    attachTerminal,
-    requestedTerminalId,
-    router,
-    runningSession,
-    selectedThread,
-    selectedThreadProject?.workspaceRoot,
-    terminal.buffer.length,
-    terminal.summary,
-    terminal.status,
-    terminalId,
     hasMeasuredSurface,
     hasResolvedFontPreference,
+    requestedTerminalId,
+    router,
+    selectedThread?.environmentId,
+    selectedThread?.id,
+    selectedThreadProject?.workspaceRoot,
+    terminalId,
   ]);
 
   const writeInput = useCallback(
@@ -626,6 +779,11 @@ export function ThreadTerminalRouteScreen() {
 
   const handleResize = useCallback(
     (size: { readonly cols: number; readonly rows: number }) => {
+      terminalDebugLog("native:onResize", {
+        cols: size.cols,
+        rows: size.rows,
+        terminalKey,
+      });
       setHasMeasuredSurface(true);
       if (readyBufferReplayKey !== bufferReplayKey) {
         scheduleBufferReplayReady();
@@ -672,6 +830,7 @@ export function ThreadTerminalRouteScreen() {
       scheduleBufferReplayReady,
       selectedThread,
       terminalId,
+      terminalKey,
     ],
   );
 
@@ -681,7 +840,7 @@ export function ThreadTerminalRouteScreen() {
         return;
       }
 
-      router.replace(buildThreadTerminalRoutePath(selectedThread, nextTerminalId));
+      router.replace(buildThreadTerminalNavigation(selectedThread, nextTerminalId));
     },
     [router, selectedThread, terminalId],
   );
@@ -692,12 +851,15 @@ export function ThreadTerminalRouteScreen() {
     }
 
     router.replace(
-      buildThreadTerminalRoutePath(
+      buildThreadTerminalNavigation(
         selectedThread,
-        nextTerminalId(terminalMenuSessions.map((session) => session.terminalId)),
+        nextOpenTerminalId({
+          listedTerminalIds: terminalMenuSessions.map((session) => session.terminalId),
+          activeRouteTerminalId: terminalId,
+        }),
       ),
     );
-  }, [router, selectedThread, terminalMenuSessions]);
+  }, [router, selectedThread, terminalId, terminalMenuSessions]);
 
   const adjustFontSize = useCallback((delta: number) => {
     setTimeout(() => {
@@ -856,7 +1018,7 @@ export function ThreadTerminalRouteScreen() {
                 .filter(Boolean)
                 .join(" · ")}
             >
-              <Stack.Toolbar.Label>{getTerminalLabel(session.terminalId)}</Stack.Toolbar.Label>
+              <Stack.Toolbar.Label>{session.displayLabel}</Stack.Toolbar.Label>
             </Stack.Toolbar.MenuAction>
           ))}
           <Stack.Toolbar.MenuAction

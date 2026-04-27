@@ -31,6 +31,7 @@ describe("TerminalOpenInput", () => {
     expect(
       decodes(TerminalOpenInput, {
         threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
         cwd: "/tmp/project",
         cols: 120,
         rows: 40,
@@ -53,6 +54,7 @@ describe("TerminalOpenInput", () => {
     expect(
       decodes(TerminalOpenInput, {
         threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
         cwd: "/tmp/project",
         cols: 10,
         rows: 0,
@@ -60,19 +62,21 @@ describe("TerminalOpenInput", () => {
     ).toBe(false);
   });
 
-  it("defaults terminalId when missing", () => {
-    const parsed = decodeSync(TerminalOpenInput, {
-      threadId: "thread-1",
-      cwd: "/tmp/project",
-      cols: 100,
-      rows: 24,
-    });
-    expect(parsed.terminalId).toBe(DEFAULT_TERMINAL_ID);
+  it("requires terminalId — the client must always pick an id", () => {
+    expect(
+      decodes(TerminalOpenInput, {
+        threadId: "thread-1",
+        cwd: "/tmp/project",
+        cols: 100,
+        rows: 24,
+      }),
+    ).toBe(false);
   });
 
   it("accepts optional env overrides", () => {
     const parsed = decodeSync(TerminalOpenInput, {
       threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
       cwd: "/tmp/project",
       worktreePath: "/tmp/project/.t3/worktrees/feature-a",
       cols: 100,
@@ -109,6 +113,7 @@ describe("TerminalWriteInput", () => {
     expect(
       decodes(TerminalWriteInput, {
         threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
         data: "echo hello\n",
       }),
     ).toBe(true);
@@ -118,7 +123,17 @@ describe("TerminalWriteInput", () => {
     expect(
       decodes(TerminalWriteInput, {
         threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
         data: "",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects missing terminalId", () => {
+    expect(
+      decodes(TerminalWriteInput, {
+        threadId: "thread-1",
+        data: "echo hello\n",
       }),
     ).toBe(false);
   });
@@ -136,17 +151,33 @@ describe("TerminalResizeInput", () => {
     expect(
       decodes(TerminalResizeInput, {
         threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
         cols: 80,
         rows: 24,
       }),
     ).toBe(true);
   });
+
+  it("rejects missing terminalId", () => {
+    expect(
+      decodes(TerminalResizeInput, {
+        threadId: "thread-1",
+        cols: 80,
+        rows: 24,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("TerminalClearInput", () => {
-  it("defaults terminal id", () => {
+  it("requires terminalId", () => {
+    expect(decodes(TerminalClearInput, { threadId: "thread-1" })).toBe(false);
+  });
+
+  it("accepts an explicit terminalId", () => {
     const parsed = decodeSync(TerminalClearInput, {
       threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
     });
     expect(parsed.terminalId).toBe(DEFAULT_TERMINAL_ID);
   });
@@ -178,6 +209,7 @@ describe("TerminalSessionSnapshot", () => {
         history: "hello\n",
         exitCode: null,
         exitSignal: null,
+        label: "Primary",
         updatedAt: isoTimestamp,
       }),
     ).toBe(true);
@@ -227,6 +259,7 @@ describe("TerminalEvent", () => {
         threadId: "thread-1",
         terminalId: DEFAULT_TERMINAL_ID,
         hasRunningSubprocess: true,
+        label: "vim",
       }),
     ).toBe(true);
   });
@@ -247,6 +280,7 @@ describe("TerminalEvent", () => {
           history: "",
           exitCode: null,
           exitSignal: null,
+          label: "Primary",
           updatedAt: isoTimestamp,
         },
       }),

@@ -5,7 +5,7 @@ import type {
   TerminalSummary,
   EnvironmentId,
 } from "@t3tools/contracts";
-import { DEFAULT_TERMINAL_ID, ThreadId, type TerminalAttachInput } from "@t3tools/contracts";
+import { ThreadId, type TerminalAttachInput } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/unstable/reactivity";
 
 export interface TerminalSessionState {
@@ -77,7 +77,7 @@ export interface TerminalMetadataClient {
 export interface TerminalAttachClient {
   readonly terminal: {
     readonly attach: (
-      input: TerminalAttachInput & { readonly terminalId: string },
+      input: TerminalAttachInput,
       listener: (event: TerminalAttachStreamEvent) => void,
       options?: { readonly onResubscribe?: () => void },
     ) => () => void;
@@ -268,14 +268,9 @@ function listKnownSessionsFromMetadata(
       target,
       state: combineSessionState(summary, getBuffer(target)),
     }))
-    .sort((left, right) => {
-      const leftUpdatedAt = left.state.updatedAt ? Date.parse(left.state.updatedAt) : 0;
-      const rightUpdatedAt = right.state.updatedAt ? Date.parse(right.state.updatedAt) : 0;
-      if (leftUpdatedAt !== rightUpdatedAt) {
-        return rightUpdatedAt - leftUpdatedAt;
-      }
-      return left.target.terminalId.localeCompare(right.target.terminalId);
-    });
+    .sort((left, right) =>
+      left.target.terminalId.localeCompare(right.target.terminalId, undefined, { numeric: true }),
+    );
 }
 
 export const terminalSessionStateAtom = Atom.family((target: KnownTerminalSessionTarget) =>
@@ -569,12 +564,8 @@ export function createTerminalSessionManager(config: TerminalSessionManagerConfi
     readonly onEvent?: (event: TerminalAttachStreamEvent) => void;
     readonly options?: { readonly onResubscribe?: () => void };
   }): () => void {
-    const terminal = {
-      ...input.terminal,
-      terminalId: input.terminal.terminalId ?? DEFAULT_TERMINAL_ID,
-    };
     return input.client.terminal.attach(
-      terminal,
+      input.terminal,
       (event) => {
         applyAttachEvent({ environmentId: input.environmentId }, event);
         input.onEvent?.(event);

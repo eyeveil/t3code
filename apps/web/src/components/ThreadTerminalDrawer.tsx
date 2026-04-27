@@ -7,6 +7,7 @@ import {
   type TerminalSessionSnapshot,
   type ThreadId,
 } from "@t3tools/contracts";
+import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -41,7 +42,6 @@ import {
 } from "../keybindings";
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
-  DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ThreadTerminalGroup,
 } from "../types";
@@ -763,6 +763,8 @@ interface ThreadTerminalDrawerProps {
   onHeightChange: (height: number) => void;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
   keybindings: ResolvedKeybindingsConfig;
+  /** Prefer server-provided tab titles when present (e.g. active subprocess name). */
+  terminalLabelsById?: ReadonlyMap<string, string>;
 }
 
 interface TerminalActionButtonProps {
@@ -817,6 +819,7 @@ export default function ThreadTerminalDrawer({
   onHeightChange,
   onAddTerminalContext,
   keybindings,
+  terminalLabelsById,
 }: ThreadTerminalDrawerProps) {
   const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
   const [resizeEpoch, setResizeEpoch] = useState(0);
@@ -831,15 +834,20 @@ export default function ThreadTerminalDrawer({
   const didResizeDuringDragRef = useRef(false);
 
   const normalizedTerminalIds = useMemo(() => {
-    const cleaned = [...new Set(terminalIds.map((id) => id.trim()).filter((id) => id.length > 0))];
-    return cleaned.length > 0 ? cleaned : [DEFAULT_THREAD_TERMINAL_ID];
+    return [...new Set(terminalIds.map((id) => id.trim()).filter((id) => id.length > 0))];
   }, [terminalIds]);
 
-  const resolvedActiveTerminalId = normalizedTerminalIds.includes(activeTerminalId)
-    ? activeTerminalId
-    : (normalizedTerminalIds[0] ?? DEFAULT_THREAD_TERMINAL_ID);
+  const resolvedActiveTerminalId =
+    normalizedTerminalIds.length === 0
+      ? ""
+      : normalizedTerminalIds.includes(activeTerminalId)
+        ? activeTerminalId
+        : (normalizedTerminalIds[0] ?? "");
 
   const resolvedTerminalGroups = useMemo(() => {
+    if (normalizedTerminalIds.length === 0) {
+      return [];
+    }
     const validTerminalIdSet = new Set(normalizedTerminalIds);
     const assignedTerminalIds = new Set<string>();
     const usedGroupIds = new Set<string>();
@@ -876,7 +884,7 @@ export default function ThreadTerminalDrawer({
       const baseGroupId =
         terminalGroup.id.trim().length > 0
           ? terminalGroup.id.trim()
-          : `group-${nextTerminalIds[0] ?? DEFAULT_THREAD_TERMINAL_ID}`;
+          : `group-${nextTerminalIds[0] ?? normalizedTerminalIds[0] ?? ""}`;
       nextGroups.push({
         id: assignUniqueGroupId(baseGroupId),
         terminalIds: nextTerminalIds,
@@ -891,17 +899,17 @@ export default function ThreadTerminalDrawer({
       });
     }
 
-    if (nextGroups.length > 0) {
-      return nextGroups;
-    }
+    const terminalOrderIndex = new Map(
+      normalizedTerminalIds.map((id, index) => [id, index] as const),
+    );
+    nextGroups.sort((left, right) => {
+      const rank = (ids: readonly string[]) =>
+        Math.min(...ids.map((id) => terminalOrderIndex.get(id) ?? Number.POSITIVE_INFINITY));
+      return rank(left.terminalIds) - rank(right.terminalIds);
+    });
 
-    return [
-      {
-        id: `group-${resolvedActiveTerminalId}`,
-        terminalIds: [resolvedActiveTerminalId],
-      },
-    ];
-  }, [normalizedTerminalIds, resolvedActiveTerminalId, terminalGroups]);
+    return nextGroups;
+  }, [normalizedTerminalIds, terminalGroups]);
 
   const resolvedActiveGroupIndex = useMemo(() => {
     const indexById = resolvedTerminalGroups.findIndex(
@@ -914,22 +922,22 @@ export default function ThreadTerminalDrawer({
     return indexByTerminal >= 0 ? indexByTerminal : 0;
   }, [activeTerminalGroupId, resolvedActiveTerminalId, resolvedTerminalGroups]);
 
-  const visibleTerminalIds = resolvedTerminalGroups[resolvedActiveGroupIndex]?.terminalIds ?? [
-    resolvedActiveTerminalId,
-  ];
+  const visibleTerminalIds =
+    resolvedTerminalGroups[resolvedActiveGroupIndex]?.terminalIds ??
+    (normalizedTerminalIds.length > 0 ? [resolvedActiveTerminalId] : []);
   const hasTerminalSidebar = normalizedTerminalIds.length > 1;
   const isSplitView = visibleTerminalIds.length > 1;
   const showGroupHeaders =
     resolvedTerminalGroups.length > 1 ||
     resolvedTerminalGroups.some((terminalGroup) => terminalGroup.terminalIds.length > 1);
   const hasReachedSplitLimit = visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
-  const terminalLabelById = useMemo(
-    () =>
-      new Map(
-        normalizedTerminalIds.map((terminalId, index) => [terminalId, `Terminal ${index + 1}`]),
-      ),
-    [normalizedTerminalIds],
-  );
+  const terminalLabelById = useMemo(() => {
+    const next = new Map<string, string>();
+    for (const terminalId of normalizedTerminalIds) {
+      next.set(terminalId, terminalLabelsById?.get(terminalId) ?? getTerminalLabel(terminalId));
+    }
+    return next;
+  }, [normalizedTerminalIds, terminalLabelsById]);
   const splitTerminalActionLabel = hasReachedSplitLimit
     ? `Split Terminal (max ${MAX_TERMINALS_PER_GROUP} per group)`
     : splitShortcutLabel
@@ -1050,6 +1058,33 @@ export default function ThreadTerminalDrawer({
       syncHeight(drawerHeightRef.current);
     };
   }, [syncHeight]);
+
+  if (normalizedTerminalIds.length === 0) {
+    return (
+      <aside
+        className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border/80 bg-background"
+        style={{ height: `${drawerHeight}px` }}
+      >
+        <div
+          className="absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize"
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerEnd}
+          onPointerCancel={handleResizePointerEnd}
+        />
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm text-muted-foreground">
+          <p>No terminal sessions for this thread yet.</p>
+          <button
+            type="button"
+            className="rounded-md border border-border/80 bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+            onClick={onNewTerminalAction}
+          >
+            {newTerminalActionLabel}
+          </button>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside
@@ -1216,9 +1251,7 @@ export default function ThreadTerminalDrawer({
                           }`}
                           onClick={() => onActiveTerminalChange(groupActiveTerminalId)}
                         >
-                          {terminalGroup.terminalIds.length > 1
-                            ? `Split ${groupIndex + 1}`
-                            : `Terminal ${groupIndex + 1}`}
+                          Group {groupIndex + 1}
                         </button>
                       )}
 

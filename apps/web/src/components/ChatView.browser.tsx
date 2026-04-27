@@ -1073,6 +1073,7 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
       history: "",
       exitCode: null,
       exitSignal: null,
+      label: "Terminal 1",
       updatedAt: NOW_ISO,
     };
   }
@@ -1927,6 +1928,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.terminalMetadataEvents = [
+          {
+            type: "upsert",
+            terminal: {
+              threadId: THREAD_ID,
+              terminalId: DEFAULT_TERMINAL_ID,
+              cwd: "/repo/project",
+              worktreePath: null,
+              status: "running",
+              pid: 123,
+              exitCode: null,
+              exitSignal: null,
+              hasRunningSubprocess: false,
+              label: "Terminal 1",
+              updatedAt: isoAt(0),
+            },
+          },
+        ];
+      },
     });
 
     try {
@@ -3830,6 +3851,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               exitCode: null,
               exitSignal: null,
               hasRunningSubprocess: true,
+              label: "Terminal 1",
               updatedAt: isoAt(1_200),
             },
           },
