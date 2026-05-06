@@ -22,8 +22,8 @@ import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
-import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
+import { resolveSyntaxThemeName } from "../lib/syntaxTheme";
 import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
 import {
@@ -112,7 +112,7 @@ function extractCodeBlock(
   };
 }
 
-function createHighlightCacheKey(code: string, language: string, themeName: DiffThemeName): string {
+function createHighlightCacheKey(code: string, language: string, themeName: string): string {
   return `${fnv1a32(code).toString(36)}:${code.length}:${language}:${themeName}`;
 }
 
@@ -120,24 +120,25 @@ function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
 
-function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
-  const cached = highlighterPromiseCache.get(language);
+function getHighlighterPromise(language: string, themeName: string): Promise<DiffsHighlighter> {
+  const cacheKey = `${language}:${themeName}`;
+  const cached = highlighterPromiseCache.get(cacheKey);
   if (cached) return cached;
 
   const promise = getSharedHighlighter({
-    themes: [resolveDiffThemeName("dark"), resolveDiffThemeName("light")],
+    themes: [themeName],
     langs: [language as SupportedLanguages],
     preferredHighlighter: "shiki-js",
   }).catch((err) => {
-    highlighterPromiseCache.delete(language);
+    highlighterPromiseCache.delete(cacheKey);
     if (language === "text") {
       // "text" itself failed — Shiki cannot initialize at all, surface the error
       throw err;
     }
     // Language not supported by Shiki — fall back to "text"
-    return getHighlighterPromise("text");
+    return getHighlighterPromise("text", themeName);
   });
-  highlighterPromiseCache.set(language, promise);
+  highlighterPromiseCache.set(cacheKey, promise);
   return promise;
 }
 
@@ -192,7 +193,7 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
 interface SuspenseShikiCodeBlockProps {
   className: string | undefined;
   code: string;
-  themeName: DiffThemeName;
+  themeName: string;
   isStreaming: boolean;
 }
 
@@ -229,7 +230,7 @@ function SuspenseShikiCodeBlock({
 interface UncachedShikiCodeBlockProps {
   code: string;
   language: string;
-  themeName: DiffThemeName;
+  themeName: string;
   cacheKey: string;
   isStreaming: boolean;
 }
@@ -241,7 +242,7 @@ function UncachedShikiCodeBlock({
   cacheKey,
   isStreaming,
 }: UncachedShikiCodeBlockProps) {
-  const highlighter = use(getHighlighterPromise(language));
+  const highlighter = use(getHighlighterPromise(language, themeName));
   const highlightedHtml = useMemo(() => {
     try {
       return highlighter.codeToHtml(code, { lang: language, theme: themeName });
@@ -508,8 +509,11 @@ function areMarkdownFileLinkPropsEqual(
 }
 
 function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
-  const { resolvedTheme } = useTheme();
-  const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  const { resolvedTheme, resolvedColorTheme } = useTheme();
+  const codeBlockThemeName = useMemo(
+    () => resolveSyntaxThemeName({ resolvedTheme, resolvedColorTheme }),
+    [resolvedColorTheme, resolvedTheme],
+  );
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
       string,
@@ -577,7 +581,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
                 <SuspenseShikiCodeBlock
                   className={codeBlock.className}
                   code={codeBlock.code}
-                  themeName={diffThemeName}
+                  themeName={codeBlockThemeName}
                   isStreaming={isStreaming}
                 />
               </Suspense>
@@ -587,7 +591,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
       },
     }),
     [
-      diffThemeName,
+      codeBlockThemeName,
       fileLinkParentSuffixByPath,
       isStreaming,
       markdownFileLinkMetaByHref,
