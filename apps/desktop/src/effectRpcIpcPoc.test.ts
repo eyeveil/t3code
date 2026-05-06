@@ -5,7 +5,7 @@ import {
   loadDesktopIpcPocSnapshot,
   makeDesktopIpcPocBrowserClient,
 } from "./effectRpcIpcPoc/example/browser-client.ts";
-import { runDesktopIpcPocRpcServer } from "./effectRpcIpcPoc/example/main.ts";
+import { runDesktopIpcPocRpcServer } from "./effectRpcIpcPoc/example/rpc-server.ts";
 import { DESKTOP_IPC_POC_METHODS } from "./effectRpcIpcPoc/example/protocol.ts";
 import { EFFECT_RPC_IPC_RENDERER_BRIDGE_KEY } from "./effectRpcIpcPoc/library/ipc.ts";
 import type {
