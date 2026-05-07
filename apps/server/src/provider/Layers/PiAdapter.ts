@@ -96,6 +96,11 @@ interface PiSessionContext {
   resumeCursor: PiResumeCursor | undefined;
 }
 
+type PiRuntimeEventContext = Pick<
+  PiSessionContext,
+  "threadId" | "providerInstanceId" | "activeTurnId"
+>;
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -455,7 +460,7 @@ function sanitizePiRawPayload(event: AgentSessionEvent): unknown {
   }
 }
 
-function makeBaseEvent(context: PiSessionContext, event: AgentSessionEvent) {
+function makeBaseEvent(context: PiRuntimeEventContext, event: AgentSessionEvent) {
   return {
     eventId: nextEventId(),
     provider: PROVIDER,
@@ -471,7 +476,7 @@ function makeBaseEvent(context: PiSessionContext, event: AgentSessionEvent) {
   };
 }
 
-function makeContextEventBase(context: PiSessionContext, turnId?: TurnId | undefined) {
+function makeContextEventBase(context: PiRuntimeEventContext, turnId?: TurnId | undefined) {
   return {
     eventId: nextEventId(),
     provider: PROVIDER,
@@ -480,6 +485,75 @@ function makeContextEventBase(context: PiSessionContext, turnId?: TurnId | undef
     ...(turnId ? { turnId } : {}),
     createdAt: nowIso(),
   };
+}
+
+function trimText(value: string): string | undefined {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function extractPiTextContent(content: unknown): string | undefined {
+  if (typeof content === "string") {
+    return trimText(content);
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") {
+      continue;
+    }
+    const record = part as Record<string, unknown>;
+    if (record.type !== "text" || typeof record.text !== "string") {
+      continue;
+    }
+    const text = trimText(record.text);
+    if (text) {
+      parts.push(text);
+    }
+  }
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+function extractPiDisplayMessageText(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+
+  const record = message as Record<string, unknown>;
+  if (record.role === "assistant") {
+    return extractPiTextContent(record.content);
+  }
+  if (record.role === "custom" && record.display === true) {
+    return extractPiTextContent(record.content);
+  }
+  return undefined;
+}
+
+export function mapPiDisplayMessageEndEvent(
+  context: PiRuntimeEventContext,
+  event: Extract<AgentSessionEvent, { readonly type: "message_end" }>,
+): ReadonlyArray<ProviderRuntimeEvent> {
+  const text = extractPiDisplayMessageText(event.message);
+  if (!text) {
+    return [];
+  }
+
+  return [
+    {
+      ...makeBaseEvent(context, event),
+      type: "item.completed",
+      itemId: makeRuntimeItemId(`message:${crypto.randomUUID()}`),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        title: "Pi message",
+        detail: text,
+      },
+    },
+  ];
 }
 
 function mapPiAssistantMessageEvent(
@@ -580,9 +654,10 @@ function mapPiEvent(
           payload: piToolDisplayPayload(event),
         },
       ];
+    case "message_end":
+      return mapPiDisplayMessageEndEvent(context, event);
     case "queue_update":
     case "message_start":
-    case "message_end":
     case "compaction_start":
     case "compaction_end":
     case "session_info_changed":
