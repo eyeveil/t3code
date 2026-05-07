@@ -1,12 +1,14 @@
-import { Context, DateTime, Effect, Layer } from "effect";
+import { Context, DateTime, Effect, FileSystem, Layer, Path } from "effect";
 
 import {
+  VcsRepositoryDetectionError,
   VcsUnsupportedOperationError,
   type ReviewDiffPreviewError,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewResult,
 } from "@t3tools/contracts";
 
+import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
@@ -21,12 +23,47 @@ export class ReviewService extends Context.Service<ReviewService, ReviewServiceS
 ) {}
 
 export const make = Effect.fn("makeReviewService")(function* () {
+  const config = yield* ServerConfig;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
+
+  const canonicalizePath = (value: string) =>
+    fileSystem
+      .realPath(path.resolve(value))
+      .pipe(Effect.catch(() => Effect.succeed(path.resolve(value))));
+
+  const isWithinRoot = (candidate: string, root: string) => {
+    const relative = path.relative(root, candidate);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  };
+
+  const assertWorkspaceBoundCwd = Effect.fn("ReviewService.assertWorkspaceBoundCwd")(function* (
+    cwd: string,
+  ) {
+    const [candidate, workspaceRoot, worktreesRoot] = yield* Effect.all([
+      canonicalizePath(cwd),
+      canonicalizePath(config.cwd),
+      canonicalizePath(config.worktreesDir),
+    ]);
+
+    if (isWithinRoot(candidate, workspaceRoot) || isWithinRoot(candidate, worktreesRoot)) {
+      return;
+    }
+
+    return yield* new VcsRepositoryDetectionError({
+      operation: "ReviewService.getDiffPreview",
+      cwd,
+      detail: "Review diff preview cwd must stay within the configured workspace root.",
+    });
+  });
 
   const getDiffPreview: ReviewServiceShape["getDiffPreview"] = Effect.fn(
     "ReviewService.getDiffPreview",
   )(function* (input) {
+    yield* assertWorkspaceBoundCwd(input.cwd);
+
     const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "auto" });
     if (!handle) {
       return {
