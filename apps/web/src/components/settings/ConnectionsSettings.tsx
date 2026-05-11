@@ -108,6 +108,12 @@ import { useServerConfig } from "~/rpc/serverState";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
 
+// Select-value sentinels for the backend-runtime dropdown. The colon is
+// rejected by DISTRO_NAME_PATTERN (validated by the desktop side), so these
+// values can never collide with a real WSL distro name.
+const BACKEND_VALUE_LOCAL = "backend:local";
+const BACKEND_VALUE_DEFAULT_WSL = "backend:default-wsl";
+
 const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
@@ -2362,9 +2368,12 @@ export function ConnectionsSettings() {
     (value: string) => {
       if (!desktopWslState) return;
       const target =
-        value === "__local__"
+        value === BACKEND_VALUE_LOCAL
           ? { mode: "local" as const, distro: null }
-          : { mode: "wsl" as const, distro: value === "__default__" ? null : value };
+          : {
+              mode: "wsl" as const,
+              distro: value === BACKEND_VALUE_DEFAULT_WSL ? null : value,
+            };
       if (target.mode === desktopWslState.mode && target.distro === desktopWslState.distro) {
         return;
       }
@@ -2476,17 +2485,17 @@ export function ConnectionsSettings() {
     if (!desktopWslState || !desktopWslState.available) return null;
     // When distro is null ("track the WSL default"), map to the actual default
     // distro's name if we know one so the Select highlights a real option
-    // instead of an orphan "__default__" with no matching item. Falls back to
-    // "__default__" only when no distros are listed yet — in that case the
-    // dropdown renders a single placeholder option that matches.
+    // instead of an orphan default sentinel with no matching item. Falls back
+    // to BACKEND_VALUE_DEFAULT_WSL only when no distros are listed yet — in
+    // that case the dropdown renders a single placeholder option that matches.
     const defaultDistroName =
       desktopWslState.distros.find((distro) => distro.isDefault)?.name ?? null;
-    const wslSelectValue = desktopWslState.distro ?? defaultDistroName ?? "__default__";
-    const currentValue = desktopWslState.mode === "wsl" ? wslSelectValue : "__local__";
+    const wslSelectValue = desktopWslState.distro ?? defaultDistroName ?? BACKEND_VALUE_DEFAULT_WSL;
+    const currentValue = desktopWslState.mode === "wsl" ? wslSelectValue : BACKEND_VALUE_LOCAL;
     const currentLabel =
-      currentValue === "__local__"
+      currentValue === BACKEND_VALUE_LOCAL
         ? "Local (Windows)"
-        : currentValue === "__default__"
+        : currentValue === BACKEND_VALUE_DEFAULT_WSL
           ? "WSL: default distro"
           : `WSL: ${currentValue}`;
     const pendingTargetLabel =
@@ -2528,11 +2537,11 @@ export function ConnectionsSettings() {
                 <SelectValue>{currentLabel}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="__local__">
+                <SelectItem hideIndicator value={BACKEND_VALUE_LOCAL}>
                   Local (Windows)
                 </SelectItem>
                 {desktopWslState.distros.length === 0 ? (
-                  <SelectItem hideIndicator value="__default__">
+                  <SelectItem hideIndicator value={BACKEND_VALUE_DEFAULT_WSL}>
                     WSL: default distro
                   </SelectItem>
                 ) : (

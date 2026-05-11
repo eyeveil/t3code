@@ -49,15 +49,10 @@ const DESKTOP_BACKEND_ENV_NAMES = [
 ] as const;
 
 // Sensitive env vars that the WSL backend needs but Windows process.env won't
-// forward across the wsl.exe boundary without WSLENV. VITE_DEV_SERVER_URL is
-// included so the WSL backend can tell it is running in dev mode and use the
-// `dev/` subdir instead of `userdata/` for its state — otherwise the dev
-// build collides with the user's daily-driver packaged WSL backend.
-const WSL_FORWARDED_ENV_NAMES = [
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "VITE_DEV_SERVER_URL",
-] as const;
+// forward across the wsl.exe boundary without WSLENV. The dev-server URL is
+// handled separately via a `--dev-url` CLI flag because WSLENV translation of
+// URL-shaped values (colons / slashes) is unreliable.
+const WSL_FORWARDED_ENV_NAMES = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
 
 const backendChildEnvPatch = (): Record<string, string | undefined> =>
   Object.fromEntries(DESKTOP_BACKEND_ENV_NAMES.map((name) => [name, undefined]));
