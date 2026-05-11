@@ -109,6 +109,18 @@ export function resolveInitialPrimaryEnvironmentDescriptor(): Promise<ExecutionE
   });
 }
 
+// Used by the WSL backend swap: bypass the cached descriptor and re-fetch
+// against the (potentially new) backend at the same URL.
+export function refreshPrimaryEnvironmentDescriptor(): Promise<ExecutionEnvironmentDescriptor> {
+  const nextPromise = fetchPrimaryEnvironmentDescriptor();
+  primaryEnvironmentDescriptorPromise = nextPromise;
+  return nextPromise.finally(() => {
+    if (primaryEnvironmentDescriptorPromise === nextPromise) {
+      primaryEnvironmentDescriptorPromise = null;
+    }
+  });
+}
+
 export function __resetPrimaryEnvironmentBootstrapForTests(): void {
   primaryEnvironmentDescriptorPromise = null;
   usePrimaryEnvironmentBootstrapStore.getState().reset();

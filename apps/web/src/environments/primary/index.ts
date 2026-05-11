@@ -1,6 +1,7 @@
 export {
   getPrimaryKnownEnvironment,
   readPrimaryEnvironmentDescriptor,
+  refreshPrimaryEnvironmentDescriptor,
   resetPrimaryEnvironmentDescriptorForTests,
   resolveInitialPrimaryEnvironmentDescriptor,
   usePrimaryEnvironmentId,
@@ -20,6 +21,7 @@ export {
   listServerClientSessions,
   listServerPairingLinks,
   peekPairingTokenFromUrl,
+  reauthenticatePrimaryEnvironment,
   resolveInitialServerAuthGateState,
   revokeOtherServerClientSessions,
   revokeServerClientSession,
