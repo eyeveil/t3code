@@ -14,8 +14,10 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
+import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
+import * as Result from "effect/Result";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import {
   canCheckForUpdate,
@@ -1143,7 +1145,12 @@ export function ProviderSettingsPanel() {
     nextFavoriteModels: ReadonlyArray<string>,
   ) => {
     const favoriteModels = [
-      ...new Set(nextFavoriteModels.map((slug) => slug.trim()).filter((slug) => slug.length > 0)),
+      ...new Set(
+        Arr.filterMap(nextFavoriteModels, (slug) => {
+          const trimmedSlug = slug.trim();
+          return trimmedSlug.length > 0 ? Result.succeed(trimmedSlug) : Result.failVoid;
+        }),
+      ),
     ];
     updateSettings({
       favorites: [
@@ -1249,9 +1256,9 @@ export function ProviderSettingsPanel() {
             hiddenModels: [],
             modelOrder: [],
           };
-          const favoriteModels = (settings.favorites ?? [])
-            .filter((favorite) => favorite.provider === row.instanceId)
-            .map((favorite) => favorite.model);
+          const favoriteModels = Arr.filterMap(settings.favorites ?? [], (favorite) =>
+            favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
+          );
           const resetLabel = driverOption?.label ?? String(row.driver);
           const headerAction =
             row.isDefault && row.isDirty ? (
