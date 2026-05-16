@@ -167,6 +167,7 @@ const RemoteHttpError = Schema.Struct({
 const decodeRemoteLaunchResult = Schema.decodeEffect(fromLenientJson(RemoteLaunchResult));
 const decodeRemotePairingResult = Schema.decodeEffect(fromLenientJson(RemotePairingResult));
 const decodeRemoteHttpError = Schema.decodeEffect(Schema.fromJsonString(RemoteHttpError));
+const isSshReadinessError = Schema.is(SshReadinessError);
 
 const decodeRemoteJsonOutput = <A, E>(
   stdout: string,
@@ -237,7 +238,7 @@ function applyScriptPlaceholders(
 }
 
 export function describeReadinessCause(cause: unknown): unknown {
-  if (cause instanceof SshReadinessError) {
+  if (isSshReadinessError(cause)) {
     return {
       _tag: cause._tag,
       message: cause.message,
@@ -925,7 +926,7 @@ export const waitForHttpReady = Effect.fn("ssh/tunnel.waitForHttpReady")(functio
         });
       }).pipe(
         Effect.mapError((cause) =>
-          cause instanceof SshReadinessError
+          isSshReadinessError(cause)
             ? cause
             : new SshReadinessError({
                 message: `Backend readiness probe failed at ${requestUrl}.`,
@@ -946,7 +947,7 @@ export const waitForHttpReady = Effect.fn("ssh/tunnel.waitForHttpReady")(functio
 
   const result = yield* readinessClient.execute(HttpClientRequest.get(requestUrl)).pipe(
     Effect.mapError((cause) =>
-      cause instanceof SshReadinessError
+      isSshReadinessError(cause)
         ? cause
         : new SshReadinessError({
             message: `Backend readiness probe failed at ${requestUrl}.`,
