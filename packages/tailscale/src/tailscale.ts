@@ -218,7 +218,7 @@ const runTailscaleCommand = (
     readonly runMessage: string;
     readonly exitMessage: (exitCode: number) => string;
     readonly timeoutMessage: string;
-    readonly timeout: Duration.DurationInput;
+    readonly timeout: Duration.Input;
   },
 ): Effect.Effect<void, TailscaleCommandError, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
@@ -299,7 +299,7 @@ export const disableTailscaleServe = (
 
 export const probeTailscaleHttpsEndpoint = (input: {
   readonly baseUrl: string;
-  readonly timeout?: Duration.DurationInput;
+  readonly timeout?: Duration.Input;
 }): Effect.Effect<boolean, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
