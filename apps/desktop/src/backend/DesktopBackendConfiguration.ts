@@ -1,3 +1,5 @@
+import * as NodeOS from "node:os";
+
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -216,6 +218,21 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
   return { _tag: "Ready", linuxEntryPath: linuxEntry.value } as const;
 });
 
+// True when the given IPv4 belongs to a Windows-side network
+// interface. In WSL2 mirrored mode the distro's eth0 IP equals the
+// host's, which is the signature we use to detect that mode and
+// switch the renderer URL to loopback.
+const isLocalHostIpv4 = (ip: string): boolean => {
+  const interfaces = NodeOS.networkInterfaces();
+  for (const list of Object.values(interfaces)) {
+    if (!list) continue;
+    for (const entry of list) {
+      if (entry.family === "IPv4" && entry.address === ip) return true;
+    }
+  }
+  return false;
+};
+
 const buildObservabilityFragment = (observabilitySettings: BackendObservabilitySettings) => ({
   ...Option.match(observabilitySettings.otlpTracesUrl, {
     onNone: () => ({}),
@@ -303,8 +320,22 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
   // 127.0.0.1 + wslhost forwarding when the IP probe fails: that
   // gives us the same behavior as before this change, so a missing
   // WSL setup doesn't regress instead of just degrading.
+  //
+  // In mirrored mode (`networkingMode=mirrored` in .wslconfig) the
+  // distro shares the Windows network stack, so `hostname -I` returns
+  // the Windows host's IP (e.g. 192.168.0.64). Windows can't route a
+  // packet to its own NIC address and have it loop back to a WSL
+  // listener — it just times out. Loopback DOES work in mirrored mode,
+  // though, so detect this case by checking whether the distro IP
+  // matches one of our own interfaces and fall back to 127.0.0.1.
   const distroIp = yield* wslEnvironment.getDistroIp(input.distro);
-  const rendererHost = Option.getOrElse(distroIp, () => "127.0.0.1");
+  const usesSharedNetworkStack = Option.match(distroIp, {
+    onNone: () => false,
+    onSome: (ip) => isLocalHostIpv4(ip),
+  });
+  const rendererHost = usesSharedNetworkStack
+    ? "127.0.0.1"
+    : Option.getOrElse(distroIp, () => "127.0.0.1");
   const httpBaseUrl = new URL(`http://${rendererHost}:${input.port}`);
 
   const bootstrap = {
