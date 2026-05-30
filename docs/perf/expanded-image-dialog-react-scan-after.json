@@ -1,0 +1,8 @@
+{
+  "hasReactScan": true,
+  "summary": "Profiler commits: 3 total (1 mount, 2 update), last 1.30ms",
+  "report": {
+    "reactScanReport": null,
+    "renderEvents": []
+  }
+}

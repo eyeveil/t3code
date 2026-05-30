@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -8,52 +8,80 @@ interface ExpandedImageDialogProps {
   onClose: () => void;
 }
 
-export const ExpandedImageDialog = memo(function ExpandedImageDialog({
-  preview: initialPreview,
-  onClose,
-}: ExpandedImageDialogProps) {
-  const [preview, setPreview] = useState(initialPreview);
+export function ExpandedImageDialog({ preview, onClose }: ExpandedImageDialogProps) {
+  return (
+    <ExpandedImageDialogContent
+      key={getPreviewResetKey(preview)}
+      preview={preview}
+      onClose={onClose}
+    />
+  );
+}
 
-  // Sync when the parent hands us a new preview reference.
-  useEffect(() => {
-    setPreview(initialPreview);
-  }, [initialPreview]);
+function getPreviewResetKey(preview: ExpandedImagePreview): string {
+  return [
+    preview.index,
+    preview.images.length,
+    ...preview.images.map((image) => `${image.src}\u0000${image.name}`),
+  ].join("\u0001");
+}
 
-  const navigateImage = useCallback((direction: -1 | 1) => {
-    setPreview((existing) => {
-      if (existing.images.length <= 1) return existing;
-      const nextIndex =
-        (existing.index + direction + existing.images.length) % existing.images.length;
-      if (nextIndex === existing.index) return existing;
-      return { ...existing, index: nextIndex };
-    });
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-        return;
-      }
-      if (preview.images.length <= 1) return;
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        event.stopPropagation();
-        navigateImage(-1);
-        return;
-      }
-      if (event.key !== "ArrowRight") return;
+function useExpandedImageKeyboardShortcuts(input: {
+  readonly canNavigate: boolean;
+  readonly onClose: () => void;
+  readonly onNext: () => void;
+  readonly onPrevious: () => void;
+}) {
+  const handleKeyDown = useEffectEvent((event: globalThis.KeyboardEvent) => {
+    if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      navigateImage(1);
-    };
+      input.onClose();
+      return;
+    }
+    if (!input.canNavigate) return;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      event.stopPropagation();
+      input.onPrevious();
+      return;
+    }
+    if (event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    input.onNext();
+  });
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => handleKeyDown(event);
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigateImage, onClose, preview.images.length]);
+  }, []);
+}
 
-  const item = preview.images[preview.index];
+function ExpandedImageDialogContent({ preview, onClose }: ExpandedImageDialogProps) {
+  const [currentIndex, setCurrentIndex] = useState(preview.index);
+  const images = preview.images;
+  const canNavigate = images.length > 1;
+
+  const navigateImage = (direction: -1 | 1) => {
+    setCurrentIndex((existingIndex) => {
+      if (!canNavigate) return existingIndex;
+      const safeExistingIndex =
+        existingIndex >= 0 && existingIndex < images.length ? existingIndex : preview.index;
+      const nextIndex = (safeExistingIndex + direction + images.length) % images.length;
+      return nextIndex === existingIndex ? existingIndex : nextIndex;
+    });
+  };
+
+  useExpandedImageKeyboardShortcuts({
+    canNavigate,
+    onClose,
+    onNext: () => navigateImage(1),
+    onPrevious: () => navigateImage(-1),
+  });
+
+  const item = images[currentIndex];
   if (!item) return null;
 
   return (
@@ -69,7 +97,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         aria-label="Close image preview"
         onClick={onClose}
       />
-      {preview.images.length > 1 && (
+      {canNavigate && (
         <Button
           type="button"
           size="icon"
@@ -100,10 +128,10 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
         />
         <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">
           {item.name}
-          {preview.images.length > 1 ? ` (${preview.index + 1}/${preview.images.length})` : ""}
+          {canNavigate ? ` (${currentIndex + 1}/${images.length})` : ""}
         </p>
       </div>
-      {preview.images.length > 1 && (
+      {canNavigate && (
         <Button
           type="button"
           size="icon"
@@ -117,4 +145,4 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
       )}
     </div>
   );
-});
+}
