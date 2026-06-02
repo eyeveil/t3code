@@ -1,10 +1,12 @@
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
+import { createManagedRelaySession, setManagedRelaySession } from "@t3tools/client-runtime";
 import Constants from "expo-constants";
 import { type ReactNode, useEffect, useRef } from "react";
 import { RELAY_CLERK_TOKEN_OPTIONS } from "@t3tools/shared/relayAuth";
 
 import { mobileRuntime } from "../../lib/runtime";
+import { appAtomRegistry } from "../../state/atom-registry";
 import {
   setAgentAwarenessRelayTokenProvider,
   unregisterAgentAwarenessDeviceForCurrentUser,
@@ -38,6 +40,7 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
           .catch(() => undefined);
       }
       setAgentAwarenessRelayTokenProvider(null);
+      setManagedRelaySession(appAtomRegistry, null);
       return;
     }
 
@@ -50,6 +53,13 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
     const tokenProvider = () => getToken(RELAY_CLERK_TOKEN_OPTIONS);
     previousTokenProviderRef.current = { userId, provider: tokenProvider };
     setAgentAwarenessRelayTokenProvider(tokenProvider, userId);
+    setManagedRelaySession(
+      appAtomRegistry,
+      createManagedRelaySession({
+        accountId: userId,
+        readClerkToken: tokenProvider,
+      }),
+    );
     if (!previous || previous.userId !== userId) {
       void mobileRuntime
         .runPromise(refreshActiveLiveActivityRemoteRegistration())
@@ -61,6 +71,7 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
     () => () => {
       previousTokenProviderRef.current = null;
       setAgentAwarenessRelayTokenProvider(null);
+      setManagedRelaySession(appAtomRegistry, null);
     },
     [],
   );
@@ -74,6 +85,7 @@ export function CloudAuthProvider(props: { readonly children: ReactNode }) {
   useEffect(() => {
     if (!publishableKey) {
       setAgentAwarenessRelayTokenProvider(null);
+      setManagedRelaySession(appAtomRegistry, null);
     }
   }, [publishableKey]);
 

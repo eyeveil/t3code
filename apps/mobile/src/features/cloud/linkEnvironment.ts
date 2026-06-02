@@ -547,6 +547,7 @@ export function connectCloudEnvironment(input: {
       bearerToken: null,
       authenticationMethod: "dpop",
       dpopAccessToken: bootstrap.access_token,
+      relayManaged: true,
     };
   });
 }

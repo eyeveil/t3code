@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { mobileAuthClientMetadata, redactPairingCredential } from "./connection";
+import {
+  isRelayManagedConnection,
+  mobileAuthClientMetadata,
+  redactPairingCredential,
+} from "./connection";
 
 vi.mock("./runtime", () => ({
   mobileRuntime: {
@@ -38,5 +42,14 @@ describe("mobile remote connection records", () => {
         "https://app.t3.codes/pair?host=https%3A%2F%2Fdesktop.example&token=bootstrap-token&label=Desktop",
       ),
     ).toBe("https://app.t3.codes/pair?host=https%3A%2F%2Fdesktop.example&label=Desktop");
+  });
+
+  it("recognizes explicitly managed relay connections", () => {
+    expect(isRelayManagedConnection({ relayManaged: true })).toBe(true);
+  });
+
+  it("keeps existing DPoP tunnel records read-only after upgrading", () => {
+    expect(isRelayManagedConnection({ authenticationMethod: "dpop" })).toBe(true);
+    expect(isRelayManagedConnection({ authenticationMethod: "bearer" })).toBe(false);
   });
 });

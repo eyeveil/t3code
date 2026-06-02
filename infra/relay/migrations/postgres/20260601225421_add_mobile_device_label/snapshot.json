@@ -1,8 +1,8 @@
 {
-  "version": "8",
   "dialect": "postgres",
-  "id": "ad620f05-3fd1-43b8-a3ca-d4c02543d892",
-  "prevIds": ["00000000-0000-0000-0000-000000000000"],
+  "id": "e189638b-4700-4656-b86e-d8baa63f5fe4",
+  "prevIds": ["ad620f05-3fd1-43b8-a3ca-d4c02543d892"],
+  "version": "8",
   "ddl": [
     {
       "isRlsEnabled": false,
@@ -783,6 +783,19 @@
       "generated": null,
       "identity": null,
       "name": "device_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "relay_mobile_devices"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'iOS device'",
+      "generated": null,
+      "identity": null,
+      "name": "label",
       "entityType": "columns",
       "schema": "public",
       "table": "relay_mobile_devices"

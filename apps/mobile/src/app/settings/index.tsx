@@ -13,6 +13,7 @@ import { AppText as Text } from "../../components/AppText";
 import { setLiveActivityUpdatesEnabled } from "../../features/agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../../features/agent-awareness/notificationPermissions";
 import { refreshAgentAwarenessRegistration } from "../../features/agent-awareness/remoteRegistration";
+import { refreshManagedRelayEnvironments } from "../../features/cloud/managedRelayState";
 import { mobileRuntime } from "../../lib/runtime";
 import { loadPreferences } from "../../lib/storage";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -151,6 +152,7 @@ export default function SettingsRouteScreen() {
           connections,
         }),
       );
+      refreshManagedRelayEnvironments();
       setLiveActivityStatus("enabled");
       Alert.alert(
         "Live Activities enabled",
@@ -200,6 +202,7 @@ export default function SettingsRouteScreen() {
                 connections,
               }),
             );
+            refreshManagedRelayEnvironments();
           } catch {
             // The switch is optimistic; a future refresh reconciles relay state.
           }

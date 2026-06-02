@@ -2,20 +2,19 @@ import { useAuth } from "@clerk/expo";
 import { Link, Stack } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import type { EnvironmentId } from "@t3tools/contracts";
+import type { RelayClientEnvironmentRecord } from "@t3tools/contracts/relay";
 import { RELAY_CLERK_TOKEN_OPTIONS } from "@t3tools/shared/relayAuth";
 import * as Effect from "effect/Effect";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/AppText";
+import { connectCloudEnvironment } from "../../features/cloud/linkEnvironment";
 import {
-  cloudEnvironmentsPendingStatus,
-  type CloudEnvironmentRecordWithStatus,
-  connectCloudEnvironment,
-  listCloudEnvironments,
-  loadCloudEnvironmentStatuses,
-} from "../../features/cloud/linkEnvironment";
+  useManagedRelayEnvironments,
+  useManagedRelayEnvironmentStatus,
+} from "../../features/cloud/managedRelayState";
 import { ConnectionEnvironmentRow } from "../../features/connection/ConnectionEnvironmentRow";
 import { cn } from "../../lib/cn";
 import { mobileRuntime } from "../../lib/runtime";
@@ -27,9 +26,7 @@ import {
 } from "../../state/use-remote-environment-registry";
 
 export default function SettingsEnvironmentsRouteScreen() {
-  const { getToken, isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
-  const getTokenRef = useRef(getToken);
-  getTokenRef.current = getToken;
+  const { getToken, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
   const {
     connectedEnvironments,
     onReconnectEnvironment,
@@ -40,11 +37,7 @@ export default function SettingsEnvironmentsRouteScreen() {
   const insets = useSafeAreaInsets();
   const hasEnvironments = connectedEnvironments.length > 0;
   const [expandedId, setExpandedId] = useState<EnvironmentId | null>(null);
-  const [cloudEnvironments, setCloudEnvironments] = useState<
-    ReadonlyArray<CloudEnvironmentRecordWithStatus>
-  >([]);
-  const [cloudStatus, setCloudStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [cloudError, setCloudError] = useState<string | null>(null);
+  const cloudEnvironmentsState = useManagedRelayEnvironments();
   const [connectingCloudEnvironmentId, setConnectingCloudEnvironmentId] = useState<string | null>(
     null,
   );
@@ -58,53 +51,15 @@ export default function SettingsEnvironmentsRouteScreen() {
 
   const availableCloudEnvironments = useMemo(
     () =>
-      cloudEnvironments.filter(
-        (record) => savedConnectionsById[record.environment.environmentId] === undefined,
+      (cloudEnvironmentsState.data ?? []).filter(
+        (environment) => savedConnectionsById[environment.environmentId] === undefined,
       ),
-    [cloudEnvironments, savedConnectionsById],
+    [cloudEnvironmentsState.data, savedConnectionsById],
   );
 
-  const refreshCloudEnvironments = useCallback(async () => {
-    if (!isLoaded || !isSignedIn) {
-      setCloudEnvironments([]);
-      setCloudStatus("idle");
-      setCloudError(null);
-      return;
-    }
-
-    setCloudStatus("loading");
-    setCloudError(null);
-    try {
-      const token = await getTokenRef.current(RELAY_CLERK_TOKEN_OPTIONS);
-      if (!token) {
-        setCloudEnvironments([]);
-        setCloudStatus("idle");
-        return;
-      }
-      const environments = await mobileRuntime.runPromise(
-        listCloudEnvironments({ clerkToken: token }),
-      );
-      setCloudEnvironments(cloudEnvironmentsPendingStatus(environments));
-      const records = await mobileRuntime.runPromise(
-        loadCloudEnvironmentStatuses({ clerkToken: token, environments }),
-      );
-      setCloudEnvironments(records);
-      setCloudStatus("idle");
-    } catch (error) {
-      setCloudStatus("error");
-      setCloudError(
-        error instanceof Error ? error.message : "Could not load T3 Cloud environments.",
-      );
-    }
-  }, [isLoaded, isSignedIn]);
-
-  useEffect(() => {
-    void refreshCloudEnvironments();
-  }, [refreshCloudEnvironments]);
-
   const handleConnectCloudEnvironment = useCallback(
-    async (record: CloudEnvironmentRecordWithStatus) => {
-      setConnectingCloudEnvironmentId(record.environment.environmentId);
+    async (environment: RelayClientEnvironmentRecord) => {
+      setConnectingCloudEnvironmentId(environment.environmentId);
       try {
         const token = await getToken(RELAY_CLERK_TOKEN_OPTIONS);
         if (!token) {
@@ -113,13 +68,8 @@ export default function SettingsEnvironmentsRouteScreen() {
         await mobileRuntime.runPromise(
           connectCloudEnvironment({
             clerkToken: token,
-            environment: record.environment,
+            environment,
           }).pipe(Effect.flatMap(connectSavedEnvironment)),
-        );
-        setCloudEnvironments((records) =>
-          records.filter(
-            (candidate) => candidate.environment.environmentId !== record.environment.environmentId,
-          ),
         );
       } catch (error) {
         Alert.alert(
@@ -214,11 +164,11 @@ export default function SettingsEnvironmentsRouteScreen() {
               </Text>
               <Pressable
                 accessibilityRole="button"
-                disabled={cloudStatus === "loading"}
-                onPress={refreshCloudEnvironments}
+                disabled={cloudEnvironmentsState.isPending}
+                onPress={cloudEnvironmentsState.refresh}
                 className="h-9 w-9 items-center justify-center rounded-full bg-subtle active:opacity-70 disabled:opacity-50"
               >
-                {cloudStatus === "loading" ? (
+                {cloudEnvironmentsState.isPending ? (
                   <ActivityIndicator color={iconColor} size="small" />
                 ) : (
                   <SymbolView
@@ -233,17 +183,17 @@ export default function SettingsEnvironmentsRouteScreen() {
 
             {availableCloudEnvironments.length > 0 ? (
               <View collapsable={false} className="overflow-hidden rounded-[24px] bg-card">
-                {availableCloudEnvironments.map((record, index) => (
+                {availableCloudEnvironments.map((environment, index) => (
                   <CloudEnvironmentRow
-                    key={record.environment.environmentId}
-                    record={record}
+                    key={environment.environmentId}
+                    environment={environment}
                     borderTop={index !== 0}
-                    isConnecting={connectingCloudEnvironmentId === record.environment.environmentId}
-                    onConnect={() => handleConnectCloudEnvironment(record)}
+                    isConnecting={connectingCloudEnvironmentId === environment.environmentId}
+                    onConnect={() => handleConnectCloudEnvironment(environment)}
                   />
                 ))}
               </View>
-            ) : cloudStatus === "loading" ? (
+            ) : cloudEnvironmentsState.data === null ? (
               <View
                 collapsable={false}
                 className="items-center gap-3 rounded-[24px] bg-card px-6 py-6"
@@ -253,13 +203,13 @@ export default function SettingsEnvironmentsRouteScreen() {
                   Loading linked cloud environments.
                 </Text>
               </View>
-            ) : cloudStatus === "error" ? (
+            ) : cloudEnvironmentsState.error ? (
               <View collapsable={false} className="gap-3 rounded-[24px] bg-card px-5 py-5">
                 <Text className="text-[15px] font-t3-bold text-foreground">
                   Could not load T3 Cloud environments
                 </Text>
                 <Text className="text-[13px] leading-[18px] text-foreground-muted">
-                  {cloudError}
+                  {cloudEnvironmentsState.error}
                 </Text>
               </View>
             ) : (
@@ -277,17 +227,18 @@ export default function SettingsEnvironmentsRouteScreen() {
 }
 
 function CloudEnvironmentRow(props: {
-  readonly record: CloudEnvironmentRecordWithStatus;
+  readonly environment: RelayClientEnvironmentRecord;
   readonly borderTop: boolean;
   readonly isConnecting: boolean;
   readonly onConnect: () => void;
 }) {
   const mutedColor = useThemeColor("--color-icon-muted");
-  const { environment, status, statusError } = props.record;
+  const statusState = useManagedRelayEnvironmentStatus(props.environment);
+  const status = statusState.data;
   const disabled = props.isConnecting;
   const statusText =
     status === null
-      ? (statusError ?? "Status unavailable")
+      ? (statusState.error ?? (statusState.isPending ? "Checking status..." : "Status unavailable"))
       : status.status === "online"
         ? "Online"
         : (status.error ?? "Offline");
@@ -311,10 +262,10 @@ function CloudEnvironmentRow(props: {
       </View>
       <View className="min-w-0 flex-1 gap-0.5">
         <Text className="text-[16px] font-t3-bold leading-[21px] text-foreground" numberOfLines={1}>
-          {environment.label}
+          {props.environment.label}
         </Text>
         <Text className="text-[12px] leading-[16px] text-foreground-muted" numberOfLines={1}>
-          {environment.endpoint.httpBaseUrl}
+          {props.environment.endpoint.httpBaseUrl}
         </Text>
         <Text className="text-[12px] leading-[16px] text-foreground-muted" numberOfLines={1}>
           {statusText}

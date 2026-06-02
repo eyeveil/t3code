@@ -574,7 +574,9 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await expect.element(page.getByText("Manage local backend")).toBeInTheDocument();
+    await expect
+      .element(page.getByRole("heading", { name: "This environment", exact: true }))
+      .toBeInTheDocument();
     await expect.element(page.getByLabelText("Enable network access")).toBeDisabled();
     await expect
       .element(

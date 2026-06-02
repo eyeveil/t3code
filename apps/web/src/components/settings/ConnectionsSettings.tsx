@@ -69,11 +69,13 @@ import {
 } from "../ui/alert-dialog";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { QRCodeSvg } from "../ui/qr-code";
+import { Skeleton } from "../ui/skeleton";
 import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Group, GroupSeparator } from "../ui/group";
 import { AnimatedHeight } from "../AnimatedHeight";
 import {
@@ -94,6 +96,7 @@ import {
   revokeServerClientSession,
   revokeServerPairingLink,
   isLoopbackHostname,
+  usePrimaryEnvironmentId,
   usePrimarySessionState,
   type ServerClientSessionRecord,
   type ServerPairingLinkRecord,
@@ -117,10 +120,13 @@ import { useServerConfig } from "~/rpc/serverState";
 import {
   connectManagedCloudEnvironment,
   linkPrimaryEnvironmentToCloud,
-  listManagedCloudEnvironments,
-  readPrimaryCloudLinkState,
   unlinkPrimaryEnvironmentFromCloud,
 } from "~/cloud/linkEnvironment";
+import {
+  refreshManagedRelayEnvironments,
+  useManagedRelayEnvironments,
+} from "~/cloud/managedRelayState";
+import { usePrimaryCloudLinkState } from "~/cloud/primaryCloudLinkState";
 import { webRuntime } from "~/lib/runtime";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
@@ -1598,34 +1604,44 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
   );
 });
 
+function CloudLinkSwitch({
+  checked,
+  disabled,
+  disabledReason,
+  onCheckedChange,
+}: {
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly disabledReason: string | null;
+  readonly onCheckedChange?: (enabled: boolean) => void;
+}) {
+  const control = (
+    <Switch
+      aria-label="Enable T3 Cloud"
+      checked={checked}
+      disabled={disabled}
+      {...(onCheckedChange ? { onCheckedChange } : {})}
+    />
+  );
+  return disabledReason ? (
+    <Tooltip>
+      <TooltipTrigger render={<span className="inline-flex">{control}</span>} />
+      <TooltipPopup side="top">{disabledReason}</TooltipPopup>
+    </Tooltip>
+  ) : (
+    control
+  );
+}
+
 function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: boolean }) {
   const { getToken, isSignedIn } = useAuth();
-  const [linked, setLinked] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(() => {
-    setIsLoading(true);
-    void webRuntime.runPromise(readPrimaryCloudLinkState()).then(
-      (state) => {
-        setLinked(state?.linked ?? false);
-        setError(null);
-        setIsLoading(false);
-      },
-      (cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Could not read T3 Cloud link state.");
-        setIsLoading(false);
-      },
-    );
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  const primaryCloudLinkState = usePrimaryCloudLinkState();
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   const updateLink = async (enabled: boolean) => {
-    setIsLoading(true);
-    setError(null);
+    setIsUpdating(true);
+    setOperationError(null);
     try {
       const clerkToken = await getToken(RELAY_CLERK_TOKEN_OPTIONS);
       if (enabled) {
@@ -1638,7 +1654,8 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
           unlinkPrimaryEnvironmentFromCloud({ clerkToken: clerkToken ?? null }),
         );
       }
-      setLinked(enabled);
+      primaryCloudLinkState.refresh();
+      refreshManagedRelayEnvironments();
       toastManager.add({
         type: "success",
         title: enabled ? "T3 Cloud linked" : "T3 Cloud unlinked",
@@ -1648,27 +1665,32 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
       });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Could not update T3 Cloud access.";
-      setError(message);
+      setOperationError(message);
       toastManager.add({
         type: "error",
         title: "Could not update T3 Cloud",
         description: message,
       });
     } finally {
-      setIsLoading(false);
+      setIsUpdating(false);
     }
   };
+  const disabledReason = !isSignedIn
+    ? "Sign in from T3 Cloud settings to manage this environment."
+    : !canManageRelay
+      ? "Your session does not have permission to manage T3 Cloud access."
+      : null;
 
   return (
     <SettingsRow
       title="T3 Cloud"
       description="Make this environment available through your T3 Cloud account."
-      status={error ?? (linked ? "Linked" : "Not linked")}
+      status={operationError ?? primaryCloudLinkState.error}
       control={
-        <Switch
-          aria-label="Enable T3 Cloud"
-          checked={linked}
-          disabled={!canManageRelay || !isSignedIn || isLoading}
+        <CloudLinkSwitch
+          checked={primaryCloudLinkState.data?.linked ?? false}
+          disabled={!canManageRelay || !isSignedIn || primaryCloudLinkState.isPending || isUpdating}
+          disabledReason={disabledReason}
           onCheckedChange={(enabled) => void updateLink(enabled)}
         />
       }
@@ -1683,46 +1705,61 @@ function CloudLinkRow({ canManageRelay }: { readonly canManageRelay: boolean }) 
     <SettingsRow
       title="T3 Cloud"
       description="Make this environment available through your T3 Cloud account."
-      status="Cloud is not configured in this build."
-      control={<Switch aria-label="Enable T3 Cloud" checked={false} disabled />}
+      control={
+        <CloudLinkSwitch
+          checked={false}
+          disabled
+          disabledReason="T3 Cloud is not configured in this build."
+        />
+      }
     />
   );
 }
 
+function EmptyRemoteEnvironments() {
+  return (
+    <Empty className="min-h-52">
+      <EmptyMedia variant="icon">
+        <ChevronsLeftRightEllipsisIcon />
+      </EmptyMedia>
+      <EmptyHeader>
+        <EmptyTitle>No saved remote environments</EmptyTitle>
+        <EmptyDescription>
+          Click &ldquo;Add environment&rdquo; to pair another environment, or connect one from T3
+          Cloud.
+        </EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  );
+}
+
+function RemoteEnvironmentRowsSkeleton() {
+  return (
+    <div className={ITEM_ROW_CLASSNAME}>
+      <div className={ITEM_ROW_INNER_CLASSNAME}>
+        <div className="min-w-0 flex-1 space-y-2">
+          <Skeleton className="h-4 w-32 rounded-full" />
+          <Skeleton className="h-3 w-20 rounded-full" />
+        </div>
+        <Skeleton className="h-7 w-16 rounded-md" />
+      </div>
+    </div>
+  );
+}
+
 function ConfiguredCloudRemoteEnvironmentRows({
+  primaryEnvironmentId,
   savedEnvironmentIds,
 }: {
+  readonly primaryEnvironmentId: EnvironmentId | null;
   readonly savedEnvironmentIds: ReadonlyArray<EnvironmentId>;
 }) {
-  const { getToken, isSignedIn } = useAuth();
-  const [environments, setEnvironments] = useState<ReadonlyArray<RelayClientEnvironmentRecord>>([]);
+  const { getToken } = useAuth();
+  const environmentsState = useManagedRelayEnvironments();
   const [connectingEnvironmentId, setConnectingEnvironmentId] = useState<EnvironmentId | null>(
     null,
   );
   const savedIds = useMemo(() => new Set(savedEnvironmentIds), [savedEnvironmentIds]);
-
-  useEffect(() => {
-    if (!isSignedIn) {
-      setEnvironments([]);
-      return;
-    }
-    let cancelled = false;
-    void getToken(RELAY_CLERK_TOKEN_OPTIONS)
-      .then((clerkToken) =>
-        clerkToken
-          ? webRuntime.runPromise(listManagedCloudEnvironments({ clerkToken }))
-          : Promise.resolve([]),
-      )
-      .then((next) => {
-        if (!cancelled) setEnvironments(next);
-      })
-      .catch(() => {
-        if (!cancelled) setEnvironments([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [getToken, isSignedIn]);
 
   const connectEnvironment = async (environment: RelayClientEnvironmentRecord) => {
     setConnectingEnvironmentId(environment.environmentId);
@@ -1752,45 +1789,65 @@ function ConfiguredCloudRemoteEnvironmentRows({
     }
   };
 
-  return environments
-    .filter((environment) => !savedIds.has(environment.environmentId))
-    .map((environment) => (
-      <div key={environment.environmentId} className={ITEM_ROW_CLASSNAME}>
-        <div className={ITEM_ROW_INNER_CLASSNAME}>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <ConnectionStatusDot
-                dotClassName="bg-muted-foreground/35"
-                tooltipText="Available through T3 Cloud"
-              />
-              <p className="truncate text-sm font-medium">{environment.label}</p>
-            </div>
-            <p className="mt-1 truncate text-xs text-muted-foreground">T3 Cloud</p>
+  const connectableEnvironments = (environmentsState.data ?? []).filter(
+    (environment) =>
+      environment.environmentId !== primaryEnvironmentId &&
+      !savedIds.has(environment.environmentId),
+  );
+
+  if (savedEnvironmentIds.length === 0 && environmentsState.data === null) {
+    return <RemoteEnvironmentRowsSkeleton />;
+  }
+
+  if (savedEnvironmentIds.length === 0 && connectableEnvironments.length === 0) {
+    return <EmptyRemoteEnvironments />;
+  }
+
+  return connectableEnvironments.map((environment) => (
+    <div key={environment.environmentId} className={ITEM_ROW_CLASSNAME}>
+      <div className={ITEM_ROW_INNER_CLASSNAME}>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <ConnectionStatusDot
+              dotClassName="bg-muted-foreground/35"
+              tooltipText="Available through T3 Cloud"
+            />
+            <p className="truncate text-sm font-medium">{environment.label}</p>
           </div>
-          <Button
-            size="sm"
-            disabled={connectingEnvironmentId !== null}
-            onClick={() => void connectEnvironment(environment)}
-          >
-            {connectingEnvironmentId === environment.environmentId ? "Connecting…" : "Connect"}
-          </Button>
+          <p className="mt-1 truncate text-xs text-muted-foreground">T3 Cloud</p>
         </div>
+        <Button
+          size="sm"
+          disabled={connectingEnvironmentId !== null}
+          onClick={() => void connectEnvironment(environment)}
+        >
+          {connectingEnvironmentId === environment.environmentId ? "Connecting…" : "Connect"}
+        </Button>
       </div>
-    ));
+    </div>
+  ));
 }
 
 function CloudRemoteEnvironmentRows({
+  primaryEnvironmentId,
   savedEnvironmentIds,
 }: {
+  readonly primaryEnvironmentId: EnvironmentId | null;
   readonly savedEnvironmentIds: ReadonlyArray<EnvironmentId>;
 }) {
   return hasCloudConfig() ? (
-    <ConfiguredCloudRemoteEnvironmentRows savedEnvironmentIds={savedEnvironmentIds} />
+    <ConfiguredCloudRemoteEnvironmentRows
+      primaryEnvironmentId={primaryEnvironmentId}
+      savedEnvironmentIds={savedEnvironmentIds}
+    />
+  ) : savedEnvironmentIds.length === 0 ? (
+    <EmptyRemoteEnvironments />
   ) : null;
 }
 
 export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const primarySessionState = usePrimarySessionState();
   const currentSessionScopes = desktopBridge
     ? AuthAdministrativeScopes
@@ -2815,7 +2872,7 @@ export function ConnectionsSettings() {
     <SettingsPageContainer>
       {canManageLocalBackend ? (
         <>
-          <SettingsSection title="Manage local backend">
+          <SettingsSection title="This environment">
             {primaryVersionMismatch ? (
               <SettingsRow
                 title="Version drift"
@@ -3017,7 +3074,7 @@ export function ConnectionsSettings() {
           </Dialog>
         </>
       ) : (
-        <SettingsSection title="Local backend access">
+        <SettingsSection title="This environment">
           <SettingsRow
             title="Administrative access"
             description="Pairing links and client-session management require the access:write scope for this backend."
@@ -3102,16 +3159,10 @@ export function ConnectionsSettings() {
             onRemove={handleRemoveSavedBackend}
           />
         ))}
-        <CloudRemoteEnvironmentRows savedEnvironmentIds={savedEnvironmentIds} />
-
-        {savedEnvironmentIds.length === 0 ? (
-          <div className={ITEM_ROW_CLASSNAME}>
-            <p className="text-xs text-muted-foreground">
-              No saved remote environments yet. Click &ldquo;Add environment&rdquo; to pair another
-              environment.
-            </p>
-          </div>
-        ) : null}
+        <CloudRemoteEnvironmentRows
+          primaryEnvironmentId={primaryEnvironmentId}
+          savedEnvironmentIds={savedEnvironmentIds}
+        />
       </SettingsSection>
     </SettingsPageContainer>
   );

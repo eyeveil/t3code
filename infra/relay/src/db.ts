@@ -32,7 +32,7 @@ export const PlanetscaleDatabase = Effect.gen(function* () {
     inheritedRoles: ["pg_read_all_data", "pg_write_all_data"],
   });
 
-  return { database, runtimeRole, schema };
+  return { database, runtimeRole };
 });
 
 export const RelayHyperdrive = Effect.gen(function* () {

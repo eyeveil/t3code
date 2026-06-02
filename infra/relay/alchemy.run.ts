@@ -6,7 +6,6 @@ import * as Drizzle from "alchemy/Drizzle";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Planetscale from "alchemy/Planetscale";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 import { PlanetscaleDatabase, RelayHyperdrive } from "./src/db.ts";
 import { ManagedEndpointZone } from "./src/zone.ts";
@@ -20,7 +19,6 @@ export default Alchemy.Stack(
       Cloudflare.providers(),
       Drizzle.providers(),
       Planetscale.providers(),
-      FetchHttpClient.layer,
     ),
     state: Cloudflare.state(),
   },

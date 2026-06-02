@@ -23,7 +23,11 @@ import * as Order from "effect/Order";
 import * as Option from "effect/Option";
 import { pipe } from "effect/Function";
 import { Atom } from "effect/unstable/reactivity";
-import { type SavedRemoteConnection, bootstrapRemoteConnection } from "../lib/connection";
+import {
+  type SavedRemoteConnection,
+  bootstrapRemoteConnection,
+  isRelayManagedConnection,
+} from "../lib/connection";
 import { terminalDebugLog } from "../features/terminal/terminalDebugLog";
 import {
   clearCachedShellSnapshot,
@@ -444,6 +448,7 @@ function deriveConnectedEnvironments(
         environmentId: connection.environmentId,
         environmentLabel: connection.environmentLabel,
         displayUrl: connection.displayUrl,
+        isRelayManaged: isRelayManagedConnection(connection),
         connectionState: runtime?.connectionState ?? "idle",
         connectionError: runtime?.connectionError ?? null,
       };
@@ -612,7 +617,7 @@ export function useRemoteConnections() {
       updates: { readonly label: string; readonly displayUrl: string },
     ) => {
       const connection = getSavedConnectionsById()[environmentId];
-      if (!connection) {
+      if (!connection || isRelayManagedConnection(connection)) {
         return;
       }
 

@@ -78,7 +78,6 @@ CREATE TABLE "relay_live_activities" (
 CREATE TABLE "relay_mobile_devices" (
 	"user_id" varchar(255),
 	"device_id" varchar(255),
-	"label" text DEFAULT 'iOS device' NOT NULL,
 	"platform" varchar(16) NOT NULL,
 	"ios_major_version" integer NOT NULL,
 	"app_version" varchar(64),

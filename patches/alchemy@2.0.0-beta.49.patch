@@ -1,0 +1,356 @@
+diff --git a/bin/exec.js b/bin/exec.js
+index 9cd9f8059..8317c57be 100644
+--- a/bin/exec.js
++++ b/bin/exec.js
+@@ -366,6 +366,7 @@ const of = (resource) => {
+ const asOutput = (t) => isOutput(t) ? t : Effect.isEffect(t) ? new EffectExpr(VoidExpr, () => t) : new LiteralExpr(t);
+ const isOutput = (value) => value && (typeof value === "object" || typeof value === "function") && ExprSymbol in value;
+ const ExprSymbol = Symbol.for("alchemy/Expr");
++const exprKind = (node) => node?.[ExprSymbol]?.kind ?? node?.kind;
+ const isExpr = (value) => value && (typeof value === "object" || typeof value === "function") && ExprSymbol in value;
+ var BaseExpr = class {
+ 	constructor() {}
+@@ -389,7 +390,7 @@ var BaseExpr = class {
+ 		return this[inspect]();
+ 	}
+ };
+-const isResourceExpr = (node) => node?.kind === "ResourceExpr";
++const isResourceExpr = (node) => exprKind(node) === "ResourceExpr";
+ var ResourceExpr = class extends BaseExpr {
+ 	src;
+ 	stables;
+@@ -404,7 +405,7 @@ var ResourceExpr = class extends BaseExpr {
+ 		return this.src.LogicalId;
+ 	}
+ };
+-const isPropExpr = (node) => node?.kind === "PropExpr";
++const isPropExpr = (node) => exprKind(node) === "PropExpr";
+ var PropExpr = class extends BaseExpr {
+ 	expr;
+ 	identifier;
+@@ -419,7 +420,7 @@ var PropExpr = class extends BaseExpr {
+ 		return `${this.expr[inspect]()}.${this.identifier.toString()}`;
+ 	}
+ };
+-const isLiteralExpr = (node) => node?.kind === "LiteralExpr";
++const isLiteralExpr = (node) => exprKind(node) === "LiteralExpr";
+ var LiteralExpr = class extends BaseExpr {
+ 	value;
+ 	kind = "LiteralExpr";
+@@ -433,7 +434,7 @@ var LiteralExpr = class extends BaseExpr {
+ 	}
+ };
+ const VoidExpr = new LiteralExpr(void 0);
+-const isApplyExpr = (node) => node?.kind === "ApplyExpr";
++const isApplyExpr = (node) => exprKind(node) === "ApplyExpr";
+ var ApplyExpr = class extends BaseExpr {
+ 	expr;
+ 	f;
+@@ -448,7 +449,7 @@ var ApplyExpr = class extends BaseExpr {
+ 		return `${this.expr[inspect]()}.map(${this.f.toString()})`;
+ 	}
+ };
+-const isFlatMapExpr = (node) => node?.kind === "FlatMapExpr";
++const isFlatMapExpr = (node) => exprKind(node) === "FlatMapExpr";
+ var FlatMapExpr = class extends BaseExpr {
+ 	expr;
+ 	f;
+@@ -463,7 +464,7 @@ var FlatMapExpr = class extends BaseExpr {
+ 		return `${this.expr[inspect]()}.flatMap(${this.f.toString()})`;
+ 	}
+ };
+-const isEffectExpr = (node) => node?.kind === "EffectExpr";
++const isEffectExpr = (node) => exprKind(node) === "EffectExpr";
+ var EffectExpr = class extends BaseExpr {
+ 	expr;
+ 	f;
+@@ -478,7 +479,7 @@ var EffectExpr = class extends BaseExpr {
+ 		return `${this.expr[inspect]()}.mapEffect(${this.f.toString()})`;
+ 	}
+ };
+-const isNamedExpr = (node) => node?.kind === "NamedExpr";
++const isNamedExpr = (node) => exprKind(node) === "NamedExpr";
+ /**
+ * Wraps another `Expr` and overrides its `toString()` / inspect output.
+ *
+@@ -500,7 +501,7 @@ var NamedExpr = class extends BaseExpr {
+ 		return this.bindingName;
+ 	}
+ };
+-const isAllExpr = (node) => node?.kind === "AllExpr";
++const isAllExpr = (node) => exprKind(node) === "AllExpr";
+ var AllExpr = class extends BaseExpr {
+ 	outs;
+ 	kind = "AllExpr";
+@@ -513,7 +514,7 @@ var AllExpr = class extends BaseExpr {
+ 		return `all(${this.outs.map((out) => out[inspect]()).join(", ")})`;
+ 	}
+ };
+-const isRefExpr = (node) => node?.kind === "RefExpr";
++const isRefExpr = (node) => exprKind(node) === "RefExpr";
+ var RefExpr = class extends BaseExpr {
+ 	stack;
+ 	stage;
+@@ -530,7 +531,7 @@ var RefExpr = class extends BaseExpr {
+ 		return `ref(${this.resourceId}, { stack: ${this.stack}, stage: ${this.stage} })`;
+ 	}
+ };
+-const isStackRefExpr = (node) => node?.kind === "StackRefExpr";
++const isStackRefExpr = (node) => exprKind(node) === "StackRefExpr";
+ /**
+ * A reference to the persisted output of a Stack at `(stack, stage)`.
+ *
+diff --git a/lib/Drizzle/Schema.js b/lib/Drizzle/Schema.js
+index 95aa38b5d..963ec8534 100644
+--- a/lib/Drizzle/Schema.js
++++ b/lib/Drizzle/Schema.js
+@@ -99,11 +99,11 @@ export const SchemaProvider = () => Provider.effect(Schema, Effect.gen(function*
+         const dialect = props.dialect ?? "postgres";
+         const kit = yield* loadKit(dialect);
+         const schemaModule = yield* loadSchemaModule(props);
++        const prevEntry = yield* readLatestSnapshot(out);
+         const cur = yield* Effect.tryPromise({
+-            try: () => kit.generateDrizzleJson(schemaModule),
++            try: () => kit.generateDrizzleJson(schemaModule, prevEntry?.snapshot?.id),
+             catch: (cause) => new Error(`drizzle-kit generateDrizzleJson failed: ${cause}`),
+         });
+-        const prevEntry = yield* readLatestSnapshot(out);
+         // For the initial migration, drizzle-kit needs an *empty* snapshot
+         // produced by `generateDrizzleJson({})`, not a bare `{}` — the
+         // snapshot has internal fields (`ddl`, etc.) that the differ reads.
+@@ -181,4 +181,4 @@ export const SchemaProvider = () => Provider.effect(Schema, Effect.gen(function*
+         }),
+     };
+ }));
+-//# sourceMappingURL=Schema.js.map
+\ No newline at end of file
++//# sourceMappingURL=Schema.js.map
+diff --git a/lib/Output.js b/lib/Output.js
+index ce26480d1..e3862cce7 100644
+--- a/lib/Output.js
++++ b/lib/Output.js
+@@ -28,6 +28,7 @@ export const isOutput = (value) => value &&
+     (typeof value === "object" || typeof value === "function") &&
+     ExprSymbol in value;
+ export const ExprSymbol = Symbol.for("alchemy/Expr");
++const exprKind = (node) => node?.[ExprSymbol]?.kind ?? node?.kind;
+ export const isExpr = (value) => value &&
+     (typeof value === "object" || typeof value === "function") &&
+     ExprSymbol in value;
+@@ -57,7 +58,7 @@ export class BaseExpr {
+         return this[inspect]();
+     }
+ }
+-export const isResourceExpr = (node) => node?.kind === "ResourceExpr";
++export const isResourceExpr = (node) => exprKind(node) === "ResourceExpr";
+ export class ResourceExpr extends BaseExpr {
+     src;
+     stables;
+@@ -72,7 +73,7 @@ export class ResourceExpr extends BaseExpr {
+         return this.src.LogicalId;
+     }
+ }
+-export const isPropExpr = (node) => node?.kind === "PropExpr";
++export const isPropExpr = (node) => exprKind(node) === "PropExpr";
+ export class PropExpr extends BaseExpr {
+     expr;
+     identifier;
+@@ -88,7 +89,7 @@ export class PropExpr extends BaseExpr {
+     }
+ }
+ export const literal = (value) => new LiteralExpr(value);
+-export const isLiteralExpr = (node) => node?.kind === "LiteralExpr";
++export const isLiteralExpr = (node) => exprKind(node) === "LiteralExpr";
+ export class LiteralExpr extends BaseExpr {
+     value;
+     kind = "LiteralExpr";
+@@ -106,7 +107,7 @@ export const map = ((...args) => args.length === 1
+     ? (output) => new ApplyExpr(output, args[0])
+     : new ApplyExpr(args[0], args[1]));
+ //Output.ApplyExpr<any, any, ResourceLike, any>
+-export const isApplyExpr = (node) => node?.kind === "ApplyExpr";
++export const isApplyExpr = (node) => exprKind(node) === "ApplyExpr";
+ export class ApplyExpr extends BaseExpr {
+     expr;
+     f;
+@@ -125,7 +126,7 @@ export const mapEffect = (fn) => (output) => new EffectExpr(output, fn);
+ export const flatMap = ((...args) => args.length === 1
+     ? (output) => new FlatMapExpr(output, args[0])
+     : new FlatMapExpr(args[0], args[1]));
+-export const isFlatMapExpr = (node) => node?.kind === "FlatMapExpr";
++export const isFlatMapExpr = (node) => exprKind(node) === "FlatMapExpr";
+ export class FlatMapExpr extends BaseExpr {
+     expr;
+     f;
+@@ -140,7 +141,7 @@ export class FlatMapExpr extends BaseExpr {
+         return `${this.expr[inspect]()}.flatMap(${this.f.toString()})`;
+     }
+ }
+-export const isEffectExpr = (node) => node?.kind === "EffectExpr";
++export const isEffectExpr = (node) => exprKind(node) === "EffectExpr";
+ export class EffectExpr extends BaseExpr {
+     expr;
+     f;
+@@ -155,7 +156,7 @@ export class EffectExpr extends BaseExpr {
+         return `${this.expr[inspect]()}.mapEffect(${this.f.toString()})`;
+     }
+ }
+-export const isNamedExpr = (node) => node?.kind === "NamedExpr";
++export const isNamedExpr = (node) => exprKind(node) === "NamedExpr";
+ /**
+  * Wraps another `Expr` and overrides its `toString()` / inspect output.
+  *
+@@ -179,7 +180,7 @@ export class NamedExpr extends BaseExpr {
+ }
+ export const named = (expr, name) => new NamedExpr(expr, name);
+ export const all = (...outs) => new AllExpr(outs);
+-export const isAllExpr = (node) => node?.kind === "AllExpr";
++export const isAllExpr = (node) => exprKind(node) === "AllExpr";
+ export class AllExpr extends BaseExpr {
+     outs;
+     kind = "AllExpr";
+@@ -192,7 +193,7 @@ export class AllExpr extends BaseExpr {
+         return `all(${this.outs.map((out) => out[inspect]()).join(", ")})`;
+     }
+ }
+-export const isRefExpr = (node) => node?.kind === "RefExpr";
++export const isRefExpr = (node) => exprKind(node) === "RefExpr";
+ export class RefExpr extends BaseExpr {
+     stack;
+     stage;
+@@ -209,7 +210,7 @@ export class RefExpr extends BaseExpr {
+         return `ref(${this.resourceId}, { stack: ${this.stack}, stage: ${this.stage} })`;
+     }
+ }
+-export const isStackRefExpr = (node) => node?.kind === "StackRefExpr";
++export const isStackRefExpr = (node) => exprKind(node) === "StackRefExpr";
+ /**
+  * A reference to the persisted output of a Stack at `(stack, stage)`.
+  *
+diff --git a/src/Drizzle/Schema.ts b/src/Drizzle/Schema.ts
+index 07adafc9f..601b06b24 100644
+--- a/src/Drizzle/Schema.ts
++++ b/src/Drizzle/Schema.ts
+@@ -181,13 +181,17 @@ export const SchemaProvider = () =>
+           const dialect = props.dialect ?? "postgres";
+           const kit = yield* loadKit(dialect);
+           const schemaModule = yield* loadSchemaModule(props);
++          const prevEntry = yield* readLatestSnapshot(out);
+           const cur = yield* Effect.tryPromise({
+-            try: () => kit.generateDrizzleJson(schemaModule),
++            try: () =>
++              kit.generateDrizzleJson(
++                schemaModule,
++                (prevEntry?.snapshot as { id?: string } | undefined)?.id,
++              ),
+             catch: (cause) =>
+               new Error(`drizzle-kit generateDrizzleJson failed: ${cause}`),
+           });
+ 
+-          const prevEntry = yield* readLatestSnapshot(out);
+           // For the initial migration, drizzle-kit needs an *empty* snapshot
+           // produced by `generateDrizzleJson({})`, not a bare `{}` — the
+           // snapshot has internal fields (`ddl`, etc.) that the differ reads.
+diff --git a/src/Output.ts b/src/Output.ts
+index 967d27d8f..46e4622e3 100644
+--- a/src/Output.ts
++++ b/src/Output.ts
+@@ -72,6 +72,8 @@ export type ToOutput<A, Req = never> = [Extract<A, object>] extends [never]
+ 
+ export const ExprSymbol = Symbol.for("alchemy/Expr");
+ 
++const exprKind = (node: any): unknown => node?.[ExprSymbol]?.kind ?? node?.kind;
++
+ export const isExpr = (value: any): value is Expr<any> =>
+   value &&
+   (typeof value === "object" || typeof value === "function") &&
+@@ -145,7 +147,7 @@ export type ArrayExpr<A extends any[], Req = any> = Output<A, Req> & {
+ 
+ export const isResourceExpr = <Value = any, Req = any>(
+   node: Expr<Value, Req> | any,
+-): node is ResourceExpr<Value, Req> => node?.kind === "ResourceExpr";
++): node is ResourceExpr<Value, Req> => exprKind(node) === "ResourceExpr";
+ 
+ export class ResourceExpr<Value, Req = never> extends BaseExpr<Value, Req> {
+   readonly kind = "ResourceExpr";
+@@ -163,7 +165,7 @@ export class ResourceExpr<Value, Req = never> extends BaseExpr<Value, Req> {
+ 
+ export const isPropExpr = <A = any, Prop extends keyof A = keyof A, Req = any>(
+   node: any,
+-): node is PropExpr<A, Prop, Req> => node?.kind === "PropExpr";
++): node is PropExpr<A, Prop, Req> => exprKind(node) === "PropExpr";
+ 
+ export class PropExpr<
+   A = any,
+@@ -186,7 +188,7 @@ export class PropExpr<
+ export const literal = <A>(value: A) => new LiteralExpr(value);
+ 
+ export const isLiteralExpr = <A = any>(node: any): node is LiteralExpr<A> =>
+-  node?.kind === "LiteralExpr";
++  exprKind(node) === "LiteralExpr";
+ 
+ export class LiteralExpr<A> extends BaseExpr<A, never> {
+   readonly kind = "LiteralExpr";
+@@ -217,7 +219,7 @@ export const map: {
+ //Output.ApplyExpr<any, any, ResourceLike, any>
+ export const isApplyExpr = <In = any, Out = any, Req = any>(
+   node: Output<Out, Req>,
+-): node is ApplyExpr<In, Out, Req> => node?.kind === "ApplyExpr";
++): node is ApplyExpr<In, Out, Req> => exprKind(node) === "ApplyExpr";
+ 
+ export class ApplyExpr<A, B, Req = never> extends BaseExpr<B, Req> {
+   readonly kind = "ApplyExpr";
+@@ -259,7 +261,7 @@ export const flatMap: {
+ 
+ export const isFlatMapExpr = <In = any, Out = any, Req = any, Req2 = any>(
+   node: any,
+-): node is FlatMapExpr<In, Out, Req, Req2> => node?.kind === "FlatMapExpr";
++): node is FlatMapExpr<In, Out, Req, Req2> => exprKind(node) === "FlatMapExpr";
+ 
+ export class FlatMapExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
+   B,
+@@ -280,7 +282,7 @@ export class FlatMapExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
+ 
+ export const isEffectExpr = <In = any, Out = any, Req = any, Req2 = any>(
+   node: any,
+-): node is EffectExpr<In, Out, Req, Req2> => node?.kind === "EffectExpr";
++): node is EffectExpr<In, Out, Req, Req2> => exprKind(node) === "EffectExpr";
+ 
+ export class EffectExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
+   B,
+@@ -301,7 +303,7 @@ export class EffectExpr<A, B, Req = never, Req2 = never> extends BaseExpr<
+ 
+ export const isNamedExpr = <A = any, Req = any>(
+   node: any,
+-): node is NamedExpr<A, Req> => node?.kind === "NamedExpr";
++): node is NamedExpr<A, Req> => exprKind(node) === "NamedExpr";
+ 
+ /**
+  * Wraps another `Expr` and overrides its `toString()` / inspect output.
+@@ -352,7 +354,7 @@ type Tuple<
+ 
+ export const isAllExpr = <Outs extends Expr[] = Expr[]>(
+   node: any,
+-): node is AllExpr<Outs> => node?.kind === "AllExpr";
++): node is AllExpr<Outs> => exprKind(node) === "AllExpr";
+ 
+ export class AllExpr<Outs extends Expr[]> extends BaseExpr<Outs> {
+   readonly kind = "AllExpr";
+@@ -366,7 +368,7 @@ export class AllExpr<Outs extends Expr[]> extends BaseExpr<Outs> {
+ }
+ 
+ export const isRefExpr = <A = any>(node: any): node is RefExpr<A> =>
+-  node?.kind === "RefExpr";
++  exprKind(node) === "RefExpr";
+ 
+ export class RefExpr<A> extends BaseExpr<A, never> {
+   readonly kind = "RefExpr";
+@@ -384,7 +386,7 @@ export class RefExpr<A> extends BaseExpr<A, never> {
+ }
+ 
+ export const isStackRefExpr = <A = any>(node: any): node is StackRefExpr<A> =>
+-  node?.kind === "StackRefExpr";
++  exprKind(node) === "StackRefExpr";
+ 
+ /**
+  * A reference to the persisted output of a Stack at `(stack, stage)`.

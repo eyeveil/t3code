@@ -1142,14 +1142,26 @@ const splitHeaderTokens = (value: string | null | undefined) =>
 
 const assertBrowserApiCorsResponseHeaders = (
   headers: Readonly<Record<string, string | undefined>>,
+  options?: {
+    readonly origin?: string;
+    readonly credentials?: boolean;
+  },
 ) => {
-  assert.equal(headers["access-control-allow-origin"], "*");
+  assert.equal(headers["access-control-allow-origin"], options?.origin ?? "*");
+  assert.equal(
+    headers["access-control-allow-credentials"],
+    options?.credentials ? "true" : undefined,
+  );
 };
 
 const assertBrowserApiCorsPreflightHeaders = (
   headers: Readonly<Record<string, string | undefined>>,
+  options?: {
+    readonly origin?: string;
+    readonly credentials?: boolean;
+  },
 ) => {
-  assertBrowserApiCorsResponseHeaders(headers);
+  assertBrowserApiCorsResponseHeaders(headers, options);
   assert.deepEqual(splitHeaderTokens(headers["access-control-allow-methods"] ?? null), [
     "GET",
     "OPTIONS",
@@ -3164,6 +3176,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(response.status, 204);
         assertBrowserApiCorsPreflightHeaders(response.headers);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("allows credentialed cloud link proof preflights from the configured dev UI", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        config: { devUrl: new URL(crossOriginClientOrigin) },
+      });
+
+      const linkProofUrl = yield* getHttpServerUrl("/api/cloud/link-proof");
+      const response = yield* fetchEffect(linkProofUrl, {
+        method: "OPTIONS",
+        headers: {
+          origin: crossOriginClientOrigin,
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type",
+        },
+      });
+
+      assert.equal(response.status, 204);
+      assertBrowserApiCorsPreflightHeaders(response.headers, {
+        origin: crossOriginClientOrigin,
+        credentials: true,
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("includes CORS headers on remote websocket-ticket auth failures", () =>

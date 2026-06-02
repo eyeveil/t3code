@@ -1,28 +1,57 @@
 import { UserButton, Waitlist, useAuth, useClerk } from "@clerk/react";
 import { useSignIn, useSignUp } from "@clerk/react/legacy";
 import { AuthRelayWriteScope } from "@t3tools/contracts";
-import { RELAY_CLERK_TOKEN_OPTIONS } from "@t3tools/shared/relayAuth";
-import type { RelayClientDeviceRecord } from "@t3tools/contracts/relay";
-import { CloudIcon } from "lucide-react";
+import { CloudIcon, RefreshCwIcon, SmartphoneIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type DesktopCloudAuthOAuthStrategy,
   resolveDesktopCloudAuthOAuthOptions,
 } from "../../cloud/desktopAuth";
-import {
-  listCloudDevices,
-  readPrimaryCloudLinkState,
-  type CloudLinkState,
-  updatePrimaryCloudPreferences,
-} from "../../cloud/linkEnvironment";
+import { updatePrimaryCloudPreferences } from "../../cloud/linkEnvironment";
+import { useManagedRelayDevices } from "../../cloud/managedRelayState";
+import { usePrimaryCloudLinkState } from "../../cloud/primaryCloudLinkState";
 import { isElectron } from "../../env";
-import { fetchSessionState, usePrimaryEnvironmentId } from "../../environments/primary";
+import { usePrimarySessionState } from "../../environments/primary";
 import { webRuntime } from "../../lib/runtime";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+
+const NOTIFICATION_DEVICE_SKELETON_ROWS = ["primary", "secondary"] as const;
+
+function NotificationDevicesSkeleton() {
+  return NOTIFICATION_DEVICE_SKELETON_ROWS.map((row) => (
+    <div key={row} className="border-t border-border/60 px-4 py-3.5 first:border-t-0 sm:px-5">
+      <div className="space-y-2">
+        <Skeleton className="h-4 w-32 rounded-full" />
+        <Skeleton className="h-3 w-44 rounded-full" />
+        <Skeleton className="h-3 w-56 rounded-full" />
+      </div>
+    </div>
+  ));
+}
+
+function EmptyNotificationDevices() {
+  return (
+    <Empty className="min-h-52">
+      <EmptyMedia variant="icon">
+        <SmartphoneIcon />
+      </EmptyMedia>
+      <EmptyHeader>
+        <EmptyTitle>No notification devices</EmptyTitle>
+        <EmptyDescription>
+          Sign in on the mobile app to register a device for account-level notifications.
+        </EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  );
+}
 
 function hasClerkConfig(): boolean {
   return Boolean(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
@@ -99,69 +128,30 @@ function CloudWaitlistPanel() {
 }
 
 function CloudSettingsPanelInner() {
-  const { getToken } = useAuth();
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const [primaryLinkState, setPrimaryLinkState] = useState<CloudLinkState | null>(null);
-  const [devices, setDevices] = useState<ReadonlyArray<RelayClientDeviceRecord>>([]);
-  const [isLoadingDevices, setIsLoadingDevices] = useState(false);
+  const primaryLinkState = usePrimaryCloudLinkState();
+  const primarySessionState = usePrimarySessionState();
+  const devicesState = useManagedRelayDevices();
   const [isUpdatingPreference, setIsUpdatingPreference] = useState(false);
-  const [canManageRelay, setCanManageRelay] = useState(false);
-
-  const refreshPrimaryLinkState = useCallback(() => {
-    if (!primaryEnvironmentId) {
-      setPrimaryLinkState(null);
-      return;
-    }
-    void webRuntime
-      .runPromise(readPrimaryCloudLinkState())
-      .then(setPrimaryLinkState, () => setPrimaryLinkState(null));
-  }, [primaryEnvironmentId]);
+  const devices = devicesState.data ?? [];
+  const canManageRelay =
+    primarySessionState.data?.authenticated === true &&
+    Boolean(primarySessionState.data.scopes?.includes(AuthRelayWriteScope));
 
   useEffect(() => {
-    refreshPrimaryLinkState();
-  }, [refreshPrimaryLinkState]);
-
-  useEffect(() => {
-    void fetchSessionState()
-      .then((session) =>
-        setCanManageRelay(
-          session.authenticated && Boolean(session.scopes?.includes(AuthRelayWriteScope)),
-        ),
-      )
-      .catch(() => setCanManageRelay(false));
-  }, []);
-
-  const refreshDevices = useCallback(async () => {
-    setIsLoadingDevices(true);
-    try {
-      const token = await getToken(RELAY_CLERK_TOKEN_OPTIONS);
-      if (!token) {
-        setDevices([]);
-        return;
-      }
-      setDevices(await webRuntime.runPromise(listCloudDevices({ clerkToken: token })));
-    } catch (error) {
+    if (devicesState.error) {
       toastManager.add({
         type: "error",
         title: "Cloud devices unavailable",
-        description: cloudErrorMessage(error, "Could not load notification devices."),
+        description: devicesState.error,
       });
-    } finally {
-      setIsLoadingDevices(false);
     }
-  }, [getToken]);
-
-  useEffect(() => {
-    void refreshDevices();
-  }, [refreshDevices]);
+  }, [devicesState.error]);
 
   const updatePublishAgentActivity = async (enabled: boolean) => {
     setIsUpdatingPreference(true);
     try {
-      const state = await webRuntime.runPromise(
-        updatePrimaryCloudPreferences({ publishAgentActivity: enabled }),
-      );
-      setPrimaryLinkState(state);
+      await webRuntime.runPromise(updatePrimaryCloudPreferences({ publishAgentActivity: enabled }));
+      primaryLinkState.refresh();
       toastManager.add({
         type: "success",
         title: enabled ? "Agent activity enabled" : "Agent activity disabled",
@@ -194,13 +184,13 @@ function CloudSettingsPanelInner() {
           title="Publish agent activity"
           description="Allow this environment to send agent activity to your notification devices."
           status={
-            !primaryLinkState?.linked ? "Link this environment from Connections first." : null
+            !primaryLinkState.data?.linked ? "Link this environment from Connections first." : null
           }
           control={
             <Switch
               aria-label="Publish agent activity"
-              checked={primaryLinkState?.publishAgentActivity ?? false}
-              disabled={!primaryLinkState?.linked || !canManageRelay || isUpdatingPreference}
+              checked={primaryLinkState.data?.publishAgentActivity ?? false}
+              disabled={!primaryLinkState.data?.linked || !canManageRelay || isUpdatingPreference}
               onCheckedChange={(enabled) => void updatePublishAgentActivity(enabled)}
             />
           }
@@ -209,36 +199,47 @@ function CloudSettingsPanelInner() {
       <SettingsSection
         title="Notification devices"
         headerAction={
-          <Button
-            size="xs"
-            variant="ghost"
-            disabled={isLoadingDevices}
-            onClick={() => void refreshDevices()}
-          >
-            {isLoadingDevices ? "Refreshing..." : "Refresh"}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                  disabled={devicesState.isPending}
+                  onClick={devicesState.refresh}
+                  aria-label="Refresh notification devices"
+                >
+                  <RefreshCwIcon
+                    className={cn("size-3", devicesState.isPending && "animate-spin")}
+                  />
+                </Button>
+              }
+            />
+            <TooltipPopup side="top">Refresh notification devices</TooltipPopup>
+          </Tooltip>
         }
       >
-        {devices.map((device) => (
-          <SettingsRow
-            key={device.deviceId}
-            title={device.label}
-            description={`iOS ${device.iosMajorVersion}${device.appVersion ? ` · T3 Code ${device.appVersion}` : ""}`}
-            status={
-              device.notifications.enabled
-                ? device.liveActivities.enabled
-                  ? "Notifications and Live Activities enabled"
-                  : "Notifications enabled · Live Activities disabled"
-                : "Notifications disabled on device"
-            }
-          />
-        ))}
-        {!isLoadingDevices && devices.length === 0 ? (
-          <SettingsRow
-            title="No notification devices"
-            description="Sign in on the mobile app to register a device for account-level notifications."
-          />
-        ) : null}
+        {devicesState.data === null ? (
+          <NotificationDevicesSkeleton />
+        ) : devices.length > 0 ? (
+          devices.map((device) => (
+            <SettingsRow
+              key={device.deviceId}
+              title={device.label}
+              description={`iOS ${device.iosMajorVersion}${device.appVersion ? ` · T3 Code ${device.appVersion}` : ""}`}
+              status={
+                device.notifications.enabled
+                  ? device.liveActivities.enabled
+                    ? "Notifications and Live Activities enabled"
+                    : "Notifications enabled · Live Activities disabled"
+                  : "Notifications disabled on device"
+              }
+            />
+          ))
+        ) : (
+          <EmptyNotificationDevices />
+        )}
       </SettingsSection>
     </SettingsPageContainer>
   );
