@@ -11,7 +11,7 @@ import {
   WS_RECONNECT_MAX_ATTEMPTS,
 } from "../rpc/wsConnectionState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { getPrimaryEnvironmentConnection } from "../environments/runtime";
+import { getPrimaryEnvironmentConnection } from "../environments/runtime/service";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
 type WsAutoReconnectTrigger = "focus" | "online";
