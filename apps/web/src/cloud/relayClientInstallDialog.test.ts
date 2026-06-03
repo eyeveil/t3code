@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  completeRelayClientInstallDialogClose,
   finishRelayClientInstall,
   readRelayClientInstallDialogState,
   reportRelayClientInstallProgress,
@@ -37,6 +38,16 @@ describe("relay client install dialog coordinator", () => {
     });
 
     finishRelayClientInstall();
+    expect(readRelayClientInstallDialogState()).toEqual({
+      status: "closing",
+      view: {
+        status: "installing",
+        version: "2026.5.2",
+        stage: "downloading",
+      },
+    });
+
+    completeRelayClientInstallDialogClose();
     expect(readRelayClientInstallDialogState()).toEqual({ status: "idle" });
   });
 
@@ -45,6 +56,15 @@ describe("relay client install dialog coordinator", () => {
     respondToRelayClientInstallConfirmation(false);
 
     await expect(confirmation).resolves.toBe(false);
+    expect(readRelayClientInstallDialogState()).toEqual({
+      status: "closing",
+      view: {
+        status: "confirming",
+        version: "2026.5.2",
+      },
+    });
+
+    completeRelayClientInstallDialogClose();
     expect(readRelayClientInstallDialogState()).toEqual({ status: "idle" });
   });
 });

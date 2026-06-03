@@ -1,8 +1,9 @@
-import { CircleCheckIcon, CircleIcon, DownloadIcon } from "lucide-react";
+import { DownloadIcon } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import type { RelayClientInstallProgressStage } from "@t3tools/contracts";
 
 import {
+  completeRelayClientInstallDialogClose,
   readRelayClientInstallDialogState,
   respondToRelayClientInstallConfirmation,
   subscribeRelayClientInstallDialog,
@@ -17,8 +18,6 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { Spinner } from "../ui/spinner";
-
 const installSteps: ReadonlyArray<{
   readonly stage: RelayClientInstallProgressStage;
   readonly label: string;
@@ -38,18 +37,25 @@ export function RelayClientInstallDialog() {
     readRelayClientInstallDialogState,
     readRelayClientInstallDialogState,
   );
-  const isConfirming = state.status === "confirming";
-  const isInstalling = state.status === "installing";
+  const view = state.status === "closing" ? state.view : state;
+  const isConfirming = view.status === "confirming";
+  const isInstalling = view.status === "installing";
   const activeStepIndex = isInstalling
-    ? installSteps.findIndex(({ stage }) => stage === state.stage)
+    ? installSteps.findIndex(({ stage }) => stage === view.stage)
     : -1;
+  const activeStep = installSteps[activeStepIndex];
 
   return (
     <Dialog
-      open={state.status !== "idle"}
+      open={state.status === "confirming" || state.status === "installing"}
       onOpenChange={(open) => {
         if (!open && isConfirming) {
           respondToRelayClientInstallConfirmation(false);
+        }
+      }}
+      onOpenChangeComplete={(open) => {
+        if (!open) {
+          completeRelayClientInstallDialogClose();
         }
       }}
     >
@@ -69,43 +75,31 @@ export function RelayClientInstallDialog() {
         </DialogHeader>
         <DialogPanel scrollFade={false}>
           {isInstalling ? (
-            <ol aria-label="Relay client installation progress" className="space-y-2">
-              {installSteps.map((step, index) => {
-                const isComplete = activeStepIndex > index;
-                const isActive = activeStepIndex === index;
-                return (
-                  <li
-                    key={step.stage}
-                    aria-current={isActive ? "step" : undefined}
-                    className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm"
-                  >
-                    {isComplete ? (
-                      <CircleCheckIcon aria-hidden className="size-4 text-success" />
-                    ) : isActive ? (
-                      <Spinner aria-hidden className="size-4 text-primary" />
-                    ) : (
-                      <CircleIcon aria-hidden className="size-4 text-muted-foreground/55" />
-                    )}
-                    <span
-                      className={isActive ? "font-medium text-foreground" : "text-muted-foreground"}
-                    >
-                      {step.label}
-                    </span>
-                  </li>
-                );
-              })}
-              <li aria-live="polite" className="sr-only">
-                {activeStepIndex >= 0
-                  ? installSteps[activeStepIndex]?.label
-                  : "Starting installation"}
-              </li>
-            </ol>
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <p aria-live="polite" className="font-medium text-foreground">
+                  {activeStep?.label}
+                </p>
+                <p className="shrink-0 tabular-nums text-muted-foreground">
+                  {activeStepIndex + 1} of {installSteps.length}
+                </p>
+              </div>
+              <progress
+                aria-label="Relay client installation progress"
+                className="h-2 w-full appearance-none overflow-hidden rounded-full bg-muted [&::-moz-progress-bar]:rounded-full [&::-moz-progress-bar]:bg-primary [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:bg-primary"
+                max={installSteps.length}
+                value={activeStepIndex + 1}
+              />
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Keep T3 Code open while the relay client is installed.
+              </p>
+            </div>
           ) : (
             <div className="rounded-xl border border-border/70 bg-muted/35 p-3">
               <p className="text-sm font-medium text-foreground">Managed relay client</p>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
                 T3 Code will download and install version{" "}
-                {state.status === "confirming" ? state.version : ""} locally.
+                {view.status === "confirming" ? view.version : ""} locally.
               </p>
             </div>
           )}

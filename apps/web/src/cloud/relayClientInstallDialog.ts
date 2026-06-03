@@ -10,6 +10,16 @@ export type RelayClientInstallDialogState =
       readonly status: "installing";
       readonly version: string;
       readonly stage: RelayClientInstallProgressStage;
+    }
+  | {
+      readonly status: "closing";
+      readonly view:
+        | { readonly status: "confirming"; readonly version: string }
+        | {
+            readonly status: "installing";
+            readonly version: string;
+            readonly stage: RelayClientInstallProgressStage;
+          };
     };
 
 const idleState: RelayClientInstallDialogState = { status: "idle" };
@@ -54,7 +64,9 @@ export function respondToRelayClientInstallConfirmation(confirmed: boolean): voi
   const resolve = resolveConfirmation;
   resolveConfirmation = null;
   publish(
-    confirmed ? { status: "installing", version: state.version, stage: "checking" } : idleState,
+    confirmed
+      ? { status: "installing", version: state.version, stage: "checking" }
+      : { status: "closing", view: state },
   );
   resolve(confirmed);
 }
@@ -69,10 +81,20 @@ export function reportRelayClientInstallProgress(event: RelayClientInstallProgre
 export function finishRelayClientInstall(): void {
   resolveConfirmation?.(false);
   resolveConfirmation = null;
-  publish(idleState);
+  if (state.status === "confirming" || state.status === "installing") {
+    publish({ status: "closing", view: state });
+  }
+}
+
+export function completeRelayClientInstallDialogClose(): void {
+  if (state.status === "closing") {
+    publish(idleState);
+  }
 }
 
 export function resetRelayClientInstallDialogForTests(): void {
-  finishRelayClientInstall();
+  resolveConfirmation?.(false);
+  resolveConfirmation = null;
+  publish(idleState);
   listeners.clear();
 }

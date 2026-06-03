@@ -6,6 +6,7 @@ import { render } from "vitest-browser-react";
 
 import {
   finishRelayClientInstall,
+  readRelayClientInstallDialogState,
   reportRelayClientInstallProgress,
   requestRelayClientInstallConfirmation,
   resetRelayClientInstallDialogForTests,
@@ -31,16 +32,16 @@ describe("RelayClientInstallDialog", () => {
       .toBeInTheDocument();
 
     reportRelayClientInstallProgress({ type: "progress", stage: "downloading" });
+    await expect.element(page.getByText("Downloading relay client")).toBeInTheDocument();
     await expect
-      .element(page.getByText("Downloading relay client").first())
-      .toHaveTextContent("Downloading relay client");
-    await expect
-      .element(page.getByText("Downloading relay client").first())
-      .toHaveAttribute("class", expect.stringContaining("font-medium"));
+      .element(page.getByRole("progressbar", { name: "Relay client installation progress" }))
+      .toHaveAttribute("value", "3");
 
     finishRelayClientInstall();
+    expect(readRelayClientInstallDialogState().status).toBe("closing");
     await expect
       .element(page.getByRole("heading", { name: "Installing relay client" }))
       .not.toBeInTheDocument();
+    expect(readRelayClientInstallDialogState()).toEqual({ status: "idle" });
   });
 });
