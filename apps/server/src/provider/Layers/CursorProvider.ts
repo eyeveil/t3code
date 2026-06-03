@@ -154,6 +154,12 @@ function normalizeCursorReasoningValue(value: string | null | undefined): string
   }
 }
 
+function findCursorModelConfigOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+): EffectAcpSchema.SessionConfigOption | undefined {
+  return configOptions.find((option) => option.category === "model");
+}
+
 function getCursorConfigOptionCategory(option: EffectAcpSchema.SessionConfigOption): string {
   return option.category?.trim().toLowerCase() ?? "";
 }
@@ -411,6 +417,35 @@ export function mergeCursorDiscoveredModelCapabilities(
   return mergedModels;
 }
 
+export function buildCursorDiscoveredModelsFromConfigOptions(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): ReadonlyArray<ServerProviderModel> {
+  if (!configOptions || configOptions.length === 0) {
+    return [];
+  }
+
+  const modelOption = findCursorModelConfigOption(configOptions);
+  const modelChoices = flattenSessionConfigSelectOptions(modelOption);
+  if (!modelOption || modelChoices.length === 0) {
+    return [];
+  }
+
+  const currentModelValue =
+    modelOption.type === "select" ? modelOption.currentValue?.trim() || undefined : undefined;
+  const currentModelCapabilities = buildCursorCapabilitiesFromConfigOptions(configOptions);
+
+  return buildCursorDiscoveredModels(
+    modelChoices.map((modelChoice) => ({
+      slug: modelChoice.value.trim(),
+      name: modelChoice.name.trim(),
+      capabilities:
+        currentModelValue === modelChoice.value.trim()
+          ? currentModelCapabilities
+          : EMPTY_CAPABILITIES,
+    })),
+  );
+}
+
 function buildCursorDiscoveredModelsFromAvailableModelsResponse(
   response: typeof CursorListAvailableModelsResponse.Type,
 ): ReadonlyArray<ServerProviderModel> {
@@ -602,7 +637,21 @@ const discoverCursorModelsViaListAvailableModels = (
 export const discoverCursorModelsViaAcp = (
   cursorSettings: CursorSettings,
   environment: NodeJS.ProcessEnv = process.env,
-) => discoverCursorModelsViaListAvailableModels(cursorSettings, environment);
+) =>
+  discoverCursorModelsViaListAvailableModels(cursorSettings, environment).pipe(
+    Effect.catchCause(() =>
+      withCursorAcpProbeRuntime(
+        cursorSettings,
+        (acp) =>
+          Effect.map(acp.start(), (started) =>
+            buildCursorDiscoveredModelsFromConfigOptions(
+              started.sessionSetupResult.configOptions ?? [],
+            ),
+          ),
+        environment,
+      ),
+    ),
+  );
 
 export const discoverCursorModelCapabilitiesViaAcp = (
   cursorSettings: CursorSettings,
