@@ -56,10 +56,10 @@ Required repository secrets shared by relay deployments:
 
 Required `production` environment variables:
 
-- `T3CODE_RELAY_DOMAIN`
-- `T3CODE_RELAY_ZONE_NAME`
-- `T3CODE_CLERK_PUBLISHABLE_KEY`
-- `T3CODE_CLERK_CLI_OAUTH_CLIENT_ID`
+- `RELAY_DOMAIN`
+- `RELAY_ZONE_NAME`
+- `CLERK_PUBLISHABLE_KEY`
+- `CLERK_CLI_OAUTH_CLIENT_ID`
 - `APNS_ENVIRONMENT`
 - `APNS_TEAM_ID`
 - `APNS_KEY_ID`

@@ -129,7 +129,7 @@ export default class Api extends Cloudflare.Worker<Api>()(
     const axiomTracesEndpoint = yield* observability.traces.otelTracesEndpoint;
 
     const clerkSecretKey = yield* Config.redacted("CLERK_SECRET_KEY");
-    const clerkPublishableKey = yield* Config.string("T3CODE_CLERK_PUBLISHABLE_KEY");
+    const clerkPublishableKey = yield* Config.string("CLERK_PUBLISHABLE_KEY");
 
     const cloudMintPrivateKey = yield* cloudMintKeyPair.privateKey;
     const cloudMintPublicKey = yield* cloudMintKeyPair.publicKey;

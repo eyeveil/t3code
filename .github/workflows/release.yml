@@ -178,8 +178,8 @@ jobs:
       clerk_publishable_key: ${{ steps.public_config.outputs.clerk_publishable_key }}
       relay_url: ${{ steps.public_config.outputs.relay_url }}
     env:
-      T3CODE_RELAY_DOMAIN: ${{ vars.T3CODE_RELAY_DOMAIN }}
-      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
+      RELAY_DOMAIN: ${{ vars.RELAY_DOMAIN }}
+      CLERK_PUBLISHABLE_KEY: ${{ vars.CLERK_PUBLISHABLE_KEY }}
     steps:
       - id: public_config
         name: Resolve production relay public config
@@ -188,8 +188,8 @@ jobs:
           set -euo pipefail
 
           required=(
-            T3CODE_RELAY_DOMAIN
-            T3CODE_CLERK_PUBLISHABLE_KEY
+            RELAY_DOMAIN
+            CLERK_PUBLISHABLE_KEY
           )
           missing=()
           for name in "${required[@]}"; do
@@ -202,8 +202,8 @@ jobs:
             exit 1
           fi
 
-          echo "clerk_publishable_key=$T3CODE_CLERK_PUBLISHABLE_KEY" >> "$GITHUB_OUTPUT"
-          echo "relay_url=https://$T3CODE_RELAY_DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "clerk_publishable_key=$CLERK_PUBLISHABLE_KEY" >> "$GITHUB_OUTPUT"
+          echo "relay_url=https://$RELAY_DOMAIN" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.label }}

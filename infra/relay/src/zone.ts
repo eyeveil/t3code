@@ -9,8 +9,8 @@ import { relayPublicDomainForStage } from "./deploymentConfig.ts";
 
 export const RelayDeploymentConfig = Effect.gen(function* () {
   const stage = yield* Alchemy.Stage;
-  const managedEndpointZoneName = yield* Config.nonEmptyString("T3CODE_RELAY_ZONE_NAME");
-  const relayPublicDomainOverride = yield* Config.nonEmptyString("T3CODE_RELAY_DOMAIN").pipe(
+  const managedEndpointZoneName = yield* Config.nonEmptyString("RELAY_ZONE_NAME");
+  const relayPublicDomainOverride = yield* Config.nonEmptyString("RELAY_DOMAIN").pipe(
     Config.option,
   );
   const relayPublicDomain = Option.getOrElse(relayPublicDomainOverride, () =>
