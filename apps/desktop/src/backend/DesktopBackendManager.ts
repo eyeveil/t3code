@@ -433,6 +433,9 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
 
         if (current.ready) {
           yield* spec.onShutdown?.() ?? Effect.void;
+          yield* Ref.update(state, (latest) =>
+            latest.ready ? { ...latest, ready: false } : latest,
+          );
         }
         const config = yield* spec.configResolve.pipe(
           Effect.tapError((error) =>

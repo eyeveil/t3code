@@ -167,6 +167,7 @@ export const layer = Layer.effect(
           // settings can show why the WSL backend never appeared. No dialog or
           // fallback — Windows is the primary and keeps working.
           onPreflightFailed: (reason) => Ref.set(preflightErrorRef, Option.some(reason)),
+          onReady: () => Ref.set(preflightErrorRef, Option.none()),
         })
         .pipe(
           Effect.map((registered) => Option.some(registered)),
