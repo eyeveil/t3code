@@ -88,6 +88,9 @@ describe("relayJwt", () => {
       }).pipe(Effect.flip);
 
       assert.equal(error._tag, "RelayJwtVerifyError");
+      if (error._tag !== "RelayJwtVerifyError") {
+        assert.fail(`Expected RelayJwtVerifyError, got ${error._tag}`);
+      }
       assert.equal(error.typ, "other+jwt");
       assert.equal(error.issuer, "https://relay.example.test");
       assert.equal(error.audience, "https://relay.example.test");
