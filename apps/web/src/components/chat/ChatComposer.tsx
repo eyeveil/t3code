@@ -1832,6 +1832,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const handleImplementPlanInNewThreadPrimaryAction = useCallback(() => {
     void onImplementPlanInNewThread();
   }, [onImplementPlanInNewThread]);
+  const handleComposerModelPickerOpenChange = useCallback((open: boolean) => {
+    setIsComposerModelPickerOpen(open);
+  }, []);
   const scheduleComposerCollapseCheck = useCallback(() => {
     if (!isMobileViewport) {
       return;
@@ -2399,9 +2402,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         activeProviderIconClassName: composerProviderState.modelPickerIconClassName,
                       }
                     : {})}
-                  onOpenChange={(open) => {
-                    setIsComposerModelPickerOpen(open);
-                  }}
+                  onOpenChange={handleComposerModelPickerOpenChange}
                   getModelDisabledReason={getModelDisabledReason}
                   onInstanceModelChange={onProviderModelSelect}
                 />
