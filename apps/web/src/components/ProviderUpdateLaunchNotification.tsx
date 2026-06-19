@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { DownloadIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
+import { useEnvironments } from "~/state/environments";
 import { useDismissedProviderUpdateNotificationKeys } from "../providerUpdateDismissal";
 import { ProviderUpdateEnvironmentRows } from "./ProviderUpdateEnvironmentRows";
 import { useLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.environments";
@@ -16,18 +16,34 @@ import { ProviderUpdatePrimaryNotification } from "./ProviderUpdatePrimaryNotifi
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
 /**
+ * True when a desktop-local secondary backend (the parallel WSL backend) is
+ * present alongside the primary. Local secondaries connect over loopback with a
+ * `local:<environmentId>` bearer connection id; everything else (SSH, relay,
+ * remote) is ignored. Gating on this keeps non-WSL users on the unchanged
+ * single-prompt flow.
+ */
+function useHasLocalSecondaryEnvironment(): boolean {
+  const { environments } = useEnvironments();
+  return useMemo(
+    () =>
+      environments.some(
+        (environment) =>
+          environment.entry.target._tag === "BearerConnectionTarget" &&
+          environment.entry.target.connectionId.startsWith("local:"),
+      ),
+    [environments],
+  );
+}
+
+/**
  * The provider update popover. With a WSL backend present it splits the update
  * trigger per environment; without one (the common case) it falls back to the
  * single-prompt flow so non-WSL users see no change.
  */
 export function ProviderUpdateLaunchNotification() {
-  const hasWslEnvironment = useSavedEnvironmentRegistryStore((store) =>
-    Object.values(store.byId).some(
-      (record) => record.desktopLocal?.instanceId?.startsWith("wsl:") === true,
-    ),
-  );
+  const hasLocalSecondary = useHasLocalSecondaryEnvironment();
 
-  return hasWslEnvironment ? (
+  return hasLocalSecondary ? (
     <ProviderUpdateEnvironmentsNotification />
   ) : (
     <ProviderUpdatePrimaryNotification />

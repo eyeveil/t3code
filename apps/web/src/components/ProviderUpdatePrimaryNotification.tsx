@@ -1,17 +1,18 @@
 import { useNavigate } from "@tanstack/react-router";
+import { useAtomValue } from "@effect/atom-react";
 import { DownloadIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 
-import { updateProviderAcrossLocalEnvironments } from "../environmentApi";
+import { primaryServerProvidersAtom, serverEnvironment } from "../state/server";
+import { usePrimaryEnvironment } from "../state/environments";
 import { useDismissedProviderUpdateNotificationKeys } from "../providerUpdateDismissal";
-import { useServerProviders } from "../rpc/serverState";
 import { PROVIDER_ICON_BY_PROVIDER } from "./chat/providerIconUtils";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
-  collectProviderUpdateOutcomeSnapshots,
-  firstRejectedProviderUpdateMessage,
+  collectUpdatedProviderSnapshots,
+  firstFailedProviderUpdateMessage,
   getProviderUpdateInitialToastView,
   getProviderUpdateProgressToastView,
   getProviderUpdateRejectedToastView,
@@ -20,6 +21,7 @@ import {
   type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { useAtomCommand } from "../state/use-atom-command";
 
 const seenProviderUpdateNotificationKeys = new Set<string>();
 type ProviderUpdateToastId = ReturnType<typeof toastManager.add>;
@@ -32,10 +34,6 @@ type ActiveProviderUpdateToast =
       readonly toastId: ProviderUpdateToastId;
       readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
       readonly providerCount: number;
-      // True until every dispatched backend update settles. While true the
-      // primary-only serverState effect must not finalize the toast, since it
-      // cannot observe a secondary (e.g. WSL) backend's outcome.
-      readonly awaitingSettlement: boolean;
     };
 
 function ProviderUpdateToastIcon({ provider }: { provider: ProviderDriverKind }) {
@@ -110,7 +108,11 @@ function isTerminalProviderUpdateToastView(view: ProviderUpdateToastView) {
  */
 export function ProviderUpdatePrimaryNotification() {
   const navigate = useNavigate();
-  const providers = useServerProviders();
+  const providers = useAtomValue(primaryServerProvidersAtom);
+  const primaryEnvironment = usePrimaryEnvironment();
+  const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
+    reportFailure: false,
+  });
   const activeToastRef = useRef<ActiveProviderUpdateToast | null>(null);
   const { dismissedNotificationKeys, dismissNotificationKey } =
     useDismissedProviderUpdateNotificationKeys();
@@ -160,14 +162,6 @@ export function ProviderUpdatePrimaryNotification() {
       return;
     }
 
-    // The dispatched updates have not all settled yet. This effect only sees the
-    // primary backend's serverState, so it cannot tell whether a secondary (e.g.
-    // WSL) backend succeeded — leave the running toast in place and let the
-    // settled-promise handler report the aggregate outcome.
-    if (activeToast.awaitingSettlement) {
-      return;
-    }
-
     const activeProviders = providers.filter((provider) =>
       activeToast.providerInstanceIds.has(provider.instanceId),
     );
@@ -214,7 +208,7 @@ export function ProviderUpdatePrimaryNotification() {
     };
 
     const runUpdates = () => {
-      if (updateStarted || oneClickProviders.length === 0) {
+      if (updateStarted || oneClickProviders.length === 0 || !primaryEnvironment) {
         return;
       }
       updateStarted = true;
@@ -227,7 +221,6 @@ export function ProviderUpdatePrimaryNotification() {
         toastId,
         providerInstanceIds,
         providerCount,
-        awaitingSettlement: true,
       };
 
       updateProviderUpdateToast({
@@ -236,31 +229,40 @@ export function ProviderUpdatePrimaryNotification() {
         openSettings,
       });
 
-      void Promise.allSettled(
-        oneClickProviders.flatMap((provider) =>
-          updateProviderAcrossLocalEnvironments(provider.driver, provider.instanceId),
-        ),
-      ).then((results) => {
+      void (async () => {
+        const results = [];
+        for (const provider of oneClickProviders) {
+          results.push(
+            await updateProvider({
+              environmentId: primaryEnvironment.environmentId,
+              input: {
+                provider: provider.driver,
+                instanceId: provider.instanceId,
+              },
+            }),
+          );
+        }
+
         const activeUpdateToast = activeToastRef.current;
         if (activeUpdateToast?.kind !== "update" || activeUpdateToast.toastId !== toastId) {
           return;
         }
 
-        // Every backend has settled — release the live serverState effect.
-        activeToastRef.current = { ...activeUpdateToast, awaitingSettlement: false };
-
-        const rejectedMessage = firstRejectedProviderUpdateMessage(results);
-        if (rejectedMessage) {
+        const failedMessage = firstFailedProviderUpdateMessage(results);
+        if (failedMessage) {
           updateProviderUpdateToast({
             toastId,
-            view: getProviderUpdateRejectedToastView(providerCount, rejectedMessage),
+            view: getProviderUpdateRejectedToastView(providerCount, failedMessage),
             openSettings,
           });
           activeToastRef.current = null;
           return;
         }
 
-        const updatedProviderSnapshots = collectProviderUpdateOutcomeSnapshots(results);
+        const updatedProviderSnapshots = collectUpdatedProviderSnapshots({
+          results,
+          providerInstanceIds,
+        });
         const view = getProviderUpdateProgressToastView({
           providers: updatedProviderSnapshots,
           providerCount,
@@ -274,7 +276,7 @@ export function ProviderUpdatePrimaryNotification() {
         if (isTerminalProviderUpdateToastView(view)) {
           activeToastRef.current = null;
         }
-      });
+      })();
     };
 
     toastId = toastManager.add(
@@ -315,11 +317,13 @@ export function ProviderUpdatePrimaryNotification() {
     );
     activeToastRef.current = { kind: "prompt", key: notificationKey, toastId };
   }, [
+    updateProvider,
     dismissNotificationKey,
     dismissedNotificationKeys,
     notificationKey,
     oneClickProviders,
     openProviderSettings,
+    primaryEnvironment,
     updateProviders,
   ]);
 

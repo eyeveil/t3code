@@ -1,11 +1,8 @@
+import type { ConnectionCatalogEntry } from "@t3tools/client-runtime/connection";
+import type { ServerConfig } from "@t3tools/contracts";
 import { useMemo } from "react";
 
-import { getPrimaryKnownEnvironment } from "../environments/primary";
-import {
-  useSavedEnvironmentRegistryStore,
-  useSavedEnvironmentRuntimeStore,
-} from "../environments/runtime";
-import { useServerConfig } from "../rpc/serverState";
+import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import {
   buildLocalEnvironmentUpdateGroups,
   deriveEnvironmentDisplayLabel,
@@ -15,82 +12,110 @@ import {
   type LocalEnvironmentUpdateGroup,
 } from "./ProviderUpdateLaunchNotification.logic";
 
-function normalizeConnectionState(state: string | undefined): EnvironmentUpdateConnectionState {
-  switch (state) {
+/**
+ * A local environment is either the same-origin primary backend or a
+ * desktop-local secondary (the parallel WSL backend), which connects over
+ * loopback with a bearer token and carries a `local:<environmentId>`
+ * connection id. SSH, relay, and other remote targets are excluded.
+ */
+function isLocalConnectionTarget(target: ConnectionCatalogEntry["target"]): boolean {
+  return (
+    target._tag === "PrimaryConnectionTarget" ||
+    (target._tag === "BearerConnectionTarget" && target.connectionId.startsWith("local:"))
+  );
+}
+
+function normalizeConnectionState(
+  phase: string | undefined,
+): EnvironmentUpdateConnectionState {
+  switch (phase) {
     case "connected":
       return "ready";
     case "connecting":
+    case "reconnecting":
       return "connecting";
     case "error":
       return "error";
-    case "disconnected":
+    case "offline":
       return "disconnected";
     default:
-      // A desktopLocal record exists but its runtime has not been initialized
-      // yet — treat it as still settling so the popover waits for it.
+      // "available" (or anything not yet observed) — the backend has not
+      // confirmed it is serving yet, so treat it as still settling so the
+      // popover waits for it.
       return "connecting";
   }
 }
 
 /**
+ * The stable backend instance id of a desktop-local secondary (e.g.
+ * "wsl:ubuntu"), recovered from the desktop bootstrap topology by matching the
+ * environment's loopback URL. Used only to derive the WSL distro label; absence
+ * is fine because labeling falls back to the reported platform OS.
+ */
+function localBackendInstanceId(displayUrl: string | null): string | undefined {
+  if (displayUrl === null) {
+    return undefined;
+  }
+  try {
+    const bootstraps = window.desktopBridge?.getLocalEnvironmentBootstraps() ?? [];
+    const match = bootstraps.find((entry) => entry.httpBaseUrl === displayUrl);
+    return match?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Reactively enumerate the enabled local environments (the primary plus any
- * desktopLocal secondary such as WSL) with each one's outdated one-click
- * candidates and a flag for whether any is still connecting. Drives the launch
- * popover's gating and its per-environment update triggers.
+ * desktop-local secondary such as WSL) with each one's full provider list and a
+ * flag for whether any is still connecting. Drives the launch popover's gating
+ * and its per-environment update triggers.
  */
 export function useLocalEnvironmentUpdateGroups(): {
   readonly groups: LocalEnvironmentUpdateGroup[];
   readonly isAnySettling: boolean;
 } {
-  const primaryConfig = useServerConfig();
-  const registryById = useSavedEnvironmentRegistryStore((store) => store.byId);
-  const runtimeById = useSavedEnvironmentRuntimeStore((store) => store.byId);
+  const { environments } = useEnvironments();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
 
   return useMemo(() => {
-    const environments: LocalEnvironmentProvidersInput[] = [];
+    const inputs: LocalEnvironmentProvidersInput[] = [];
 
-    const primary = getPrimaryKnownEnvironment();
-    const primaryEnvironmentId = primary?.environmentId;
-    if (primary && primaryEnvironmentId) {
-      environments.push({
-        environmentId: primaryEnvironmentId,
-        // Label by platform so the row reads "Windows"/"WSL", not the account name.
-        label: deriveEnvironmentDisplayLabel({
-          isWsl: false,
-          wslDistro: null,
-          platformOs: primaryConfig?.environment?.platform?.os,
-          fallbackLabel: primary.label,
-        }),
-        isPrimary: true,
-        // The primary is the backend serving this renderer, so it is ready
-        // whenever its providers are available.
-        connectionState: "ready",
-        providers: primaryConfig?.providers ?? [],
-      });
-    }
-
-    for (const record of Object.values(registryById)) {
-      // Local secondaries only (the WSL backend); skip SSH / relay / remote and
-      // never the primary twice.
-      if (!record.desktopLocal || record.environmentId === primaryEnvironmentId) {
+    for (const environment of environments) {
+      if (!isLocalConnectionTarget(environment.entry.target)) {
         continue;
       }
-      const runtime = runtimeById[record.environmentId];
-      const instanceId = record.desktopLocal.instanceId;
-      environments.push({
-        environmentId: record.environmentId,
+
+      const isPrimary = environment.environmentId === primaryEnvironmentId;
+      const serverConfig: ServerConfig | null = environment.serverConfig;
+      const instanceId = isPrimary
+        ? undefined
+        : localBackendInstanceId(environment.displayUrl);
+      const wslDistro = parseWslDistroFromInstanceId(instanceId);
+
+      inputs.push({
+        environmentId: environment.environmentId,
+        // Label by platform so the row reads "Windows"/"WSL", not the account name.
         label: deriveEnvironmentDisplayLabel({
-          isWsl: instanceId.startsWith("wsl:"),
-          wslDistro: parseWslDistroFromInstanceId(instanceId),
-          platformOs: runtime?.descriptor?.platform?.os,
-          fallbackLabel: record.label,
+          isWsl: instanceId?.startsWith("wsl:") === true,
+          wslDistro,
+          platformOs: serverConfig?.environment.platform.os,
+          fallbackLabel: environment.label,
         }),
-        isPrimary: false,
-        connectionState: normalizeConnectionState(runtime?.connectionState),
-        providers: runtime?.serverConfig?.providers ?? [],
+        isPrimary,
+        // The primary is the backend serving this renderer, so it is ready
+        // whenever its providers are available; secondaries report their live
+        // connection phase.
+        connectionState: isPrimary
+          ? "ready"
+          : normalizeConnectionState(environment.connection.phase),
+        providers: serverConfig?.providers ?? [],
       });
     }
 
-    return buildLocalEnvironmentUpdateGroups(environments);
-  }, [primaryConfig, registryById, runtimeById]);
+    // Primary first, then the rest in catalog order.
+    inputs.sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary));
+
+    return buildLocalEnvironmentUpdateGroups(inputs);
+  }, [environments, primaryEnvironmentId]);
 }

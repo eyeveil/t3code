@@ -1,9 +1,15 @@
 import { CheckIcon } from "lucide-react";
 import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ServerProvider } from "@t3tools/contracts";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
 
 import { cn } from "~/lib/utils";
-import { updateProvidersInEnvironment } from "../environmentApi";
+import { serverEnvironment } from "~/state/server";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { useLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.environments";
 import {
   collectProviderUpdateOutcomeSnapshots,
@@ -12,12 +18,68 @@ import {
   getProviderUpdateSidebarPillView,
   resolveEnvironmentUpdateRowStatus,
   type LocalEnvironmentUpdateGroup,
+  type LocalProviderUpdateOutcome,
   type ProviderUpdateRowStatus,
   type ProviderUpdateRowStatusKind,
   type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
 import { Button } from "./ui/button";
 import { Spinner } from "./ui/spinner";
+
+type ProviderUpdateCommandResult = AtomCommandResult<
+  { readonly providers: ReadonlyArray<ServerProvider> },
+  unknown
+>;
+
+/**
+ * Map one targeted instance's update command result into the settled-outcome
+ * shape the multi-backend reducers consume: a non-interrupted failure becomes a
+ * rejection carrying its message; a success carries the post-update snapshot of
+ * the targeted instance (null when the backend did not report it).
+ */
+function toProviderUpdateOutcome(input: {
+  readonly environmentId: EnvironmentId;
+  readonly isPrimary: boolean;
+  readonly target: { readonly driver: ServerProvider["driver"]; readonly instanceId: ServerProvider["instanceId"] };
+  readonly result: ProviderUpdateCommandResult;
+}): PromiseSettledResult<LocalProviderUpdateOutcome> {
+  if (input.result._tag === "Failure") {
+    if (isAtomCommandInterrupted(input.result)) {
+      // An interrupted dispatch (e.g. superseded) is neither a success nor a
+      // hard failure — surface it as a non-contributing, non-rejecting outcome.
+      return {
+        status: "fulfilled",
+        value: {
+          environmentId: input.environmentId,
+          isPrimary: input.isPrimary,
+          driver: input.target.driver,
+          instanceId: input.target.instanceId,
+          provider: null,
+        },
+      };
+    }
+    const error = squashAtomCommandFailure(input.result);
+    return {
+      status: "rejected",
+      reason: error instanceof Error ? error : new Error("Provider update failed."),
+    };
+  }
+
+  const provider =
+    input.result.value.providers.find(
+      (candidate) => candidate.instanceId === input.target.instanceId,
+    ) ?? null;
+  return {
+    status: "fulfilled",
+    value: {
+      environmentId: input.environmentId,
+      isPrimary: input.isPrimary,
+      driver: input.target.driver,
+      instanceId: input.target.instanceId,
+      provider,
+    },
+  };
+}
 
 // If neither the dispatch result nor server state ever reports the update (e.g.
 // the request never reached the backend), stop the spinner after this long so
@@ -94,6 +156,9 @@ export function ProviderUpdateEnvironmentRows({
   readonly onInteract?: () => void;
 }) {
   const { groups } = useLocalEnvironmentUpdateGroups();
+  const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
+    reportFailure: false,
+  });
   const groupByEnvironment = useMemo(
     () => new Map(groups.map((group) => [group.environmentId, group] as const)),
     [groups],
@@ -156,8 +221,28 @@ export function ProviderUpdateEnvironmentRows({
 
       const expiry = setTimeout(() => clearPending(environmentId), PENDING_EXPIRY_MS);
       try {
-        const results = await Promise.allSettled(
-          updateProvidersInEnvironment(environmentId, targets),
+        // Dispatch each candidate's update to this environment's own backend and
+        // normalize every settled outcome into the multi-backend reducer shape.
+        const results = await Promise.all(
+          targets.map(async (target): Promise<PromiseSettledResult<LocalProviderUpdateOutcome>> => {
+            try {
+              const result = await updateProvider({
+                environmentId,
+                input: { provider: target.driver, instanceId: target.instanceId },
+              });
+              return toProviderUpdateOutcome({
+                environmentId,
+                isPrimary: group.isPrimary,
+                target,
+                result,
+              });
+            } catch (error) {
+              return {
+                status: "rejected",
+                reason: error instanceof Error ? error : new Error("Provider update failed."),
+              };
+            }
+          }),
         );
         if (results.length === 0) {
           setErrorByEnvironment((previous) =>
@@ -192,7 +277,7 @@ export function ProviderUpdateEnvironmentRows({
         clearPending(environmentId);
       }
     },
-    [clearPending, groupByEnvironment, onInteract],
+    [clearPending, groupByEnvironment, onInteract, updateProvider],
   );
 
   const rows = groups

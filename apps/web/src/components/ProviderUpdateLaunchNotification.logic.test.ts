@@ -5,22 +5,20 @@ import {
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 
-import type { LocalProviderUpdateOutcome } from "../environmentApi";
 import {
   buildLocalEnvironmentUpdateGroups,
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
   collectProviderUpdateOutcomeSnapshots,
+  collectUpdatedProviderSnapshots,
   deriveEnvironmentDisplayLabel,
   environmentGroupsWithUpdates,
+  firstFailedProviderUpdateMessage,
   firstRejectedProviderUpdateMessage,
   firstUnsuccessfulSecondaryProviderOutcome,
-  localEnvironmentUpdateNotificationKey,
-  parseWslDistroFromInstanceId,
-  resolveEnvironmentUpdateRowStatus,
-  type LocalEnvironmentProvidersInput,
-  type LocalEnvironmentUpdateGroup,
   getProviderUpdateInitialToastView,
   getProviderUpdateProgressToastView,
   getProviderUpdateRejectedToastView,
@@ -28,7 +26,13 @@ import {
   getSingleProviderUpdateProgressToastView,
   hasOneClickUpdateProviderCandidate,
   isProviderUpdateCandidate,
+  localEnvironmentUpdateNotificationKey,
+  parseWslDistroFromInstanceId,
   providerUpdateNotificationKey,
+  resolveEnvironmentUpdateRowStatus,
+  type LocalEnvironmentProvidersInput,
+  type LocalEnvironmentUpdateGroup,
+  type LocalProviderUpdateOutcome,
   type ProviderUpdateCandidate,
   type ProviderUpdateSidebarPillView,
   type ProviderUpdateToastView,
@@ -234,6 +238,44 @@ describe("provider update launch notification logic", () => {
     );
   });
 
+  it("tracks updated provider snapshots by instance instead of collapsing to a sibling driver", () => {
+    const targetInstanceId = instanceId("codex_personal");
+    const siblingInstanceId = instanceId("codex");
+    const updatedPersonal = provider({
+      driver: driver("codex"),
+      instanceId: targetInstanceId,
+      version: "1.1.0",
+      latestVersion: "1.1.0",
+      advisoryStatus: "current",
+      updateState: {
+        status: "succeeded",
+        startedAt: checkedAt,
+        finishedAt: checkedAt,
+        message: "Provider updated.",
+        output: null,
+      },
+    });
+    const currentDefaultSibling = provider({
+      driver: driver("codex"),
+      instanceId: siblingInstanceId,
+      version: "1.1.0",
+      latestVersion: "1.1.0",
+      advisoryStatus: "current",
+      updateState: undefined,
+    });
+
+    expect(
+      collectUpdatedProviderSnapshots({
+        results: [
+          AsyncResult.success({
+            providers: [updatedPersonal, currentDefaultSibling],
+          }),
+        ],
+        providerInstanceIds: new Set([targetInstanceId]),
+      }),
+    ).toEqual([updatedPersonal]);
+  });
+
   it("describes a single one-click update", () => {
     const view = getProviderUpdateInitialToastView({
       updateProviders: [updateCandidate({ driver: driver("codex"), latestVersion: "1.1.0" })],
@@ -411,16 +453,27 @@ describe("provider update launch notification logic", () => {
   });
 
   it("falls back to a rejected RPC message for transport-level failures", () => {
-    const results: PromiseSettledResult<unknown>[] = [
-      { status: "rejected", reason: new Error("WebSocket closed") },
-    ];
+    const results = [AsyncResult.failure(Cause.die(new Error("WebSocket closed")))];
 
-    expect(firstRejectedProviderUpdateMessage(results)).toBe("WebSocket closed");
+    expect(firstFailedProviderUpdateMessage(results)).toBe("WebSocket closed");
     expect(getProviderUpdateRejectedToastView(2, "WebSocket closed")).toMatchObject({
       phase: "failed",
       title: "Provider updates failed",
       description: "WebSocket closed",
     });
+  });
+
+  it("collects only attempted provider snapshots from update responses", () => {
+    const codex = provider({ driver: driver("codex") });
+    const cursor = provider({ driver: driver("cursor") });
+    const results = [AsyncResult.success({ providers: [codex, cursor] })];
+
+    expect(
+      collectUpdatedProviderSnapshots({
+        results,
+        providerInstanceIds: new Set([cursor.instanceId]),
+      }),
+    ).toEqual([cursor]);
   });
 
   it("summarizes active provider updates for the sidebar pill", () => {

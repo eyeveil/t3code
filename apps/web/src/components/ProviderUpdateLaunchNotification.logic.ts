@@ -4,10 +4,13 @@ import {
   type EnvironmentId,
   type ExecutionEnvironmentPlatformOs,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
-
-import type { LocalProviderUpdateOutcome } from "../environmentApi";
+import {
+  squashAtomCommandFailure,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
 
 export type ProviderUpdateCandidate = ServerProvider & {
   readonly versionAdvisory: NonNullable<ServerProvider["versionAdvisory"]> & {
@@ -77,6 +80,19 @@ function dedupeProvidersByDriver<T extends ServerProvider>(providers: ReadonlyAr
   }
 
   return [...latestProviderByDriver.values()];
+}
+
+function dedupeProvidersByInstanceId<T extends ServerProvider>(providers: ReadonlyArray<T>): T[] {
+  const latestProviderByInstanceId = new Map<ProviderInstanceId, T>();
+
+  for (const provider of providers) {
+    const current = latestProviderByInstanceId.get(provider.instanceId);
+    if (!current || provider.checkedAt.localeCompare(current.checkedAt) >= 0) {
+      latestProviderByInstanceId.set(provider.instanceId, provider);
+    }
+  }
+
+  return [...latestProviderByInstanceId.values()];
 }
 
 function getProviderUpdatedTitle(provider: Pick<ServerProvider, "driver" | "version">): string {
@@ -316,81 +332,37 @@ export function getSingleProviderUpdateProgressToastView(
   }
 }
 
-export function firstRejectedProviderUpdateMessage(
-  results: ReadonlyArray<PromiseSettledResult<unknown>>,
+export function collectUpdatedProviderSnapshots(input: {
+  readonly results: ReadonlyArray<
+    AtomCommandResult<{ readonly providers: ReadonlyArray<ServerProvider> }, unknown>
+  >;
+  readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
+}): ServerProvider[] {
+  const matchedProviders: ServerProvider[] = [];
+
+  for (const result of input.results) {
+    if (result._tag === "Failure") {
+      continue;
+    }
+    for (const provider of result.value.providers) {
+      if (input.providerInstanceIds.has(provider.instanceId)) {
+        matchedProviders.push(provider);
+      }
+    }
+  }
+
+  return dedupeProvidersByInstanceId(matchedProviders);
+}
+
+export function firstFailedProviderUpdateMessage(
+  results: ReadonlyArray<AtomCommandResult<unknown, unknown>>,
 ): string | null {
-  const rejected = results.find((result) => result.status === "rejected");
-  if (!rejected) {
+  const failed = results.find((result) => result._tag === "Failure");
+  if (!failed || failed._tag !== "Failure") {
     return null;
   }
-  return rejected.reason instanceof Error ? rejected.reason.message : "Provider update failed.";
-}
-
-// Worst-case ordering across backends: a failed copy outranks an unchanged one,
-// which outranks a still-running one, which outranks a succeeded one.
-const PROVIDER_UPDATE_STATUS_SEVERITY: Record<string, number> = {
-  succeeded: 1,
-  queued: 2,
-  running: 2,
-  unchanged: 3,
-  failed: 4,
-};
-
-function providerUpdateOutcomeSeverity(provider: ServerProvider): number {
-  return PROVIDER_UPDATE_STATUS_SEVERITY[provider.updateState?.status ?? ""] ?? 0;
-}
-
-/**
- * Reduce per-backend update outcomes to one representative snapshot per driver,
- * keeping the worst-case status across every local backend. Because the same
- * driver has a distinct instance id per environment, a secondary backend (e.g.
- * WSL) that *resolved* with a failed or unchanged provider would otherwise be
- * filtered out (its instance id is not the primary's) or collapsed behind the
- * primary's success — this surfaces it instead.
- */
-export function collectProviderUpdateOutcomeSnapshots(
-  results: ReadonlyArray<PromiseSettledResult<LocalProviderUpdateOutcome>>,
-): ServerProvider[] {
-  const worstByDriver = new Map<ProviderDriverKind, ServerProvider>();
-  for (const result of results) {
-    if (result.status !== "fulfilled" || result.value.provider === null) {
-      continue;
-    }
-    const provider = result.value.provider;
-    const current = worstByDriver.get(provider.driver);
-    if (
-      !current ||
-      providerUpdateOutcomeSeverity(provider) > providerUpdateOutcomeSeverity(current)
-    ) {
-      worstByDriver.set(provider.driver, provider);
-    }
-  }
-  return [...worstByDriver.values()];
-}
-
-/**
- * The first secondary (non-primary) backend whose update resolved without
- * succeeding. The primary's own failed/unchanged state is already surfaced
- * inline in settings, so only secondaries (which have no inline row) need an
- * explicit callout.
- */
-export function firstUnsuccessfulSecondaryProviderOutcome(
-  results: ReadonlyArray<PromiseSettledResult<LocalProviderUpdateOutcome>>,
-): { readonly provider: ServerProvider; readonly status: "failed" | "unchanged" } | null {
-  for (const result of results) {
-    if (result.status !== "fulfilled") {
-      continue;
-    }
-    const outcome = result.value;
-    if (outcome.isPrimary || outcome.provider === null) {
-      continue;
-    }
-    const status = outcome.provider.updateState?.status;
-    if (status === "failed" || status === "unchanged") {
-      return { provider: outcome.provider, status };
-    }
-  }
-  return null;
+  const error = squashAtomCommandFailure(failed);
+  return error instanceof Error ? error.message : "Provider update failed.";
 }
 
 function getUpdateFinishedAt(provider: ServerProvider): string | null {
@@ -572,13 +544,106 @@ function getFailedProviderUpdateDescription(providers: ReadonlyArray<ServerProvi
 }
 
 // ===========================================================================
-// Per-environment update grouping
+// Multi-environment provider updates
 //
-// The launch popover splits its single "update all" trigger into one trigger
-// per local environment (Windows + WSL). Each environment owns its provider
-// instances, so candidates and progress are computed from that environment's
-// own provider list; the dispatch targets that environment's connection.
+// With a desktop-local secondary backend present (the WSL backend alongside the
+// Windows primary), a provider update is applied across every local backend.
+// Each environment owns its own provider instances, so candidates and progress
+// are computed per environment and the dispatch targets that environment's
+// connection. These helpers are pure; the dispatch itself runs through the
+// `serverEnvironment.updateProvider` atom command in the components.
 // ===========================================================================
+
+/**
+ * The settled result of dispatching a provider update to one local backend.
+ * `provider` is the post-update snapshot of the targeted instance returned by
+ * that backend (null when the backend did not report the targeted instance,
+ * e.g. it does not have it installed).
+ */
+export interface LocalProviderUpdateOutcome {
+  readonly environmentId: EnvironmentId;
+  readonly isPrimary: boolean;
+  readonly driver: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId;
+  readonly provider: ServerProvider | null;
+}
+
+// Worst-case ordering across backends: a failed copy outranks an unchanged one,
+// which outranks a still-running one, which outranks a succeeded one.
+const PROVIDER_UPDATE_STATUS_SEVERITY: Record<string, number> = {
+  succeeded: 1,
+  queued: 2,
+  running: 2,
+  unchanged: 3,
+  failed: 4,
+};
+
+function providerUpdateOutcomeSeverity(provider: ServerProvider): number {
+  return PROVIDER_UPDATE_STATUS_SEVERITY[provider.updateState?.status ?? ""] ?? 0;
+}
+
+export function firstRejectedProviderUpdateMessage(
+  results: ReadonlyArray<PromiseSettledResult<unknown>>,
+): string | null {
+  const rejected = results.find((result) => result.status === "rejected");
+  if (!rejected) {
+    return null;
+  }
+  return rejected.reason instanceof Error ? rejected.reason.message : "Provider update failed.";
+}
+
+/**
+ * Reduce per-backend update outcomes to one representative snapshot per driver,
+ * keeping the worst-case status across every local backend. Because the same
+ * driver has a distinct instance id per environment, a secondary backend (e.g.
+ * WSL) that *resolved* with a failed or unchanged provider would otherwise be
+ * filtered out (its instance id is not the primary's) or collapsed behind the
+ * primary's success — this surfaces it instead.
+ */
+export function collectProviderUpdateOutcomeSnapshots(
+  results: ReadonlyArray<PromiseSettledResult<LocalProviderUpdateOutcome>>,
+): ServerProvider[] {
+  const worstByDriver = new Map<ProviderDriverKind, ServerProvider>();
+  for (const result of results) {
+    if (result.status !== "fulfilled" || result.value.provider === null) {
+      continue;
+    }
+    const provider = result.value.provider;
+    const current = worstByDriver.get(provider.driver);
+    if (
+      !current ||
+      providerUpdateOutcomeSeverity(provider) > providerUpdateOutcomeSeverity(current)
+    ) {
+      worstByDriver.set(provider.driver, provider);
+    }
+  }
+  return [...worstByDriver.values()];
+}
+
+/**
+ * The first secondary (non-primary) backend whose update resolved without
+ * succeeding. The primary's own failed/unchanged state is already surfaced
+ * inline in settings, so only secondaries (which have no inline row) need an
+ * explicit callout.
+ */
+export function firstUnsuccessfulSecondaryProviderOutcome(
+  results: ReadonlyArray<PromiseSettledResult<LocalProviderUpdateOutcome>>,
+): { readonly provider: ServerProvider; readonly status: "failed" | "unchanged" } | null {
+  for (const result of results) {
+    if (result.status !== "fulfilled") {
+      continue;
+    }
+    const outcome = result.value;
+    if (outcome.isPrimary || outcome.provider === null) {
+      continue;
+    }
+    const status = outcome.provider.updateState?.status;
+    if (status === "failed" || status === "unchanged") {
+      return { provider: outcome.provider, status };
+    }
+  }
+  return null;
+}
 
 const WSL_INSTANCE_ID_PREFIX = "wsl:";
 
