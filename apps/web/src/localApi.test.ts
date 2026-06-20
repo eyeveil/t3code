@@ -62,15 +62,40 @@ afterEach(() => {
 
 describe("LocalApi", () => {
   it("keeps backend operations unavailable in the browser facade", async () => {
-    const { createLocalApi } = await import("./localApi");
+    const { createLocalApi, LocalBackendUnavailableError } = await import("./localApi");
     const api = createLocalApi();
 
-    await expect(api.server.getConfig()).rejects.toThrow(
-      "Local backend API is unavailable before a backend is paired.",
+    await expect(api.server.getConfig()).rejects.toEqual(
+      new LocalBackendUnavailableError({ operation: "get-config" }),
     );
-    await expect(api.shell.openInEditor("/tmp", "cursor")).rejects.toThrow(
-      "Local backend API is unavailable before a backend is paired.",
+    await expect(api.shell.openInEditor("/tmp", "cursor")).rejects.toEqual(
+      new LocalBackendUnavailableError({ operation: "open-in-editor" }),
     );
+  });
+
+  it("preserves desktop bridge failures when opening external URLs", async () => {
+    const cause = new Error("shell rejected request");
+    const url =
+      "https://user:password@example.com/pull/42?access_token=signed-secret-token#private";
+    testWindow().desktopBridge = {
+      openExternal: vi.fn().mockRejectedValue(cause),
+    } as unknown as DesktopBridge;
+
+    const { createLocalApi } = await import("./localApi");
+    const promise = createLocalApi().shell.openExternal(url);
+
+    const error = await promise.catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      _tag: "LocalExternalUrlOpenError",
+      urlHostname: "example.com",
+      urlLength: url.length,
+      urlProtocol: "https:",
+      cause,
+      message: `Unable to open an external URL for example.com through the desktop bridge (https:, input length ${url.length}).`,
+    });
+    expect(error).not.toHaveProperty("url");
+    expect(String(error)).not.toContain("user:password");
+    expect(String(error)).not.toContain("signed-secret-token");
   });
 
   it("uses the browser context-menu fallback without a desktop bridge", async () => {
