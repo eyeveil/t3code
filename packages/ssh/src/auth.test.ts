@@ -12,6 +12,7 @@ import {
   buildSshChildEnvironment,
   isSshAuthFailure,
 } from "./auth.ts";
+import * as SshErrors from "./errors.ts";
 
 describe("ssh auth", () => {
   it.effect("detects ssh auth failures from common permission denied messages", () =>
@@ -29,6 +30,39 @@ describe("ssh auth", () => {
       assert.equal(isSshAuthFailure(new Error("mkdir: Permission denied")), false);
     }),
   );
+
+  it("only follows causes from SSH process wrappers", () => {
+    const authFailure = new Error("Permission denied (publickey,password).");
+    const commandFailure = new SshErrors.SshCommandSpawnError({
+      command: ["ssh", "devbox"],
+      exitCode: null,
+      stderr: "",
+      target: "devbox",
+      cause: authFailure,
+    });
+    assert.equal(isSshAuthFailure(commandFailure), true);
+
+    const helperFailure = new SshErrors.SshAuthenticationHelperError({
+      command: ["ssh", "devbox"],
+      exitCode: null,
+      stderr: "",
+      target: "devbox",
+      cause: authFailure,
+    });
+    assert.equal(isSshAuthFailure(helperFailure), false);
+
+    const readinessFailure = new SshErrors.SshReadinessTimeoutError({
+      baseUrl: "http://127.0.0.1:41773/",
+      requestUrl: "http://127.0.0.1:41773/ready",
+      timeoutMs: 1_000,
+      attempts: 1,
+      cause: new SshErrors.SshReadinessProbeError({
+        requestUrl: "http://127.0.0.1:41773/ready",
+        cause: new Error("HTTP authentication failed."),
+      }),
+    });
+    assert.equal(isSshAuthFailure(readinessFailure), false);
+  });
 
   it.effect("creates askpass env for cached password prompts", () =>
     Effect.gen(function* () {

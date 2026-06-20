@@ -7,8 +7,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 
-import type { SshPasswordPromptError } from "./errors.ts";
+import * as SshErrors from "./errors.ts";
 
 export interface SshPasswordRequest {
   readonly destination: string;
@@ -40,7 +41,7 @@ export class SshPasswordPrompt extends Context.Service<
     readonly isAvailable: boolean;
     readonly request: (
       request: SshPasswordRequest,
-    ) => Effect.Effect<string | null, SshPasswordPromptError>;
+    ) => Effect.Effect<string | null, SshErrors.SshPasswordPromptError>;
   }
 >()("@t3tools/ssh/auth/SshPasswordPrompt") {}
 
@@ -216,6 +217,15 @@ function isSshAuthFailureMessage(message: string): boolean {
   );
 }
 
+const isSshAuthFailureCauseWrapper = Schema.is(
+  Schema.Union([
+    SshErrors.SshCommandSpawnError,
+    SshErrors.SshCommandExecutionError,
+    SshErrors.SshTunnelSpawnError,
+    SshErrors.SshTunnelMonitorError,
+  ]),
+);
+
 export function isSshAuthFailure(error: unknown): boolean {
   const visited = new Set<unknown>();
   let current = error;
@@ -226,7 +236,7 @@ export function isSshAuthFailure(error: unknown): boolean {
     if (isSshAuthFailureMessage(message)) {
       return true;
     }
-    if (!(current instanceof Error) || current.cause === undefined) {
+    if (!isSshAuthFailureCauseWrapper(current)) {
       return false;
     }
     current = current.cause;
