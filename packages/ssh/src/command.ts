@@ -305,7 +305,7 @@ export const runSshCommand = Effect.fn("ssh/command.runSshCommand")(function* (
                 (input.preHostArgs?.length ?? 0) +
                 1 +
                 (input.remoteCommandArgs?.length ?? 0),
-              target: target.alias || target.hostname,
+              target: target.alias.trim() || target.hostname.trim(),
               timeoutMs: input.timeoutMs ?? DEFAULT_SSH_COMMAND_TIMEOUT_MS,
             });
           }),
