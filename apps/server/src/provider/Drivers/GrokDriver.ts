@@ -141,7 +141,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
             new ProviderDriverError({
               driver: DRIVER_KIND,
               instanceId,
-              detail: `Failed to build Grok snapshot: ${cause.message ?? String(cause)}`,
+              detail: "Failed to build the Grok provider snapshot.",
               cause,
             }),
         ),

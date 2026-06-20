@@ -408,7 +408,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId: input.threadId,
-                  detail: cause.message,
+                  detail: "Failed to start the Grok ACP session process.",
                   cause,
                 }),
             ),
@@ -736,7 +736,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                           new ProviderAdapterRequestError({
                             provider: PROVIDER,
                             method: "session/prompt",
-                            detail: cause.message,
+                            detail: `Failed to read attachment '${attachment.id}'.`,
                             cause,
                           }),
                       ),

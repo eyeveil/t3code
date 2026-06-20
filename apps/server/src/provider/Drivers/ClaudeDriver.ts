@@ -193,7 +193,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             new ProviderDriverError({
               driver: DRIVER_KIND,
               instanceId,
-              detail: `Failed to build Claude snapshot: ${cause.message ?? String(cause)}`,
+              detail: "Failed to build the Claude provider snapshot.",
               cause,
             }),
         ),

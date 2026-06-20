@@ -30,6 +30,7 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -1085,6 +1086,18 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
       const exit = yield* Effect.exit(provider.listSessions());
       assert.equal(Exit.hasDies(exit), true);
+      const defect = Exit.findDefect(exit);
+      assert.equal(Result.isSuccess(defect), true);
+      if (Result.isSuccess(defect)) {
+        assert.instanceOf(defect.success, ProviderService.ProviderSessionBindingCorrelationError);
+        assert.deepInclude(defect.success, {
+          threadId,
+          sessionProvider: ProviderDriverKind.make("codex"),
+          bindingProvider: ProviderDriverKind.make("claudeAgent"),
+          sessionInstanceId: codexInstanceId,
+          bindingInstanceId: claudeAgentInstanceId,
+        });
+      }
       yield* directory.upsert({
         threadId,
         provider: ProviderDriverKind.make("codex"),

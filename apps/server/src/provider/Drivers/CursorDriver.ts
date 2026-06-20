@@ -165,7 +165,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
             new ProviderDriverError({
               driver: DRIVER_KIND,
               instanceId,
-              detail: `Failed to build Cursor snapshot: ${cause.message ?? String(cause)}`,
+              detail: "Failed to build the Cursor provider snapshot.",
               cause,
             }),
         ),

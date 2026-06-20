@@ -67,15 +67,6 @@ export class ProviderSessionDirectory extends Context.Service<
 
 const decodeProviderDriverKindValue = Schema.decodeUnknownEffect(ProviderDriverKind);
 
-function toPersistenceError(operation: string) {
-  return (cause: unknown) =>
-    new ProviderSessionDirectoryPersistenceError({
-      operation,
-      detail: `Failed to execute ${operation}.`,
-      cause,
-    });
-}
-
 function decodeProviderDriverKind(
   providerName: string,
   operation: string,
@@ -139,7 +130,14 @@ export const make = Effect.gen(function* () {
 
   const getBinding: ProviderSessionDirectory["Service"]["getBinding"] = (threadId) =>
     repository.getByThreadId({ threadId }).pipe(
-      Effect.mapError(toPersistenceError("ProviderSessionDirectory.getBinding:getByThreadId")),
+      Effect.mapError(
+        (cause) =>
+          new ProviderSessionDirectoryPersistenceError({
+            operation: "ProviderSessionDirectory.getBinding:getByThreadId",
+            detail: "Failed to read the persisted provider session binding.",
+            cause,
+          }),
+      ),
       Effect.flatMap((runtime) =>
         Option.match(runtime, {
           onNone: () => Effect.succeed(Option.none<ProviderRuntimeBinding>()),
@@ -154,9 +152,16 @@ export const make = Effect.gen(function* () {
   const upsert: ProviderSessionDirectory["Service"]["upsert"] = Effect.fn(
     "ProviderSessionDirectory.upsert",
   )(function* (binding) {
-    const existing = yield* repository
-      .getByThreadId({ threadId: binding.threadId })
-      .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:getByThreadId")));
+    const existing = yield* repository.getByThreadId({ threadId: binding.threadId }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderSessionDirectoryPersistenceError({
+            operation: "ProviderSessionDirectory.upsert:getByThreadId",
+            detail: "Failed to read the existing provider session binding before upsert.",
+            cause,
+          }),
+      ),
+    );
 
     const existingRuntime = Option.getOrUndefined(existing);
     const resolvedThreadId = binding.threadId ?? existingRuntime?.threadId;
@@ -198,7 +203,16 @@ export const make = Effect.gen(function* () {
           binding.runtimePayload,
         ),
       })
-      .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderSessionDirectoryPersistenceError({
+              operation: "ProviderSessionDirectory.upsert:upsert",
+              detail: "Failed to persist the provider session binding.",
+              cause,
+            }),
+        ),
+      );
   });
 
   const getProvider: ProviderSessionDirectory["Service"]["getProvider"] = (threadId) =>
@@ -219,13 +233,27 @@ export const make = Effect.gen(function* () {
 
   const listThreadIds: ProviderSessionDirectory["Service"]["listThreadIds"] = () =>
     repository.list().pipe(
-      Effect.mapError(toPersistenceError("ProviderSessionDirectory.listThreadIds:list")),
+      Effect.mapError(
+        (cause) =>
+          new ProviderSessionDirectoryPersistenceError({
+            operation: "ProviderSessionDirectory.listThreadIds:list",
+            detail: "Failed to list persisted provider session bindings.",
+            cause,
+          }),
+      ),
       Effect.map((rows) => rows.map((row) => row.threadId)),
     );
 
   const listBindings: ProviderSessionDirectory["Service"]["listBindings"] = () =>
     repository.list().pipe(
-      Effect.mapError(toPersistenceError("ProviderSessionDirectory.listBindings:list")),
+      Effect.mapError(
+        (cause) =>
+          new ProviderSessionDirectoryPersistenceError({
+            operation: "ProviderSessionDirectory.listBindings:list",
+            detail: "Failed to list persisted provider session bindings.",
+            cause,
+          }),
+      ),
       Effect.flatMap((rows) =>
         Effect.forEach(
           rows,

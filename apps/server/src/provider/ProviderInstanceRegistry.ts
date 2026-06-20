@@ -48,6 +48,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -159,6 +160,8 @@ interface RegistryState {
 const entryEqual = (a: ProviderInstanceConfig, b: ProviderInstanceConfig): boolean =>
   Equal.equals(a, b);
 
+const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
+
 const decodedConfigEnabled = (config: unknown): boolean | undefined => {
   if (!config || typeof config !== "object" || globalThis.Array.isArray(config)) {
     return undefined;
@@ -203,12 +206,13 @@ const buildEntry = <R>(input: {
     const decoder = Schema.decodeUnknownEffect(driver.configSchema);
     const decodeResult = yield* decoder(entry.config ?? driver.defaultConfig()).pipe(Effect.result);
     if (decodeResult._tag === "Failure") {
-      const issue = decodeResult.failure;
-      const detail = issue.message ?? String(issue);
+      const cause = decodeResult.failure;
+      const detail = formatSchemaIssue(cause.issue);
       yield* Effect.logError("Failed to decode provider instance config", {
         instanceId: rawInstanceId,
         driver: entry.driver,
         detail,
+        cause,
       });
       return {
         kind: "unavailable" as const,
@@ -246,6 +250,7 @@ const buildEntry = <R>(input: {
         instanceId: rawInstanceId,
         driver: entry.driver,
         detail: createResult.failure.detail,
+        cause: createResult.failure,
       });
       yield* Scope.close(childScope, Exit.void).pipe(Effect.ignore);
       return {

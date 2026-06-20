@@ -25,7 +25,7 @@
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ServerProvider,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
@@ -38,8 +38,9 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
-import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import * as Config from "../config.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
@@ -59,6 +60,20 @@ import {
 import type { ProviderSnapshotSource } from "./builtInProviderCatalog.ts";
 
 export type ProviderMaintenanceActionKind = "update";
+
+export class ProviderSnapshotCorrelationError extends Schema.TaggedErrorClass<ProviderSnapshotCorrelationError>()(
+  "ProviderSnapshotCorrelationError",
+  {
+    sourceInstanceId: ProviderInstanceId,
+    snapshotInstanceId: ProviderInstanceId,
+    sourceDriver: ProviderDriverKind,
+    snapshotDriver: ProviderDriverKind,
+  },
+) {
+  override get message(): string {
+    return `Provider snapshot correlation failed for source instance '${this.sourceInstanceId}' (${this.sourceDriver}) and emitted instance '${this.snapshotInstanceId}' (${this.snapshotDriver}).`;
+  }
+}
 
 export class ProviderRegistry extends Context.Service<
   ProviderRegistry,
@@ -211,18 +226,14 @@ const correlateSnapshotWithSource = (
   source: ProviderSnapshotSource,
   snapshot: ServerProvider,
 ): Effect.Effect<ServerProvider> => {
-  if (snapshot.instanceId !== source.instanceId) {
+  if (snapshot.instanceId !== source.instanceId || snapshot.driver !== source.driverKind) {
     return Effect.die(
-      new Error(
-        `Provider snapshot instance mismatch: source '${source.instanceId}' emitted '${snapshot.instanceId}'.`,
-      ),
-    );
-  }
-  if (snapshot.driver !== source.driverKind) {
-    return Effect.die(
-      new Error(
-        `Provider snapshot driver mismatch for instance '${source.instanceId}': source '${source.driverKind}' emitted '${snapshot.driver}'.`,
-      ),
+      new ProviderSnapshotCorrelationError({
+        sourceInstanceId: source.instanceId,
+        snapshotInstanceId: snapshot.instanceId,
+        sourceDriver: source.driverKind,
+        snapshotDriver: snapshot.driver,
+      }),
     );
   }
   return Effect.succeed(snapshot);
@@ -669,7 +680,7 @@ export const make = Effect.gen(function* () {
         return Effect.interrupt;
       }
       return Effect.logError("provider registry instance sync failed; keeping subscription alive", {
-        cause: Cause.pretty(cause),
+        cause,
       });
     }),
   );
@@ -717,7 +728,7 @@ export const make = Effect.gen(function* () {
       return yield* Effect.interrupt;
     }
     yield* Effect.logError("provider registry refresh failed; preserving cached providers", {
-      cause: Cause.pretty(cause),
+      cause,
     });
     return yield* Ref.get(providersRef);
   });

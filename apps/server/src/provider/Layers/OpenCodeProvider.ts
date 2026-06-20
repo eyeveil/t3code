@@ -307,13 +307,11 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   const customModels = openCodeSettings.customModels;
   const isExternalServer = openCodeSettings.serverUrl.trim().length > 0;
 
-  const fallback = (cause: unknown, version: string | null = null) => {
-    const failure = formatOpenCodeProbeError({
-      cause,
-      isExternalServer,
-      serverUrl: openCodeSettings.serverUrl,
-    });
-    return buildServerProvider({
+  const buildFailureSnapshot = (
+    failure: { readonly installed: boolean; readonly message: string },
+    version: string | null,
+  ) =>
+    buildServerProvider({
       presentation: OPENCODE_PRESENTATION,
       enabled: openCodeSettings.enabled,
       checkedAt,
@@ -331,7 +329,16 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
         message: failure.message,
       },
     });
-  };
+
+  const fallback = (cause: unknown, version: string | null = null) =>
+    buildFailureSnapshot(
+      formatOpenCodeProbeError({
+        cause,
+        isExternalServer,
+        serverUrl: openCodeSettings.serverUrl,
+      }),
+      version,
+    );
 
   if (!openCodeSettings.enabled) {
     return buildServerProvider({
@@ -381,10 +388,11 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     version = parseGenericCliVersion(versionExit.value.stdout) ?? null;
 
     if (!version) {
-      return fallback(
-        new Error(
-          `Unable to determine OpenCode version from \`opencode --version\` output. T3 Code requires OpenCode v${MINIMUM_OPENCODE_VERSION} or newer.`,
-        ),
+      return buildFailureSnapshot(
+        {
+          installed: true,
+          message: `Unable to determine OpenCode version from \`opencode --version\` output. T3 Code requires OpenCode v${MINIMUM_OPENCODE_VERSION} or newer.`,
+        },
         null,
       );
     }

@@ -16,6 +16,7 @@ import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
 } from "../persistence/Layers/Sqlite.ts";
+import { PersistenceSqlError } from "../persistence/Errors.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as ProviderSessionDirectory from "./ProviderSessionDirectory.ts";
 
@@ -27,6 +28,36 @@ function makeDirectoryLayer<E, R>(persistenceLayer: Layer.Layer<SqlClient.SqlCli
     NodeServices.layer,
   );
 }
+
+it.effect("preserves provider session repository failure causes", () => {
+  const rootCause = new Error("database unavailable");
+  const repositoryCause = new PersistenceSqlError({
+    operation: "ProviderSessionRuntimeRepository.getByThreadId",
+    detail: "Failed to read provider session runtime.",
+    cause: rootCause,
+  });
+  const repository = ProviderSessionRuntime.ProviderSessionRuntimeRepository.of({
+    upsert: () => Effect.fail(repositoryCause),
+    getByThreadId: () => Effect.fail(repositoryCause),
+    list: () => Effect.fail(repositoryCause),
+    deleteByThreadId: () => Effect.fail(repositoryCause),
+  });
+  const layer = ProviderSessionDirectory.layer.pipe(
+    Layer.provide(
+      Layer.succeed(ProviderSessionRuntime.ProviderSessionRuntimeRepository, repository),
+    ),
+  );
+
+  return Effect.gen(function* () {
+    const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+    const error = yield* directory
+      .getBinding(ThreadId.make("thread-read-failure"))
+      .pipe(Effect.flip);
+
+    assert.equal(error.operation, "ProviderSessionDirectory.getBinding:getByThreadId");
+    assert.equal(error.cause, repositoryCause);
+  }).pipe(Effect.provide(layer));
+});
 
 it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryLive", (it) => {
   it("upserts and reads thread bindings", () =>

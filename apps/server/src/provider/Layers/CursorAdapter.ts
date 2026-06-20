@@ -564,7 +564,7 @@ export function makeCursorAdapter(
                 new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId: input.threadId,
-                  detail: cause.message,
+                  detail: "Failed to start the Cursor ACP session process.",
                   cause,
                 }),
             ),
@@ -979,7 +979,7 @@ export function makeCursorAdapter(
                     new ProviderAdapterRequestError({
                       provider: PROVIDER,
                       method: "session/prompt",
-                      detail: cause.message,
+                      detail: `Failed to read attachment '${attachment.id}'.`,
                       cause,
                     }),
                 ),

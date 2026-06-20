@@ -326,7 +326,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
           Effect.catchCause((cause) =>
             Effect.logWarning("Provider post-update version verification failed", {
               provider,
-              cause: Cause.pretty(cause),
+              cause,
             }).pipe(
               Effect.as<VerifiedProviderRefresh>({
                 providers,
