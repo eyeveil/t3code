@@ -307,7 +307,7 @@ describe("ssh tunnel scripts", () => {
       assert.isTrue(Result.isFailure(invalid));
       if (Result.isFailure(invalid)) {
         assert.instanceOf(invalid.failure, SshHttpBridgeInvalidUrlError);
-        assert.equal(invalid.failure.message, "Invalid URL");
+        assert.equal(invalid.failure.message, "Invalid SSH forwarded http base URL.");
       }
 
       const nonLoopback = yield* Effect.result(

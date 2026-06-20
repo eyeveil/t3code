@@ -73,7 +73,7 @@ export class SshCommandSpawnError extends Schema.TaggedErrorClass<SshCommandSpaw
   },
 ) {
   override get message(): string {
-    return causeMessage(this.cause, `Failed to spawn SSH command${targetSuffix(this.target)}.`);
+    return `Failed to spawn SSH command${targetSuffix(this.target)}.`;
   }
 }
 
@@ -84,7 +84,7 @@ export class SshCommandExecutionError extends Schema.TaggedErrorClass<SshCommand
   },
 ) {
   override get message(): string {
-    return causeMessage(this.cause, `Failed to run SSH command${targetSuffix(this.target)}.`);
+    return `Failed to run SSH command${targetSuffix(this.target)}.`;
   }
 }
 
@@ -132,7 +132,7 @@ export class SshTunnelSpawnError extends Schema.TaggedErrorClass<SshTunnelSpawnE
   },
 ) {
   override get message(): string {
-    return causeMessage(this.cause, `Failed to spawn SSH tunnel${targetSuffix(this.target)}.`);
+    return `Failed to spawn SSH tunnel${targetSuffix(this.target)}.`;
   }
 }
 
@@ -143,7 +143,7 @@ export class SshTunnelMonitorError extends Schema.TaggedErrorClass<SshTunnelMoni
   },
 ) {
   override get message(): string {
-    return causeMessage(this.cause, `Failed to monitor SSH tunnel${targetSuffix(this.target)}.`);
+    return `Failed to monitor SSH tunnel${targetSuffix(this.target)}.`;
   }
 }
 
@@ -274,7 +274,7 @@ export class SshHttpBridgeInvalidUrlError extends Schema.TaggedErrorClass<SshHtt
   },
 ) {
   override get message(): string {
-    return causeMessage(this.cause, "Invalid SSH forwarded http base URL.");
+    return "Invalid SSH forwarded http base URL.";
   }
 }
 
@@ -452,10 +452,6 @@ export type SshPasswordPromptError = typeof SshPasswordPromptError.Type;
 
 function targetSuffix(target: string | undefined): string {
   return target ? ` for ${target}` : "";
-}
-
-function causeMessage(cause: unknown, fallback: string): string {
-  return cause instanceof Error ? cause.message : fallback;
 }
 
 function exitCodeSuffix(exitCode: number | null): string {

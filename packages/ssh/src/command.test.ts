@@ -182,7 +182,8 @@ describe("ssh command", () => {
         cause: spawnCause,
       });
       assert.strictEqual(spawnError.cause, spawnCause);
-      assert.equal(spawnError.message, "ssh executable was not found");
+      assert.equal(spawnError.message, "Failed to spawn SSH command for devbox.");
+      assert.notInclude(spawnError.message, spawnCause.message);
     }).pipe(Effect.provide(processLayer));
   });
 

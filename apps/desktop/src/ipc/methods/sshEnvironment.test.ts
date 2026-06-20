@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { SshHttpBridgeError } from "@t3tools/ssh/errors";
+import { SshCommandSpawnError, SshHttpBridgeError } from "@t3tools/ssh/errors";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -13,6 +13,7 @@ import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import {
   DesktopSshEnvironmentRequestError,
   fetchSshEnvironmentDescriptor,
+  toDesktopSshOperationPresentationError,
 } from "./sshEnvironment.ts";
 
 const isSshHttpBridgeError = Schema.is(SshHttpBridgeError);
@@ -39,6 +40,22 @@ function makeHttpClientLayer(
 }
 
 describe("SSH environment IPC", () => {
+  it("presents legacy process causes without weakening structured errors", () => {
+    const cause = new Error("ssh executable was not found");
+    const structured = new SshCommandSpawnError({
+      command: ["ssh"],
+      exitCode: null,
+      stderr: "",
+      target: "devbox",
+      cause,
+    });
+
+    const presentation = toDesktopSshOperationPresentationError(structured);
+    assert.equal(structured.message, "Failed to spawn SSH command for devbox.");
+    assert.equal(presentation.message, cause.message);
+    assert.strictEqual(presentation.cause, structured);
+  });
+
   it.effect("fetches and decodes the remote environment descriptor", () => {
     const requestUrls: string[] = [];
     const layer = makeHttpClientLayer((request) =>
