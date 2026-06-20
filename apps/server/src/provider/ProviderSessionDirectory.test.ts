@@ -17,6 +17,7 @@ import {
   SqlitePersistenceMemory,
 } from "../persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
+import { isProviderSessionNotFoundError } from "./Errors.ts";
 import * as ProviderSessionDirectory from "./ProviderSessionDirectory.ts";
 
 function makeDirectoryLayer<E, R>(persistenceLayer: Layer.Layer<SqlClient.SqlClient, E, R>) {
@@ -74,6 +75,17 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
 
       const threadIds = yield* directory.listThreadIds();
       assert.deepEqual(threadIds, [nextThreadId]);
+    }));
+
+  it("reports a missing provider binding as a domain not-found error", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = ThreadId.make("thread-missing");
+
+      const error = yield* directory.getProvider(threadId).pipe(Effect.flip);
+
+      assert(isProviderSessionNotFoundError(error));
+      assert.equal(error.threadId, threadId);
     }));
 
   it("persists runtime fields and merges payload updates", () =>

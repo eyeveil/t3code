@@ -171,6 +171,8 @@ export class ProviderSessionNotFoundError extends Schema.TaggedErrorClass<Provid
   }
 }
 
+export const isProviderSessionNotFoundError = Schema.is(ProviderSessionNotFoundError);
+
 /**
  * ProviderSessionDirectoryPersistenceError - Session directory persistence failure.
  */

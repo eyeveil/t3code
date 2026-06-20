@@ -13,7 +13,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { ProviderSessionDirectoryPersistenceError, ProviderValidationError } from "./Errors.ts";
+import {
+  ProviderSessionDirectoryPersistenceError,
+  ProviderSessionNotFoundError,
+  ProviderValidationError,
+} from "./Errors.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 
 export interface ProviderRuntimeBinding {
@@ -36,7 +40,9 @@ export interface ProviderRuntimeBindingWithMetadata extends ProviderRuntimeBindi
   readonly lastSeenAt: string;
 }
 
-export type ProviderSessionDirectoryReadError = ProviderSessionDirectoryPersistenceError;
+export type ProviderSessionDirectoryReadError =
+  | ProviderSessionDirectoryPersistenceError
+  | ProviderSessionNotFoundError;
 
 export type ProviderSessionDirectoryWriteError =
   | ProviderValidationError
@@ -53,7 +59,10 @@ export class ProviderSessionDirectory extends Context.Service<
     ) => Effect.Effect<ProviderDriverKind, ProviderSessionDirectoryReadError>;
     readonly getBinding: (
       threadId: ThreadId,
-    ) => Effect.Effect<Option.Option<ProviderRuntimeBinding>, ProviderSessionDirectoryReadError>;
+    ) => Effect.Effect<
+      Option.Option<ProviderRuntimeBinding>,
+      ProviderSessionDirectoryPersistenceError
+    >;
     readonly listThreadIds: () => Effect.Effect<
       ReadonlyArray<ThreadId>,
       ProviderSessionDirectoryPersistenceError
@@ -222,9 +231,8 @@ export const make = Effect.gen(function* () {
           onSome: (value) => Effect.succeed(value.provider),
           onNone: () =>
             Effect.fail(
-              new ProviderSessionDirectoryPersistenceError({
-                operation: "ProviderSessionDirectory.getProvider",
-                detail: `No persisted provider binding found for thread '${threadId}'.`,
+              new ProviderSessionNotFoundError({
+                threadId,
               }),
             ),
         }),
