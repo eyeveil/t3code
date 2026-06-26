@@ -16,6 +16,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { AppText as Text } from "../../components/AppText";
+import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import { refreshAgentAwarenessRegistration } from "../agent-awareness/remoteRegistration";
@@ -103,6 +104,7 @@ function LocalSettingsRouteScreen() {
 }
 
 function ConfiguredSettingsRouteScreen() {
+  const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { expand: expandClerkSheet } = useClerkSettingsSheetDetent();
@@ -392,17 +394,27 @@ function ConfiguredSettingsRouteScreen() {
           <SettingsSwitchRow
             icon="bell.badge"
             label="Device Notifications"
-            disabled={notificationStatus === "checking" || notificationStatus === "unsupported"}
-            value={notificationStatus === "enabled"}
+            disabled={
+              !agentAwarenessPushAvailable ||
+              notificationStatus === "checking" ||
+              notificationStatus === "unsupported"
+            }
+            value={agentAwarenessPushAvailable && notificationStatus === "enabled"}
             onValueChange={handleDeviceNotificationsChange}
           />
           <SettingsSwitchRow
             disabled={
-              !isLoaded || liveActivityStatus === "checking" || liveActivityStatus === "linking"
+              !agentAwarenessPushAvailable ||
+              !isLoaded ||
+              liveActivityStatus === "checking" ||
+              liveActivityStatus === "linking"
             }
             icon="bolt.circle"
             label="Live Activity Updates"
-            value={liveActivityStatus === "enabled" || liveActivityStatus === "linking"}
+            value={
+              agentAwarenessPushAvailable &&
+              (liveActivityStatus === "enabled" || liveActivityStatus === "linking")
+            }
             onValueChange={handleLiveActivitiesChange}
           />
         </SettingsSection>
