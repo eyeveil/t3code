@@ -107,6 +107,7 @@ const config: ExpoConfig = {
     icon: variant.iosIcon,
     supportsTablet: true,
     bundleIdentifier: iosBundleIdentifier,
+    associatedDomains: ["applinks:clerk.t3.codes", "webcredentials:clerk.t3.codes"],
     infoPlist: {
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,

@@ -32,6 +32,7 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
   private val onToggleComment by EventDispatcher()
   private var rows: List<DiffRow> = emptyList()
   private var visibleRows: List<DiffRow> = emptyList()
+  private var visibleToOriginalIndex: IntArray = intArrayOf()
   private var collapsedFileIds: Set<String> = emptySet()
   private var viewedFileIds: Set<String> = emptySet()
   private var selectedRowIds: Set<String> = emptySet()
@@ -56,11 +57,13 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
   init {
     canvasView.onRowTap = { row, gesture -> handleRowTap(row, gesture) }
     canvasView.onVisibleRowsChanged = { first, last ->
+      val originalFirst = if (first in visibleToOriginalIndex.indices) visibleToOriginalIndex[first] else first
+      val originalLast = if (last in visibleToOriginalIndex.indices) visibleToOriginalIndex[last] else last
       onDebug(
         mapOf(
           "message" to "visible-range",
-          "firstRowIndex" to first,
-          "lastRowIndex" to last,
+          "firstRowIndex" to originalFirst,
+          "lastRowIndex" to originalLast,
         ),
       )
       emitVisibleFile(first)
@@ -81,7 +84,12 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
   fun setContentResetKey(value: String) {
     if (contentResetKey == value) return
     contentResetKey = value
+    rowsDecodeGeneration += 1
     tokensDecodeGeneration += 1
+    rows = emptyList()
+    visibleRows = emptyList()
+    visibleToOriginalIndex = intArrayOf()
+    canvasView.rows = emptyList()
     canvasView.tokensByRowId = emptyMap()
     lastVisibleFileId = null
     pendingInitialScroll = true
@@ -314,21 +322,27 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
 
   private fun rebuildVisibleRows() {
     val filtered = ArrayList<DiffRow>(rows.size)
+    val indexMapping = ArrayList<Int>(rows.size)
     var currentFileCollapsed = false
-    rows.forEach { row ->
+    rows.forEachIndexed { originalIndex, row ->
       if (row.kind == "file") {
         currentFileCollapsed = collapsedFileIds.contains(row.resolvedFileId)
         filtered.add(row)
+        indexMapping.add(originalIndex)
       } else if (!currentFileCollapsed) {
         if (row.kind != "comment" || !collapsedCommentIds.contains(row.id)) {
           filtered.add(row)
+          indexMapping.add(originalIndex)
         } else {
           filtered.add(row.copy(commentText = "Comment collapsed"))
+          indexMapping.add(originalIndex)
         }
       }
     }
     visibleRows = filtered
+    visibleToOriginalIndex = indexMapping.toIntArray()
     canvasView.rows = filtered
+    canvasView.collapsedCommentIds = collapsedCommentIds
     canvasView.viewedFileIds = viewedFileIds
     canvasView.selectedRowIds = selectedRowIds
     applyPendingInitialScroll()
@@ -360,6 +374,13 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
 
   private fun emitVisibleFile(firstVisibleIndex: Int) {
     if (visibleRows.isEmpty()) return
+    if (canvasView.verticalOffset() <= 0) {
+      if (lastVisibleFileId != null) {
+        lastVisibleFileId = null
+        onVisibleFileChange(mapOf("fileId" to null))
+      }
+      return
+    }
     val start = firstVisibleIndex.coerceIn(0, visibleRows.lastIndex)
     val fileId = (start downTo 0)
       .asSequence()
@@ -590,6 +611,11 @@ private class DiffCanvasView(context: Context) : View(context) {
       field = value
       invalidate()
     }
+  var collapsedCommentIds: Set<String> = emptySet()
+    set(value) {
+      field = value
+      rebuildOffsets()
+    }
   var theme: DiffTheme = DiffTheme.fallback("light")
     set(value) {
       field = value
@@ -691,7 +717,11 @@ private class DiffCanvasView(context: Context) : View(context) {
 
   private fun rowHeight(row: DiffRow): Int = when (row.kind) {
     "file" -> style.fileHeaderHeightPx.toInt()
-    "comment" -> max((style.rowHeightPx * 3.2f).toInt(), (56 * density).toInt())
+    "comment" -> if (collapsedCommentIds.contains(row.id)) {
+      (44 * density).toInt()
+    } else {
+      max((style.rowHeightPx * 3.2f).toInt(), (56 * density).toInt())
+    }
     else -> style.rowHeightPx.toInt()
   }.coerceAtLeast(1)
 

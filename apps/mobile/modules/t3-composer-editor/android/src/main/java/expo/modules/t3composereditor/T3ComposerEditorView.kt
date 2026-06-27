@@ -197,6 +197,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
 
   fun setScrollEnabled(scrollEnabled: Boolean) {
     editor.isVerticalScrollBarEnabled = scrollEnabled
+    editor.scrollEnabled = scrollEnabled
   }
 
   fun setAutoFocus(autoFocus: Boolean) {
@@ -424,6 +425,11 @@ private fun parseTokens(value: String): List<ComposerToken> = try {
 private class SelectionAwareEditText(context: Context) : EditText(context) {
   var selectionListener: ((Int, Int) -> Unit)? = null
   var pasteImagesListener: ((List<String>) -> Unit)? = null
+  var scrollEnabled = true
+
+  override fun scrollTo(x: Int, y: Int) {
+    if (scrollEnabled) super.scrollTo(x, y)
+  }
 
   override fun onSelectionChanged(selStart: Int, selEnd: Int) {
     super.onSelectionChanged(selStart, selEnd)
