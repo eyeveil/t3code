@@ -1,8 +1,10 @@
 import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
 import * as AuthConnectClients from "../persistence/AuthConnectClients.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
@@ -31,6 +33,13 @@ const approvedRecord: AuthConnectClients.AuthConnectClientRecord = {
   approvedAt,
   rejectedAt: null,
   revokedAt: null,
+  lastSeenAt: null,
+};
+const pendingRecord: AuthConnectClients.AuthConnectClientRecord = {
+  ...approvedRecord,
+  status: "pending",
+  updatedAt: requestedAt,
+  approvedAt: null,
   lastSeenAt: null,
 };
 
@@ -121,26 +130,57 @@ it.effect("returns rejected when an approved client is rejected before last-seen
   ),
 );
 
-it.effect("returns pending when an approved client is revoked before last-seen update", () =>
-  Effect.gen(function* () {
-    const store = yield* ConnectClientStore.ConnectClientStore;
-    const authorization = yield* store.requestClient({
-      cloudUserId: "cloud-user",
-      clientProofKeyThumbprint: "client-thumbprint",
-    });
+it.effect(
+  "re-registers a pending client when an approved client is revoked before last-seen update",
+  () => {
+    const upsertInputs: Array<AuthConnectClients.UpsertAuthConnectClientRequestInput> = [];
 
-    expect(authorization.mode).toBe("client-approval");
-    expect(authorization.status).toBe("pending");
-    if (authorization.mode === "client-approval") {
-      expect(authorization.client.status).toBe("pending");
-      expect(authorization.client.approvedAt).toBeNull();
-      expect(authorization.client.lastSeenAt).toBeNull();
-    }
-  }).pipe(
-    Effect.provide(
-      makeStoreLayer({
-        markSeen: () => Effect.succeed(Option.none()),
-      }),
-    ),
-  ),
+    return Effect.gen(function* () {
+      const store = yield* ConnectClientStore.ConnectClientStore;
+      const changesFiber = yield* store.streamChanges.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+      const authorization = yield* store.requestClient({
+        cloudUserId: "cloud-user",
+        clientProofKeyThumbprint: "client-thumbprint",
+      });
+      const changes = Array.from(yield* Fiber.join(changesFiber));
+
+      expect(authorization.mode).toBe("client-approval");
+      expect(authorization.status).toBe("pending");
+      expect(upsertInputs).toHaveLength(2);
+      if (authorization.mode === "client-approval") {
+        expect(authorization.client.status).toBe("pending");
+        expect(authorization.client.approvedAt).toBeNull();
+        expect(authorization.client.lastSeenAt).toBeNull();
+      }
+      expect(changes.map((change) => change.type)).toEqual([
+        "connectClientUpserted",
+        "connectClientUpserted",
+      ]);
+      expect(changes[1]?.type === "connectClientUpserted" ? changes[1].client.status : null).toBe(
+        "pending",
+      );
+    }).pipe(
+      Effect.provide(
+        makeStoreLayer({
+          upsertRequest: (input) =>
+            Effect.sync(() => {
+              upsertInputs.push(input);
+              return upsertInputs.length === 1
+                ? approvedRecord
+                : {
+                    ...pendingRecord,
+                    requestedAt: input.requestedAt,
+                    updatedAt: input.requestedAt,
+                  };
+            }),
+          markSeen: () => Effect.succeed(Option.none()),
+        }),
+      ),
+    );
+  },
 );

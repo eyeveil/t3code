@@ -295,24 +295,26 @@ export const make = Effect.gen(function* () {
       return { mode, status: "approved" as const };
     }
 
+    const upsertClientRequest = (requestedAt: DateTime.Utc) =>
+      repository
+        .upsertRequest({
+          clientProofKeyThumbprint: input.clientProofKeyThumbprint,
+          cloudUserId: input.cloudUserId,
+          deviceId: input.deviceId ?? null,
+          client: fromPresentationMetadata(input.client),
+          requestedAt,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ConnectClientRequestError({
+                clientProofKeyThumbprint: input.clientProofKeyThumbprint,
+                cause,
+              }),
+          ),
+        );
     const requestedAt = yield* DateTime.now;
-    const record = yield* repository
-      .upsertRequest({
-        clientProofKeyThumbprint: input.clientProofKeyThumbprint,
-        cloudUserId: input.cloudUserId,
-        deviceId: input.deviceId ?? null,
-        client: fromPresentationMetadata(input.client),
-        requestedAt,
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new ConnectClientRequestError({
-              clientProofKeyThumbprint: input.clientProofKeyThumbprint,
-              cause,
-            }),
-        ),
-      );
+    const record = yield* upsertClientRequest(requestedAt);
 
     const visibleClient = toAuthConnectClient(record);
     yield* emitUpsert(visibleClient);
@@ -342,17 +344,11 @@ export const make = Effect.gen(function* () {
       return { mode, status: seen.value.status, client: seenClient };
     }
 
-    return {
-      mode,
-      status: "pending" as const,
-      client: {
-        ...visibleClient,
-        status: "pending" as const,
-        updatedAt: DateTime.toUtc(seenAt),
-        approvedAt: null,
-        lastSeenAt: null,
-      },
-    };
+    const reregisteredAt = yield* DateTime.now;
+    const reregistered = yield* upsertClientRequest(reregisteredAt);
+    const reregisteredClient = toAuthConnectClient(reregistered);
+    yield* emitUpsert(reregisteredClient);
+    return { mode, status: reregistered.status, client: reregisteredClient };
   });
 
   const updateDecision = <E extends ConnectClientApprovalError | ConnectClientRejectionError>(
