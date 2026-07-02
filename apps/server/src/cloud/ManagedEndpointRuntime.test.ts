@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -190,6 +190,47 @@ describe("CloudManagedEndpointRuntime", () => {
       expect(started.status).toBe("running");
       expect(unsupported).toEqual({ status: "unsupported", providerKind: "manual" });
       expect(killed).toEqual([200]);
+    }),
+  );
+
+  it.effect("deduplicates Cloudflare connector configs with absent optional tunnel fields", () =>
+    Effect.gen(function* () {
+      const spawned: Array<number> = [];
+      const killed: Array<number> = [];
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.gen(function* () {
+          const pid = 250 + spawned.length;
+          spawned.push(pid);
+          const handle = makeHandle({
+            pid,
+            onKill: () => {
+              killed.push(pid);
+            },
+          });
+          yield* Effect.addFinalizer(() => handle.kill().pipe(Effect.ignore));
+          return handle;
+        }),
+      );
+      const runtime = yield* buildCloudManagedEndpointRuntime(spawner);
+
+      const first = yield* runtime.applyConfig({
+        providerKind: "cloudflare_tunnel",
+        connectorToken: "token",
+      });
+      const second = yield* runtime.applyConfig({
+        providerKind: "cloudflare_tunnel",
+        connectorToken: "token",
+      });
+      yield* runtime.applyConfig(null);
+
+      assert.deepStrictEqual(spawned, [250]);
+      assert.deepStrictEqual(killed, [250]);
+      assert.deepStrictEqual(first, {
+        status: "running",
+        providerKind: "cloudflare_tunnel",
+        pid: 250,
+      });
+      assert.deepStrictEqual(second, first);
     }),
   );
 

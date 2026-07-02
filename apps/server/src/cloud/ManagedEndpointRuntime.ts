@@ -1,4 +1,7 @@
-import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
+import {
+  RelayManagedEndpointProviderKind,
+  type RelayManagedEndpointRuntimeConfig,
+} from "@t3tools/contracts/relay";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -7,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -20,13 +24,22 @@ function bytesToString(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
 }
 
+const RuntimeConfigKeyPayload = Schema.Struct({
+  providerKind: RelayManagedEndpointProviderKind,
+  connectorToken: Schema.String,
+  tunnelId: Schema.NullOr(Schema.String),
+  tunnelName: Schema.NullOr(Schema.String),
+});
+const RuntimeConfigKeyPayloadJson = Schema.fromJsonString(RuntimeConfigKeyPayload);
+const encodeRuntimeConfigKey = Schema.encodeSync(RuntimeConfigKeyPayloadJson);
+
 const readRuntimeConfig = Effect.gen(function* () {
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const bytes = yield* secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG);
   if (Option.isNone(bytes)) {
-    return null;
+    return Option.none();
   }
-  return Option.getOrNull(decodeRuntimeConfig(bytesToString(bytes.value)));
+  return decodeRuntimeConfig(bytesToString(bytes.value));
 });
 
 export type CloudManagedEndpointRuntimeStatus =
@@ -76,7 +89,7 @@ export function classifyRelayClientOutput(line: string): "connected" | "warning"
 }
 
 function runtimeConfigKey(config: RelayManagedEndpointRuntimeConfig): string {
-  return JSON.stringify({
+  return encodeRuntimeConfigKey({
     providerKind: config.providerKind,
     connectorToken: config.connectorToken,
     tunnelId: config.tunnelId ?? null,
@@ -307,11 +320,11 @@ export const make = Effect.gen(function* () {
   const initialConfig = yield* readRuntimeConfig.pipe(
     Effect.catch((cause) =>
       Effect.logWarning("Failed to read managed endpoint runtime config", { cause }).pipe(
-        Effect.as(null),
+        Effect.as(Option.none()),
       ),
     ),
   );
-  yield* runtime.applyConfig(initialConfig);
+  yield* runtime.applyConfig(Option.getOrNull(initialConfig));
   yield* Effect.addFinalizer(() => runtime.applyConfig(null));
   return runtime;
 });

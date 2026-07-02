@@ -4,7 +4,7 @@ import type {
   RelayClientEnvironmentRecord,
   RelayEnvironmentStatusResponse,
 } from "@t3tools/contracts/relay";
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -332,6 +332,27 @@ describe("createManagedRelayQueryManager", () => {
         environmentId: environment.environmentId,
       }),
     );
+  });
+
+  it("refreshes environment status atoms keyed by schema-encoded relay environments", async () => {
+    const getEnvironmentStatus = vi.fn(() =>
+      Effect.succeed({
+        environmentId: environment.environmentId,
+        endpoint: environment.endpoint,
+        status: "online" as const,
+        checkedAt: "2026-06-01T00:00:00.000Z",
+      }),
+    );
+    const manager = createManager({ getEnvironmentStatus });
+    setSession();
+    const atom = manager.environmentStatusAtom({ accountId: "account-1", environment });
+
+    registry.get(atom);
+    await vi.waitFor(() => assert.equal(getEnvironmentStatus.mock.calls.length, 1));
+
+    manager.refreshEnvironmentStatus(registry, { accountId: "account-1", environment });
+    await vi.waitFor(() => assert.equal(getEnvironmentStatus.mock.calls.length, 2));
+    assert.equal(readManagedRelaySnapshotState(registry.get(atom)).data?.status, "online");
   });
 
   it("rejects status responses for a different environment", async () => {

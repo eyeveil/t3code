@@ -1,8 +1,9 @@
 import type {
-  RelayClientEnvironmentRecord,
+  RelayClientEnvironmentRecord as RelayClientEnvironmentRecordType,
   RelayEnvironmentStatusResponse,
 } from "@t3tools/contracts/relay";
 import {
+  RelayClientEnvironmentRecord,
   RelayEnvironmentConnectScope,
   RelayEnvironmentStatusScope,
 } from "@t3tools/contracts/relay";
@@ -12,6 +13,7 @@ import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 
@@ -21,6 +23,14 @@ import * as ManagedRelay from "./managedRelay.ts";
 const DEFAULT_STALE_TIME_MS = 15_000;
 const DEFAULT_IDLE_TTL_MS = 5 * 60_000;
 const CLERK_TOKEN_EXPIRY_SKEW_MS = 5_000;
+const ManagedRelayStatusKeyPayload = Schema.Struct({
+  accountId: Schema.String,
+  environment: RelayClientEnvironmentRecord,
+});
+type ManagedRelayStatusKeyPayload = typeof ManagedRelayStatusKeyPayload.Type;
+const ManagedRelayStatusKeyPayloadJson = Schema.fromJsonString(ManagedRelayStatusKeyPayload);
+const encodeManagedRelayStatusKey = Schema.encodeSync(ManagedRelayStatusKeyPayloadJson);
+const decodeManagedRelayStatusKey = Schema.decodeUnknownSync(ManagedRelayStatusKeyPayloadJson);
 
 export interface ManagedRelaySession {
   readonly accountId: string;
@@ -235,24 +245,18 @@ function requireClerkToken(
 
 function statusKey(input: {
   readonly accountId: string;
-  readonly environment: RelayClientEnvironmentRecord;
+  readonly environment: RelayClientEnvironmentRecordType;
 }): string {
-  return JSON.stringify(input);
+  return encodeManagedRelayStatusKey(input);
 }
 
-function parseStatusKey(key: string): {
-  readonly accountId: string;
-  readonly environment: RelayClientEnvironmentRecord;
-} {
-  return JSON.parse(key) as {
-    readonly accountId: string;
-    readonly environment: RelayClientEnvironmentRecord;
-  };
+function parseStatusKey(key: string): ManagedRelayStatusKeyPayload {
+  return decodeManagedRelayStatusKey(key);
 }
 
 function endpointMatches(
-  left: RelayClientEnvironmentRecord["endpoint"],
-  right: RelayClientEnvironmentRecord["endpoint"],
+  left: RelayClientEnvironmentRecordType["endpoint"],
+  right: RelayClientEnvironmentRecordType["endpoint"],
 ): boolean {
   return (
     left.httpBaseUrl === right.httpBaseUrl &&
@@ -262,7 +266,7 @@ function endpointMatches(
 }
 
 function validateEnvironmentStatus(
-  environment: RelayClientEnvironmentRecord,
+  environment: RelayClientEnvironmentRecordType,
   status: RelayEnvironmentStatusResponse,
 ): Effect.Effect<RelayEnvironmentStatusResponse, ManagedRelaySnapshotError> {
   if (status.environmentId !== environment.environmentId) {
@@ -429,7 +433,7 @@ export function createManagedRelayQueryManager(
     devicesAtom,
     environmentStatusAtom: (input: {
       readonly accountId: string;
-      readonly environment: RelayClientEnvironmentRecord;
+      readonly environment: RelayClientEnvironmentRecordType;
     }) => environmentStatusAtom(statusKey(input)),
     refreshEnvironments(registry: AtomRegistry.AtomRegistry, accountId: string): void {
       registry.refresh(environmentsAtom(accountId));
@@ -441,7 +445,7 @@ export function createManagedRelayQueryManager(
       registry: AtomRegistry.AtomRegistry,
       input: {
         readonly accountId: string;
-        readonly environment: RelayClientEnvironmentRecord;
+        readonly environment: RelayClientEnvironmentRecordType;
       },
     ): void {
       registry.refresh(environmentStatusAtom(statusKey(input)));
