@@ -88,6 +88,9 @@ export function HomeHeader(props: {
           headerShown: true,
           headerTransparent: true,
           headerStyle: { backgroundColor: "transparent" },
+          // Recent iOS betas no longer draw an implicit blur behind
+          // transparent navigation bars, so request one explicitly.
+          headerBlurEffect: "systemChromeMaterial",
           headerShadowVisible: false,
           headerTintColor: iconColor,
           headerTitle: "",

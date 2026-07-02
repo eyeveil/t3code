@@ -99,6 +99,9 @@ function AppNavigatorContent() {
             contentStyle: { backgroundColor: "transparent" },
             headerShown: true,
             headerTransparent: true,
+            // Recent iOS betas no longer draw an implicit blur behind
+            // transparent navigation bars, so request one explicitly.
+            headerBlurEffect: "systemChromeMaterial",
             headerShadowVisible: false,
           }}
         />
@@ -115,6 +118,7 @@ function AppNavigatorContent() {
             animation: "slide_from_right",
             contentStyle: { backgroundColor: "transparent" },
             gestureEnabled: true,
+            fullScreenGestureEnabled: true,
             headerShown: false,
           }}
         />

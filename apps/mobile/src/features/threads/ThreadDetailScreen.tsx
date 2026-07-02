@@ -253,7 +253,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     () =>
       Gesture.Pan()
         .enabled(!isSplitLayout)
-        .hitSlop({ left: 0, width: 40 })
+        // Confine the drawer pan to the top-left corner where it completes
+        // (see the `event.y` check below). Covering the full left edge stole
+        // the touch from the native swipe-back gesture, leaving back
+        // navigation dead below the header.
+        .hitSlop({ left: 0, width: 40, top: 0, height: drawerGestureThreshold })
         .activeOffsetX([10, 999])
         .failOffsetY([-24, 24])
         .onEnd((event) => {

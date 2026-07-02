@@ -16,6 +16,9 @@ export default function ThreadLayout() {
           contentStyle: { backgroundColor: "transparent" },
           headerShown: true,
           headerTransparent: true,
+          // Recent iOS betas no longer draw an implicit blur behind
+          // transparent navigation bars, so request one explicitly.
+          headerBlurEffect: "systemChromeMaterial",
           headerShadowVisible: false,
           headerTitle: "",
         }}
@@ -47,6 +50,7 @@ export default function ThreadLayout() {
         options={{
           animation: "slide_from_right",
           contentStyle: sheetStyle,
+          fullScreenGestureEnabled: true,
           headerBackButtonDisplayMode: "minimal",
           headerShown: true,
           headerTitle: "Files changed",
@@ -60,6 +64,7 @@ export default function ThreadLayout() {
         options={{
           animation: "slide_from_right",
           contentStyle: sheetStyle,
+          fullScreenGestureEnabled: true,
           headerBackButtonDisplayMode: "minimal",
           headerShown: true,
           headerTitle: "Files",
@@ -73,6 +78,7 @@ export default function ThreadLayout() {
         options={{
           animation: "slide_from_right",
           contentStyle: sheetStyle,
+          fullScreenGestureEnabled: true,
           headerBackButtonDisplayMode: "minimal",
           headerShown: true,
           headerTitle: "File",
