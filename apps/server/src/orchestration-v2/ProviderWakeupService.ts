@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -198,6 +199,20 @@ export const runWakeupDispatcher: Effect.Effect<
           }),
         ),
         Effect.flatMap((followUp) => (followUp === null ? Effect.void : drainThread(followUp))),
+        // Interruption only happens when the dispatcher scope tears down, but
+        // clear the in-flight marker anyway so the invariant does not depend
+        // on that lifecycle: a stale marker would park every later wakeup for
+        // this thread forever. Interrupt-only (not ensuring): on the success
+        // path the marker may already belong to a NEW claim.
+        Effect.onExit((exit) =>
+          Exit.hasInterrupts(exit)
+            ? Ref.update(threadStates, (current) => {
+                const next = new Map(current);
+                next.delete(input.threadId);
+                return next;
+              })
+            : Effect.void,
+        ),
       );
 
     return yield* relay.take.pipe(
