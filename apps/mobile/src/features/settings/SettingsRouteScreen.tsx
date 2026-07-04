@@ -15,7 +15,12 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { ManagedRelay } from "@t3tools/client-runtime/relay";
 import { AppText as Text } from "../../components/AppText";
+import {
+  formatDeviceDiagnosticsRows,
+  type DeviceDiagnosticsRow,
+} from "../agent-awareness/deviceDiagnostics";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import { refreshAgentAwarenessRegistration } from "../agent-awareness/remoteRegistration";
@@ -25,7 +30,7 @@ import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/pu
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
 import { runtime } from "../../lib/runtime";
-import { loadPreferences } from "../../lib/storage";
+import { loadAgentAwarenessDeviceId, loadPreferences } from "../../lib/storage";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SettingsRow } from "./components/SettingsRow";
@@ -407,6 +412,8 @@ function ConfiguredSettingsRouteScreen() {
           />
         </SettingsSection>
 
+        {isSignedIn ? <PushDeliverySection getToken={getToken} /> : null}
+
         <SettingsSection title="Appearance">
           <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
         </SettingsSection>
@@ -416,6 +423,76 @@ function ConfiguredSettingsRouteScreen() {
         <AppSettingsSection />
       </ScrollView>
     </View>
+  );
+}
+
+function PushDeliverySection(props: { readonly getToken: ReturnType<typeof useAuth>["getToken"] }) {
+  const { getToken } = props;
+  const [rows, setRows] = useState<ReadonlyArray<DeviceDiagnosticsRow> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await settleAsyncResult(() =>
+        runtime.runPromiseExit(
+          Effect.gen(function* () {
+            const [deviceId, clerkToken] = yield* Effect.all([
+              Effect.promise(() => loadAgentAwarenessDeviceId()),
+              Effect.promise(() => getToken(resolveRelayClerkTokenOptions())),
+            ]);
+            if (!deviceId || !clerkToken) {
+              return formatDeviceDiagnosticsRows(null);
+            }
+            const client = yield* ManagedRelay.ManagedRelayClient;
+            const devices = yield* client.listDevices({ clerkToken });
+            return formatDeviceDiagnosticsRows(
+              devices.find((device) => device.deviceId === deviceId) ?? null,
+            );
+          }),
+        ),
+      );
+      if (cancelled) {
+        return;
+      }
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          reportAtomCommandResult(result, { label: "push delivery diagnostics" });
+        }
+        setRows([{ label: "Relay Registration", value: "Unavailable", tone: "muted" }]);
+        return;
+      }
+      setRows(result.value);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getToken]);
+
+  return (
+    <SettingsSection title="Push Delivery">
+      {(rows ?? [{ label: "Relay Registration", value: "Checking", tone: "muted" as const }]).map(
+        (row) => (
+          <View key={row.label} className="flex-row items-center gap-4 p-4">
+            <Text className="shrink-0 text-lg text-foreground" numberOfLines={1}>
+              {row.label}
+            </Text>
+            <View className="min-w-0 flex-1 items-end">
+              <Text
+                className={
+                  row.tone === "warn"
+                    ? "text-right text-base text-danger-foreground"
+                    : "text-right text-base text-foreground-muted"
+                }
+                ellipsizeMode="middle"
+                numberOfLines={1}
+              >
+                {row.value}
+              </Text>
+            </View>
+          </View>
+        ),
+      )}
+    </SettingsSection>
   );
 }
 

@@ -16,7 +16,7 @@ import { verifyDpopProof } from "@t3tools/shared/dpop";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { cryptoLayer } from "../cloud/dpop";
 import { managedRelayClientLayer } from "../cloud/managedRelayLayer";
-import { makeRelayDeviceRegistrationRequest } from "./registrationPayload";
+import { makeRelayDeviceRegistrationRequest, resolveApsEnvironment } from "./registrationPayload";
 import {
   AgentAwarenessOperationError,
   __resetAgentAwarenessRemoteRegistrationForTest,
@@ -40,6 +40,9 @@ const backgroundRuntime = vi.hoisted(() => ({
     readonly operation: unknown;
     readonly resolve: (exit: Exit.Exit<unknown, unknown>) => void;
   }>,
+}));
+const appStateMock = vi.hoisted(() => ({
+  listeners: [] as Array<(state: string) => void>,
 }));
 
 vi.mock("expo-constants", () => ({
@@ -99,6 +102,19 @@ vi.mock("react-native", () => ({
   Platform: {
     OS: "ios",
     Version: "18.0",
+  },
+  AppState: {
+    addEventListener: (_event: string, listener: (state: string) => void) => {
+      appStateMock.listeners.push(listener);
+      return {
+        remove: () => {
+          const index = appStateMock.listeners.indexOf(listener);
+          if (index >= 0) {
+            appStateMock.listeners.splice(index, 1);
+          }
+        },
+      };
+    },
   },
 }));
 
@@ -176,6 +192,7 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     backgroundRuntime.pending.length = 0;
     Constants.expoConfig!.extra = {};
     __resetAgentAwarenessRemoteRegistrationForTest();
+    appStateMock.listeners.length = 0;
     widgetMocks.getInstances.mockReset();
     widgetMocks.getInstances.mockReturnValue([]);
   });
@@ -211,6 +228,31 @@ describe("makeRelayDeviceRegistrationRequest", () => {
         notifyOnFailure: true,
       },
     });
+  });
+
+  it("registers the app's APNs routing so the relay targets the right bundle", () => {
+    expect(
+      makeRelayDeviceRegistrationRequest({
+        deviceId: "device-1",
+        label: "Julius's iPhone",
+        iosMajorVersion: 18,
+        appVersion: "1.0.0",
+        bundleId: "com.t3tools.t3code.preview",
+        apsEnvironment: resolveApsEnvironment("preview"),
+        notificationsEnabled: true,
+        preferences: {},
+      }),
+    ).toMatchObject({
+      bundleId: "com.t3tools.t3code.preview",
+      apsEnvironment: "production",
+    });
+  });
+
+  it("routes development builds to the APNs sandbox", () => {
+    expect(resolveApsEnvironment("development")).toBe("sandbox");
+    expect(resolveApsEnvironment("preview")).toBe("production");
+    expect(resolveApsEnvironment("production")).toBe("production");
+    expect(resolveApsEnvironment(undefined)).toBe("production");
   });
 
   it("marks notification delivery disabled when APNs permission is unavailable", () => {
@@ -328,6 +370,53 @@ describe("makeRelayDeviceRegistrationRequest", () => {
       }).pipe(Effect.provide(relayTestLayer));
     },
   );
+
+  it.effect(
+    "re-registers active Live Activity tokens when the app returns to the foreground",
+    () => {
+      const activity = {
+        getPushToken: vi.fn(() => Promise.resolve("activity-token")),
+        addPushTokenListener: vi.fn(),
+      };
+      widgetMocks.getInstances.mockReturnValue([activity] as never);
+      setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"));
+
+      return Effect.gen(function* () {
+        yield* runBackgroundOperations();
+        activity.getPushToken.mockClear();
+
+        expect(appStateMock.listeners).toHaveLength(1);
+        for (const listener of appStateMock.listeners) {
+          listener("background");
+        }
+        yield* runBackgroundOperations();
+        expect(activity.getPushToken).not.toHaveBeenCalled();
+
+        for (const listener of appStateMock.listeners) {
+          listener("active");
+        }
+        yield* runBackgroundOperations();
+        expect(activity.getPushToken).toHaveBeenCalled();
+      }).pipe(Effect.provide(relayTestLayer));
+    },
+  );
+
+  it("ends local Live Activities and stops foreground reconciliation on cloud sign-out", () => {
+    const end = vi.fn(() => Promise.resolve());
+    const activity = {
+      getPushToken: vi.fn(() => Promise.resolve("activity-token")),
+      addPushTokenListener: vi.fn(),
+      end,
+    };
+    widgetMocks.getInstances.mockReturnValue([activity] as never);
+    setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"));
+    expect(appStateMock.listeners).toHaveLength(1);
+
+    setAgentAwarenessRelayTokenProvider(null);
+
+    expect(end).toHaveBeenCalledWith("immediate");
+    expect(appStateMock.listeners).toHaveLength(0);
+  });
 
   it.effect("refreshes APNs registration for connected environments after settings changes", () => {
     registerAgentAwarenessConnection(savedConnection());

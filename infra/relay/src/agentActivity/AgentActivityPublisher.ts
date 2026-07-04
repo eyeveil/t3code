@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import { sanitizeAgentActivityAggregateState } from "./agentActivityPayloads.ts";
 import * as AgentActivityRows from "./AgentActivityRows.ts";
@@ -55,6 +56,7 @@ export const make = Effect.gen(function* () {
       ? makeAggregateState({
           activeStates,
           terminalState: input.state && isTerminalPhase(input.state) ? input.state : null,
+          nowMs: input.nowMs,
         })
       : null;
     const notificationOnlyAggregate =
@@ -64,6 +66,7 @@ export const make = Effect.gen(function* () {
         ? makeAggregateState({
             activeStates: isTerminalPhase(input.state) ? [] : [input.state],
             terminalState: isTerminalPhase(input.state) ? input.state : null,
+            nowMs: input.nowMs,
           })
         : null;
     const targets = yield* liveActivities.listTargets({ userId: input.deliveryUser.userId });
@@ -110,8 +113,12 @@ export const make = Effect.gen(function* () {
       if (target === null) {
         return null;
       }
-      const aggregate = makeAggregateState({ activeStates, terminalState: null });
       const now = yield* DateTime.now;
+      const aggregate = makeAggregateState({
+        activeStates,
+        terminalState: null,
+        nowMs: now.epochMilliseconds,
+      });
       return yield* apnsDeliveries.sendForTarget({
         target,
         aggregate,
@@ -186,6 +193,34 @@ function isTerminalPhase(state: RelayAgentActivityState): boolean {
   return state.phase === "completed" || state.phase === "failed";
 }
 
+// Rows are only removed when their environment publishes a terminal state. An
+// environment that dies mid-run (machine off, process killed) never does, so
+// without an age cutoff its threads inflate activeCount forever. Actively
+// running phases expire quickly; waiting phases can legitimately sit for hours
+// while a user ignores an approval prompt, so they get a longer window. The
+// underlying database row is left in place: a late publish for the thread
+// refreshes updatedAt and the row becomes visible again.
+const RUNNING_AGENT_ACTIVITY_ROW_TTL_MS = 2 * 60 * 60 * 1_000;
+const WAITING_AGENT_ACTIVITY_ROW_TTL_MS = 24 * 60 * 60 * 1_000;
+
+export function isExpiredAgentActivityState(
+  state: RelayAgentActivityState,
+  nowMs: number,
+): boolean {
+  const updatedAtMs = Option.match(DateTime.make(state.updatedAt), {
+    onNone: () => Number.NaN,
+    onSome: (dt) => dt.epochMilliseconds,
+  });
+  if (Number.isNaN(updatedAtMs)) {
+    return true;
+  }
+  const ttlMs =
+    state.phase === "running" || state.phase === "starting"
+      ? RUNNING_AGENT_ACTIVITY_ROW_TTL_MS
+      : WAITING_AGENT_ACTIVITY_ROW_TTL_MS;
+  return nowMs - updatedAtMs > ttlMs;
+}
+
 function aggregateRowForState(state: RelayAgentActivityState) {
   return {
     environmentId: state.environmentId,
@@ -210,11 +245,14 @@ function terminalAggregateState(state: RelayAgentActivityState): RelayAgentActiv
   });
 }
 
-function makeAggregateState(input: {
+export function makeAggregateState(input: {
   readonly activeStates: ReadonlyArray<RelayAgentActivityState>;
   readonly terminalState: RelayAgentActivityState | null;
+  readonly nowMs: number;
 }): RelayAgentActivityAggregateState | null {
-  const activeStates = input.activeStates.filter((state) => !isTerminalPhase(state));
+  const activeStates = input.activeStates.filter(
+    (state) => !isTerminalPhase(state) && !isExpiredAgentActivityState(state, input.nowMs),
+  );
   if (activeStates.length === 0) {
     return input.terminalState === null ? null : terminalAggregateState(input.terminalState);
   }

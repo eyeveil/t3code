@@ -49,6 +49,10 @@ export const ApnsDeliveryJobPayload = Schema.Struct({
     userId: Schema.String,
     deviceId: Schema.String,
     token: Schema.String,
+    // Per-device APNs routing; absent on jobs queued by older relay builds,
+    // which fall back to the configured defaults.
+    bundleId: Schema.optional(Schema.NullOr(Schema.String)),
+    apsEnvironment: Schema.optional(Schema.NullOr(Schema.Literals(["sandbox", "production"]))),
   }),
   aggregate: Schema.NullOr(RelayAgentActivityAggregateState),
   notification: Schema.NullOr(ApnsNotificationPayload),
@@ -224,6 +228,8 @@ export function makeApnsDeliveryJobPayload(input: {
   readonly userId: string;
   readonly deviceId: string;
   readonly token: string;
+  readonly bundleId?: string | null | undefined;
+  readonly apsEnvironment?: "sandbox" | "production" | null | undefined;
   readonly aggregate: ApnsDeliveryJobPayload["aggregate"];
   readonly notification?: ApnsNotificationPayload | null;
   readonly createdAt: string;
@@ -238,6 +244,8 @@ export function makeApnsDeliveryJobPayload(input: {
       userId: input.userId,
       deviceId: input.deviceId,
       token: input.token,
+      ...(input.bundleId ? { bundleId: input.bundleId } : {}),
+      ...(input.apsEnvironment ? { apsEnvironment: input.apsEnvironment } : {}),
     },
     aggregate: input.aggregate,
     notification: input.notification ?? null,

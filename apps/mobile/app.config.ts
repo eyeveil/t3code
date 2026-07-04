@@ -157,6 +157,9 @@ const config: ExpoConfig = {
         bundleIdentifier: `${variant.iosBundleIdentifier}.widgets`,
         groupIdentifier: `group.${variant.iosBundleIdentifier}`,
         enablePushNotifications: true,
+        // Agent activity can update many times an hour; without the
+        // frequent-updates entitlement iOS throttles the update budget sooner.
+        frequentUpdates: true,
         widgets: [
           {
             name: "AgentActivity",

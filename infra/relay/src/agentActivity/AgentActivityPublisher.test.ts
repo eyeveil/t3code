@@ -28,6 +28,8 @@ function target(deviceId: string): LiveActivities.TargetRow {
     platform: "ios",
     ios_major_version: 18,
     app_version: "1.0.0",
+    bundle_id: null,
+    aps_environment: null,
     push_token: null,
     push_to_start_token: "start-token",
     preferences_json: "{}",
@@ -627,4 +629,71 @@ describe("AgentActivityPublisher", () => {
       });
     },
   );
+});
+
+describe("isExpiredAgentActivityState", () => {
+  const hourMs = 60 * 60 * 1_000;
+
+  it("expires running rows after two hours without an update", () => {
+    expect(AgentActivityPublisher.isExpiredAgentActivityState(state, 2 * hourMs - 1)).toBe(false);
+    expect(AgentActivityPublisher.isExpiredAgentActivityState(state, 2 * hourMs + 1)).toBe(true);
+  });
+
+  it("keeps waiting rows for a day", () => {
+    const waiting: RelayAgentActivityState = { ...state, phase: "waiting_for_approval" };
+    expect(AgentActivityPublisher.isExpiredAgentActivityState(waiting, 23 * hourMs)).toBe(false);
+    expect(AgentActivityPublisher.isExpiredAgentActivityState(waiting, 25 * hourMs)).toBe(true);
+  });
+
+  it("treats rows with unparseable timestamps as expired", () => {
+    expect(
+      AgentActivityPublisher.isExpiredAgentActivityState({ ...state, updatedAt: "not-a-date" }, 0),
+    ).toBe(true);
+  });
+});
+
+describe("makeAggregateState", () => {
+  const hourMs = 60 * 60 * 1_000;
+
+  it("drops expired rows from the aggregate", () => {
+    const fresh: RelayAgentActivityState = {
+      ...state,
+      threadId: "thread-fresh" as RelayAgentActivityState["threadId"],
+      updatedAt: "1970-01-01T03:00:00.000Z",
+    };
+    const aggregate = AgentActivityPublisher.makeAggregateState({
+      activeStates: [state, fresh],
+      terminalState: null,
+      nowMs: 3 * hourMs,
+    });
+
+    expect(aggregate?.activeCount).toBe(1);
+    expect(aggregate?.activities).toMatchObject([{ threadId: "thread-fresh" }]);
+  });
+
+  it("returns null when every row has expired and nothing terminal remains", () => {
+    expect(
+      AgentActivityPublisher.makeAggregateState({
+        activeStates: [state],
+        terminalState: null,
+        nowMs: 3 * hourMs,
+      }),
+    ).toBeNull();
+  });
+
+  it("still reports the terminal state when active rows have expired", () => {
+    const terminalState: RelayAgentActivityState = {
+      ...state,
+      phase: "completed",
+      updatedAt: "1970-01-01T03:00:00.000Z",
+    };
+    const aggregate = AgentActivityPublisher.makeAggregateState({
+      activeStates: [state],
+      terminalState,
+      nowMs: 3 * hourMs,
+    });
+
+    expect(aggregate?.activeCount).toBe(0);
+    expect(aggregate?.activities).toMatchObject([{ phase: "completed" }]);
+  });
 });

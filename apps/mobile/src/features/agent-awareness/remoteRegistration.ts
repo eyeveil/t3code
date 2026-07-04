@@ -3,7 +3,7 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   type RelayDeviceRegistrationRequest,
@@ -26,7 +26,7 @@ import {
 } from "../../lib/storage";
 import AgentActivity, { type AgentActivityProps } from "../../widgets/AgentActivity";
 import { resolveCloudPublicConfig } from "../cloud/publicConfig";
-import { makeRelayDeviceRegistrationRequest } from "./registrationPayload";
+import { makeRelayDeviceRegistrationRequest, resolveApsEnvironment } from "./registrationPayload";
 
 const REMOTE_ACTIVITY_REGISTRATION_RETRY_MS = 15_000;
 
@@ -60,6 +60,7 @@ const environmentConnections = new Map<EnvironmentId, SavedRemoteConnection>();
 const activityPushTokenListeners = new WeakSet<LiveActivity<AgentActivityProps>>();
 let pushToStartSubscription: { remove: () => void } | null = null;
 let pushTokenSubscription: { remove: () => void } | null = null;
+let appStateSubscription: { remove: () => void } | null = null;
 let activeLiveActivityRegistrationRetry: ReturnType<typeof setTimeout> | null = null;
 let relayTokenProvider: (() => Promise<string | null>) | null = null;
 let relayTokenProviderIdentity: string | null = null;
@@ -128,14 +129,20 @@ export function setAgentAwarenessRelayTokenProvider(
     pushToStartSubscription = null;
     pushTokenSubscription?.remove();
     pushTokenSubscription = null;
+    appStateSubscription?.remove();
+    appStateSubscription = null;
     if (activeLiveActivityRegistrationRetry) {
       clearTimeout(activeLiveActivityRegistrationRetry);
       activeLiveActivityRegistrationRetry = null;
     }
+    // Without a signed-in user the relay can no longer update or end these
+    // activities, so they would sit orphaned on the lock screen.
+    endLocalLiveActivities("live activity cleanup after cloud sign-out failed");
     return;
   }
   ensurePushToStartListener();
   ensurePushTokenListener();
+  ensureAppStateListener();
   runRegistrationInBackground(
     refreshActiveLiveActivityRemoteRegistration(),
     "active live activity registration after cloud sign-in failed",
@@ -444,12 +451,15 @@ function registerDevice(
       expectedGeneration,
       notificationsEnabled: pushTokenRegistration.notificationsEnabled,
     });
+    const bundleId = Constants.expoConfig?.ios?.bundleIdentifier?.trim();
     yield* registerDeviceWithRelay(
       makeRelayDeviceRegistrationRequest({
         deviceId,
         label: Constants.deviceName?.trim() || "iOS device",
         iosMajorVersion: iosMajorVersion(),
         appVersion: Constants.expoConfig?.version,
+        ...(bundleId ? { bundleId } : {}),
+        apsEnvironment: resolveApsEnvironment(Constants.expoConfig?.extra?.appVariant),
         ...(pushTokenRegistration.pushToken ? { pushToken: pushTokenRegistration.pushToken } : {}),
         ...(input?.pushToStartToken ? { pushToStartToken: input.pushToStartToken } : {}),
         notificationsEnabled: pushTokenRegistration.notificationsEnabled,
@@ -498,6 +508,41 @@ function ensurePushTokenListener(): void {
   });
 }
 
+// Re-registering activity tokens on foreground makes the relay replay the
+// current aggregate to this device, which updates content that drifted while
+// pushes could not be delivered and ends orphaned activities whose end push
+// never arrived.
+function ensureAppStateListener(): void {
+  if (appStateSubscription || !canRegisterRemoteLiveActivities()) {
+    return;
+  }
+
+  appStateSubscription = AppState.addEventListener("change", (state) => {
+    if (state !== "active") {
+      return;
+    }
+    runRegistrationInBackground(
+      refreshActiveLiveActivityRemoteRegistration(),
+      "active live activity reconciliation after app foreground failed",
+    );
+  });
+}
+
+function endLocalLiveActivities(context: string): void {
+  if (!canRegisterRemoteLiveActivities()) {
+    return;
+  }
+  try {
+    for (const activity of AgentActivity.getInstances()) {
+      activity.end("immediate").catch((error: unknown) => {
+        logRegistrationError(context, error);
+      });
+    }
+  } catch (error) {
+    logRegistrationError(context, error);
+  }
+}
+
 export function registerAgentAwarenessConnection(connection: SavedRemoteConnection): void {
   if (!canRegisterRemoteLiveActivities()) {
     return;
@@ -506,6 +551,7 @@ export function registerAgentAwarenessConnection(connection: SavedRemoteConnecti
   environmentConnections.set(connection.environmentId, connection);
   ensurePushToStartListener();
   ensurePushTokenListener();
+  ensureAppStateListener();
   enqueueDeviceRegistration({}, "device registration failed");
   runRegistrationInBackground(
     refreshActiveLiveActivityRemoteRegistration(),
@@ -527,6 +573,8 @@ export function unregisterAllAgentAwarenessConnections(): void {
   pushToStartSubscription = null;
   pushTokenSubscription?.remove();
   pushTokenSubscription = null;
+  appStateSubscription?.remove();
+  appStateSubscription = null;
   if (activeLiveActivityRegistrationRetry) {
     clearTimeout(activeLiveActivityRegistrationRetry);
     activeLiveActivityRegistrationRetry = null;
@@ -553,6 +601,8 @@ export function __resetAgentAwarenessRemoteRegistrationForTest(): void {
   pushToStartSubscription = null;
   pushTokenSubscription?.remove();
   pushTokenSubscription = null;
+  appStateSubscription?.remove();
+  appStateSubscription = null;
   if (activeLiveActivityRegistrationRetry) {
     clearTimeout(activeLiveActivityRegistrationRetry);
     activeLiveActivityRegistrationRetry = null;

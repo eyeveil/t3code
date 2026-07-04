@@ -69,6 +69,8 @@ export interface DeviceRow {
   readonly platform: "ios";
   readonly ios_major_version: number;
   readonly app_version: string | null;
+  readonly bundle_id: string | null;
+  readonly aps_environment: "sandbox" | "production" | null;
   readonly push_token: string | null;
   readonly push_to_start_token: string | null;
   readonly preferences_json: string;
@@ -196,6 +198,8 @@ export const make = Effect.gen(function* () {
           platform: relayMobileDevices.platform,
           ios_major_version: relayMobileDevices.iosMajorVersion,
           app_version: relayMobileDevices.appVersion,
+          bundle_id: relayMobileDevices.bundleId,
+          aps_environment: relayMobileDevices.apsEnvironment,
           push_token: relayMobileDevices.pushToken,
           push_to_start_token: relayMobileDevices.pushToStartToken,
           preferences_json: relayMobileDevices.preferencesJson,

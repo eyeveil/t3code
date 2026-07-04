@@ -404,6 +404,8 @@ describe("MobileRegistrations", () => {
               platform: "ios",
               ios_major_version: 18,
               app_version: "1.0.0",
+              bundle_id: null,
+              aps_environment: null,
               push_token: "apns-device-token",
               push_to_start_token: "push-to-start-token",
               preferences_json: JSON.stringify(device.preferences),

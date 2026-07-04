@@ -7,11 +7,15 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
 import * as RelayDb from "../db.ts";
-import { relayLiveActivities, relayMobileDevices } from "../persistence/schema.ts";
+import {
+  relayDeliveryAttempts,
+  relayLiveActivities,
+  relayMobileDevices,
+} from "../persistence/schema.ts";
 
 export class DeviceRegistrationPersistenceError extends Schema.TaggedErrorClass<DeviceRegistrationPersistenceError>()(
   "DeviceRegistrationPersistenceError",
@@ -130,6 +134,8 @@ export const make = Effect.gen(function* () {
           platform: registration.platform,
           iosMajorVersion: registration.iosMajorVersion,
           appVersion: registration.appVersion ?? null,
+          bundleId: registration.bundleId ?? null,
+          apsEnvironment: registration.apsEnvironment ?? null,
           pushToken: registration.pushToken ?? null,
           pushToStartToken: registration.pushToStartToken ?? null,
           preferencesJson: registration.preferences,
@@ -143,6 +149,13 @@ export const make = Effect.gen(function* () {
             label: registration.label,
             iosMajorVersion: registration.iosMajorVersion,
             appVersion: registration.appVersion ?? null,
+            // Preserve routing from newer app builds when an older build
+            // re-registers without these fields.
+            bundleId: sql`coalesce(excluded.bundle_id, ${relayMobileDevices.bundleId})`,
+            apsEnvironment: sql`coalesce(
+                excluded.aps_environment,
+                ${relayMobileDevices.apsEnvironment}
+              )`,
             pushToken: sql`coalesce(excluded.push_token, ${relayMobileDevices.pushToken})`,
             pushToStartToken: sql`coalesce(
                 excluded.push_to_start_token,
@@ -213,41 +226,103 @@ export const make = Effect.gen(function* () {
       );
     }),
     listForUser: Effect.fn("relay.devices.listForUser")(function* (input) {
-      const rows = yield* db
-        .select({
-          deviceId: relayMobileDevices.deviceId,
-          label: relayMobileDevices.label,
-          platform: relayMobileDevices.platform,
-          iosMajorVersion: relayMobileDevices.iosMajorVersion,
-          appVersion: relayMobileDevices.appVersion,
-          preferences: relayMobileDevices.preferencesJson,
-          updatedAt: relayMobileDevices.updatedAt,
-        })
-        .from(relayMobileDevices)
-        .where(eq(relayMobileDevices.userId, input.userId))
-        .pipe(
-          Effect.mapError(
-            (cause) => new DeviceListPersistenceError({ userId: input.userId, cause }),
-          ),
-        );
-      return rows.map((row) => ({
-        deviceId: row.deviceId,
-        label: row.label,
-        platform: row.platform,
-        iosMajorVersion: row.iosMajorVersion,
-        appVersion: row.appVersion,
-        notifications: {
-          enabled: row.preferences.notificationsEnabled,
-          notifyOnApproval: row.preferences.notifyOnApproval,
-          notifyOnInput: row.preferences.notifyOnInput,
-          notifyOnCompletion: row.preferences.notifyOnCompletion,
-          notifyOnFailure: row.preferences.notifyOnFailure,
-        },
-        liveActivities: {
-          enabled: row.preferences.liveActivitiesEnabled,
-        },
-        updatedAt: row.updatedAt,
-      }));
+      const mapListError = Effect.mapError(
+        (cause: unknown) => new DeviceListPersistenceError({ userId: input.userId, cause }),
+      );
+      const [rows, activityRows, attemptRows] = yield* Effect.all(
+        [
+          db
+            .select({
+              deviceId: relayMobileDevices.deviceId,
+              label: relayMobileDevices.label,
+              platform: relayMobileDevices.platform,
+              iosMajorVersion: relayMobileDevices.iosMajorVersion,
+              appVersion: relayMobileDevices.appVersion,
+              bundleId: relayMobileDevices.bundleId,
+              apsEnvironment: relayMobileDevices.apsEnvironment,
+              pushToken: relayMobileDevices.pushToken,
+              pushToStartToken: relayMobileDevices.pushToStartToken,
+              preferences: relayMobileDevices.preferencesJson,
+              updatedAt: relayMobileDevices.updatedAt,
+            })
+            .from(relayMobileDevices)
+            .where(eq(relayMobileDevices.userId, input.userId))
+            .pipe(mapListError),
+          db
+            .select({
+              deviceId: relayLiveActivities.deviceId,
+              activityPushToken: relayLiveActivities.activityPushToken,
+            })
+            .from(relayLiveActivities)
+            .where(eq(relayLiveActivities.userId, input.userId))
+            .pipe(mapListError),
+          db
+            .select({
+              deviceId: relayDeliveryAttempts.deviceId,
+              createdAt: relayDeliveryAttempts.createdAt,
+              kind: relayDeliveryAttempts.kind,
+              apnsStatus: relayDeliveryAttempts.apnsStatus,
+              apnsReason: relayDeliveryAttempts.apnsReason,
+              transportError: relayDeliveryAttempts.transportError,
+            })
+            .from(relayDeliveryAttempts)
+            .where(eq(relayDeliveryAttempts.userId, input.userId))
+            .orderBy(desc(relayDeliveryAttempts.createdAt))
+            .limit(100)
+            .pipe(mapListError),
+        ],
+        { concurrency: 3 },
+      );
+
+      const activityTokenByDevice = new Map(
+        activityRows.map((row) => [row.deviceId, row.activityPushToken]),
+      );
+      const lastAttemptByDevice = new Map<string, (typeof attemptRows)[number]>();
+      for (const attempt of attemptRows) {
+        if (attempt.deviceId && !lastAttemptByDevice.has(attempt.deviceId)) {
+          lastAttemptByDevice.set(attempt.deviceId, attempt);
+        }
+      }
+
+      return rows.map((row) => {
+        const attempt = lastAttemptByDevice.get(row.deviceId) ?? null;
+        const attemptOk =
+          attempt?.apnsStatus != null && attempt.apnsStatus >= 200 && attempt.apnsStatus < 300;
+        const lastDeliveryError = attempt
+          ? ((attempt.transportError?.trim() ||
+              (attempt.apnsStatus !== null && !attemptOk ? attempt.apnsReason?.trim() : null)) ??
+            null)
+          : null;
+        return {
+          deviceId: row.deviceId,
+          label: row.label,
+          platform: row.platform,
+          iosMajorVersion: row.iosMajorVersion,
+          appVersion: row.appVersion,
+          notifications: {
+            enabled: row.preferences.notificationsEnabled,
+            notifyOnApproval: row.preferences.notifyOnApproval,
+            notifyOnInput: row.preferences.notifyOnInput,
+            notifyOnCompletion: row.preferences.notifyOnCompletion,
+            notifyOnFailure: row.preferences.notifyOnFailure,
+          },
+          liveActivities: {
+            enabled: row.preferences.liveActivitiesEnabled,
+          },
+          diagnostics: {
+            bundleId: row.bundleId,
+            apsEnvironment: row.apsEnvironment,
+            hasPushToken: row.pushToken !== null,
+            hasPushToStartToken: row.pushToStartToken !== null,
+            hasLiveActivityToken: (activityTokenByDevice.get(row.deviceId) ?? null) !== null,
+            lastDeliveryAt: attempt?.createdAt ?? null,
+            lastDeliveryKind: attempt?.kind ?? null,
+            lastDeliveryStatus: attempt?.apnsStatus ?? null,
+            lastDeliveryError: lastDeliveryError || null,
+          },
+          updatedAt: row.updatedAt,
+        };
+      });
     }),
   });
 });

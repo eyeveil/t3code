@@ -15,6 +15,8 @@ const registration: RelayDeviceRegistrationRequest = {
   platform: "ios",
   iosMajorVersion: 18,
   appVersion: "1.0.0" as RelayDeviceRegistrationRequest["appVersion"],
+  bundleId: "com.t3tools.t3code.preview" as RelayDeviceRegistrationRequest["bundleId"],
+  apsEnvironment: "production",
   pushToken: "apns-device-token" as RelayDeviceRegistrationRequest["pushToken"],
   pushToStartToken: "push-to-start-token" as RelayDeviceRegistrationRequest["pushToStartToken"],
   preferences: {
@@ -106,6 +108,8 @@ describe("Devices", () => {
         expect.objectContaining({
           userId: "user-2",
           deviceId: "device-1",
+          bundleId: "com.t3tools.t3code.preview",
+          apsEnvironment: "production",
           pushToken: "apns-device-token",
           pushToStartToken: "push-to-start-token",
         }),
@@ -163,28 +167,64 @@ describe("Devices", () => {
     );
   });
 
-  it.effect("lists safe notification state without exposing APNs tokens", () => {
+  it.effect("lists notification state with delivery diagnostics without exposing tokens", () => {
     const dialect = new PgDialect();
     let condition: SQL | null = null;
     const fakeDb = {
       select: () => ({
         from: (table: unknown) => {
-          expect(table).toBe(relayMobileDevices);
+          if (table === relayMobileDevices) {
+            return {
+              where: (nextCondition: SQL) => {
+                condition = nextCondition;
+                return Effect.succeed([
+                  {
+                    deviceId: "device-1",
+                    label: "Julius's iPhone",
+                    platform: "ios" as const,
+                    iosMajorVersion: 18,
+                    appVersion: "1.0.0",
+                    bundleId: "com.t3tools.t3code.preview",
+                    apsEnvironment: "production" as const,
+                    pushToken: "apns-device-token",
+                    pushToStartToken: null,
+                    preferences: registration.preferences,
+                    updatedAt: "2026-06-01T00:00:00.000Z",
+                  },
+                ]);
+              },
+            };
+          }
+          if (table === relayLiveActivities) {
+            return {
+              where: () =>
+                Effect.succeed([{ deviceId: "device-1", activityPushToken: "activity-token" }]),
+            };
+          }
           return {
-            where: (nextCondition: SQL) => {
-              condition = nextCondition;
-              return Effect.succeed([
-                {
-                  deviceId: "device-1",
-                  label: "Julius's iPhone",
-                  platform: "ios" as const,
-                  iosMajorVersion: 18,
-                  appVersion: "1.0.0",
-                  preferences: registration.preferences,
-                  updatedAt: "2026-06-01T00:00:00.000Z",
-                },
-              ]);
-            },
+            where: () => ({
+              orderBy: () => ({
+                limit: () =>
+                  Effect.succeed([
+                    {
+                      deviceId: "device-1",
+                      createdAt: "2026-06-05T01:02:59.566Z",
+                      kind: "live_activity_end",
+                      apnsStatus: 400,
+                      apnsReason: "DeviceTokenNotForTopic",
+                      transportError: null,
+                    },
+                    {
+                      deviceId: "device-1",
+                      createdAt: "2026-06-01T00:00:00.000Z",
+                      kind: "live_activity_update",
+                      apnsStatus: 200,
+                      apnsReason: null,
+                      transportError: null,
+                    },
+                  ]),
+              }),
+            }),
           };
         },
       }),
@@ -215,6 +255,17 @@ describe("Devices", () => {
           },
           liveActivities: {
             enabled: true,
+          },
+          diagnostics: {
+            bundleId: "com.t3tools.t3code.preview",
+            apsEnvironment: "production",
+            hasPushToken: true,
+            hasPushToStartToken: false,
+            hasLiveActivityToken: true,
+            lastDeliveryAt: "2026-06-05T01:02:59.566Z",
+            lastDeliveryKind: "live_activity_end",
+            lastDeliveryStatus: 400,
+            lastDeliveryError: "DeviceTokenNotForTopic",
           },
           updatedAt: "2026-06-01T00:00:00.000Z",
         },
@@ -282,10 +333,14 @@ describe("Devices", () => {
 
   it.effect("attaches the user to device list failures", () => {
     const cause = new Error("device list failed");
+    const failing = Effect.fail(cause);
     const fakeDb = {
       select: () => ({
         from: () => ({
-          where: () => Effect.fail(cause),
+          where: () =>
+            Object.assign(failing, {
+              orderBy: () => ({ limit: () => failing }),
+            }),
         }),
       }),
     } as unknown as RelayDb.RelayDb["Service"];

@@ -130,6 +130,12 @@ function parsePreferences(value: string): RelayAgentAwarenessPreferences | null 
   return Option.getOrNull(decodeRelayAgentAwarenessPreferencesJson(value));
 }
 
+function aggregateNeedsAttention(aggregate: RelayAgentActivityAggregateState): boolean {
+  return aggregate.activities.some(
+    (row) => row.phase === "waiting_for_approval" || row.phase === "waiting_for_input",
+  );
+}
+
 function shouldUpdateLiveActivity(input: {
   readonly previousAggregate: RelayAgentActivityAggregateState | null;
   readonly nextAggregate: RelayAgentActivityAggregateState;
@@ -139,11 +145,14 @@ function shouldUpdateLiveActivity(input: {
   if (!input.previousAggregate) {
     return true;
   }
+  if (JSON.stringify(input.previousAggregate) === JSON.stringify(input.nextAggregate)) {
+    return false;
+  }
   if (input.previousAggregate.activeCount !== input.nextAggregate.activeCount) {
     return true;
   }
-  if (JSON.stringify(input.previousAggregate) === JSON.stringify(input.nextAggregate)) {
-    return false;
+  if (aggregateNeedsAttention(input.nextAggregate)) {
+    return true;
   }
   const lastDeliveryAtMs =
     input.lastDeliveryAt === null
@@ -191,11 +200,14 @@ function notificationForAggregate(input: {
   };
 }
 
+// "suppressed" means a Live Activity owns this state but no update is due
+// (unchanged or throttled); callers must not fall back to an alert push, or
+// every republish of a waiting aggregate would ring the device.
 function chooseLiveActivityDelivery(input: {
   readonly target: LiveActivities.TargetRow;
   readonly aggregate: RelayAgentActivityAggregateState | null;
   readonly nowMs: number;
-}): ChosenLiveActivityDelivery | null {
+}): ChosenLiveActivityDelivery | "suppressed" | null {
   const hasActiveActivity =
     input.target.ended_at === null &&
     (input.target.remote_start_queued_at !== null ||
@@ -237,16 +249,13 @@ function chooseLiveActivityDelivery(input: {
     nextAggregate: input.aggregate,
     lastDeliveryAt: input.target.last_live_activity_delivery_at,
     nowMs: input.nowMs,
-  }) ||
-    input.aggregate.activities.some(
-      (row) => row.phase === "waiting_for_approval" || row.phase === "waiting_for_input",
-    )
+  })
     ? {
         kind: "live_activity_update",
         token: input.target.activity_push_token,
         aggregate: input.aggregate,
       }
-    : null;
+    : "suppressed";
 }
 
 function chooseDelivery(input: {
@@ -255,6 +264,9 @@ function chooseDelivery(input: {
   readonly nowMs: number;
 }): ChosenDelivery | null {
   const liveActivityDelivery = chooseLiveActivityDelivery(input);
+  if (liveActivityDelivery === "suppressed") {
+    return null;
+  }
   if (liveActivityDelivery) {
     return liveActivityDelivery;
   }
@@ -365,6 +377,24 @@ const recoverApnsDeliveryTransportError = (
 interface LiveActivityDeliveryTarget {
   readonly user_id: string;
   readonly device_id: string;
+  readonly bundle_id?: string | null;
+  readonly aps_environment?: "sandbox" | "production" | null;
+}
+
+// Devices register the bundle id and APS environment of the build they run
+// (dev/preview/prod variants have distinct bundle ids; development-signed
+// builds get sandbox tokens). Sending with mismatched routing yields
+// DeviceTokenNotForTopic/BadDeviceToken, so per-device values override the
+// relay-wide defaults when present.
+function credentialsForTarget(
+  credentials: RelayConfiguration.RelayConfiguration["Service"]["apns"],
+  target: LiveActivityDeliveryTarget,
+): RelayConfiguration.RelayConfiguration["Service"]["apns"] {
+  return {
+    ...credentials,
+    ...(target.bundle_id ? { bundleId: target.bundle_id } : {}),
+    ...(target.aps_environment ? { environment: target.aps_environment } : {}),
+  };
 }
 
 function expectedCurrentToken(input: {
@@ -540,7 +570,7 @@ export const make = Effect.gen(function* () {
     }
     const result = yield* apns
       .sendLiveActivityRequest({
-        credentials: config.apns,
+        credentials: credentialsForTarget(config.apns, input.target),
         request,
         issuedAtUnixSeconds: epochSeconds,
       })
@@ -663,7 +693,7 @@ export const make = Effect.gen(function* () {
     }
     const result = yield* apns
       .sendPushNotificationRequest({
-        credentials: config.apns,
+        credentials: credentialsForTarget(config.apns, input.target),
         request,
         issuedAtUnixSeconds: epochSeconds,
       })
@@ -752,6 +782,8 @@ export const make = Effect.gen(function* () {
             target: {
               user_id: payload.target.userId,
               device_id: payload.target.deviceId,
+              bundle_id: payload.target.bundleId ?? null,
+              aps_environment: payload.target.apsEnvironment ?? null,
             },
             token: payload.target.token,
             sourceJobId: payload.jobId,
@@ -763,6 +795,8 @@ export const make = Effect.gen(function* () {
             target: {
               user_id: payload.target.userId,
               device_id: payload.target.deviceId,
+              bundle_id: payload.target.bundleId ?? null,
+              aps_environment: payload.target.apsEnvironment ?? null,
             },
             token: payload.target.token,
             sourceJobId: payload.jobId,
@@ -783,6 +817,8 @@ export const make = Effect.gen(function* () {
             target: {
               user_id: payload.target.userId,
               device_id: payload.target.deviceId,
+              bundle_id: payload.target.bundleId ?? null,
+              aps_environment: payload.target.apsEnvironment ?? null,
             },
             token: payload.target.token,
             sourceJobId: payload.jobId,
@@ -804,6 +840,8 @@ export const make = Effect.gen(function* () {
             userId: input.target.user_id,
             deviceId: input.target.device_id,
             token,
+            bundleId: input.target.bundle_id,
+            apsEnvironment: input.target.aps_environment,
             notification,
           })
         : Effect.succeed(null);
@@ -822,6 +860,8 @@ export const make = Effect.gen(function* () {
           userId: input.target.user_id,
           deviceId: input.target.device_id,
           token: delivery.token,
+          bundleId: input.target.bundle_id,
+          apsEnvironment: input.target.aps_environment,
           notification: delivery.notification,
         });
         return result;
@@ -831,6 +871,8 @@ export const make = Effect.gen(function* () {
         deviceId: input.target.device_id,
         kind: delivery.kind,
         token: delivery.token,
+        bundleId: input.target.bundle_id,
+        apsEnvironment: input.target.aps_environment,
         aggregate: delivery.aggregate,
       });
       const notification = notificationForAggregate({
@@ -842,6 +884,8 @@ export const make = Effect.gen(function* () {
           userId: input.target.user_id,
           deviceId: input.target.device_id,
           token: input.target.push_token,
+          bundleId: input.target.bundle_id,
+          apsEnvironment: input.target.aps_environment,
           notification,
         });
       }

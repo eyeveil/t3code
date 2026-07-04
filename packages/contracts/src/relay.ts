@@ -35,17 +35,39 @@ export const RelayAgentAwarenessPreferences = Schema.Struct({
 });
 export type RelayAgentAwarenessPreferences = typeof RelayAgentAwarenessPreferences.Type;
 
+export const RelayApnsEnvironment = Schema.Literals(["sandbox", "production"]);
+export type RelayApnsEnvironment = typeof RelayApnsEnvironment.Type;
+
 export const RelayDeviceRegistrationRequest = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   platform: RelayAgentAwarenessPlatform,
   iosMajorVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(18)),
   appVersion: Schema.optional(TrimmedNonEmptyString),
+  // APNs routing for this install: the topic must match the app's bundle id
+  // (dev/preview/prod variants differ) and development-signed builds receive
+  // sandbox tokens. Optional so older app builds keep registering; the relay
+  // falls back to its configured defaults.
+  bundleId: Schema.optional(TrimmedNonEmptyString),
+  apsEnvironment: Schema.optional(RelayApnsEnvironment),
   pushToken: Schema.optional(TrimmedNonEmptyString),
   pushToStartToken: Schema.optional(TrimmedNonEmptyString),
   preferences: RelayAgentAwarenessPreferences,
 });
 export type RelayDeviceRegistrationRequest = typeof RelayDeviceRegistrationRequest.Type;
+
+export const RelayClientDeviceDeliveryDiagnostics = Schema.Struct({
+  bundleId: Schema.NullOr(TrimmedNonEmptyString),
+  apsEnvironment: Schema.NullOr(RelayApnsEnvironment),
+  hasPushToken: Schema.Boolean,
+  hasPushToStartToken: Schema.Boolean,
+  hasLiveActivityToken: Schema.Boolean,
+  lastDeliveryAt: Schema.NullOr(TrimmedNonEmptyString),
+  lastDeliveryKind: Schema.NullOr(TrimmedNonEmptyString),
+  lastDeliveryStatus: Schema.NullOr(Schema.Int),
+  lastDeliveryError: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type RelayClientDeviceDeliveryDiagnostics = typeof RelayClientDeviceDeliveryDiagnostics.Type;
 
 export const RelayClientDeviceRecord = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
@@ -63,6 +85,8 @@ export const RelayClientDeviceRecord = Schema.Struct({
   liveActivities: Schema.Struct({
     enabled: Schema.Boolean,
   }),
+  // Optional so clients tolerate older relay deployments.
+  diagnostics: Schema.optional(RelayClientDeviceDeliveryDiagnostics),
   updatedAt: TrimmedNonEmptyString,
 });
 export type RelayClientDeviceRecord = typeof RelayClientDeviceRecord.Type;

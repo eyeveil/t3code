@@ -15,7 +15,11 @@ import { ApnsEnvironment as ApnsEnvironmentSchema, type ApnsCredentials } from "
 import type { ApnsNotificationPayload } from "./apnsDeliveryJobs.ts";
 
 const LIVE_ACTIVITY_NAME = "AgentActivity";
-const STALE_AFTER_SECONDS = 2 * 60;
+// Updates only flow on domain events, so a healthy agent can be silent for
+// minutes (long tool calls, pending approvals). Two minutes made iOS dim
+// perfectly healthy activities; ten minutes still bounds how long a dead
+// environment can look alive.
+const STALE_AFTER_SECONDS = 10 * 60;
 const DISMISS_AFTER_SECONDS = 5 * 60;
 
 const ApnsLiveActivityEventSchema = Schema.Literals(["start", "update", "end"]);
