@@ -53,6 +53,7 @@ import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
 import { ThreadGitMenu } from "../threads/ThreadGitControls";
 import { useReviewCacheForThread } from "./reviewState";
 import {
+  type NativeReviewDiffTheme,
   type NativeReviewDiffViewHandle,
   resolveNativeReviewDiffView,
 } from "../diffs/nativeReviewDiffSurface";
@@ -78,6 +79,47 @@ const ReviewNotice = memo(function ReviewNotice(props: { readonly notice: string
       </Text>
       <Text className="text-xs leading-normal text-amber-800 dark:text-amber-200">
         {props.notice}
+      </Text>
+    </View>
+  );
+});
+
+// Defensive fallback for when the native review-diff surface fails to resolve
+// (e.g. a platform/device without the `T3ReviewDiffSurface` view registered).
+// The render site force-unwrapped `resolveNativeReviewDiffView()` and mounted
+// the result unconditionally, which crashed the sheet with "Element type is
+// invalid" whenever the resolver returned null (notably Android before the
+// module was ported from PR #3579). We render this themed inline notice instead
+// of ever crashing. Colors come from the same review-diff theme tokens the
+// native surface would consume, so it blends with the surrounding sheet.
+const NativeReviewDiffUnavailableNotice = memo(function NativeReviewDiffUnavailableNotice(props: {
+  readonly theme: NativeReviewDiffTheme;
+}) {
+  const { theme } = props;
+  return (
+    <View
+      style={{
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 32,
+        backgroundColor: theme.background,
+      }}
+    >
+      <Text style={{ color: theme.text, fontSize: 15, fontWeight: "600", textAlign: "center" }}>
+        Diff viewer unavailable
+      </Text>
+      <Text
+        style={{
+          color: theme.mutedText,
+          fontSize: 13,
+          lineHeight: 18,
+          textAlign: "center",
+          marginTop: 6,
+        }}
+      >
+        The native review diff surface could not be loaded on this device. Update to the latest
+        build or reopen this review to try again.
       </Text>
     </View>
   );
@@ -386,7 +428,10 @@ export function ReviewSheet(props: ReviewSheetProps) {
       selectedSection,
       draftMessage,
     });
-  const NativeReviewDiffView = resolveNativeReviewDiffView()!;
+  // May be null when the native `T3ReviewDiffSurface` view is unavailable; the
+  // render site falls back to <NativeReviewDiffUnavailableNotice> instead of
+  // crashing. NEVER force-unwrap here.
+  const NativeReviewDiffView = resolveNativeReviewDiffView();
   const nativeReviewDiffViewRef = useRef<NativeReviewDiffViewHandle>(null);
   // Native pull-to-refresh on the diff surface (replaces the old Refresh menu item).
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
@@ -682,33 +727,37 @@ export function ReviewSheet(props: ReviewSheetProps) {
             >
               {listHeader}
               <View className="min-w-0 flex-1" collapsable={false}>
-                <NativeReviewDiffView
-                  collapsable={false}
-                  testID="review-native-diff-view"
-                  refreshing={isPullRefreshing}
-                  onPullToRefresh={() => void handlePullToRefresh()}
-                  style={StyleSheet.absoluteFill}
-                  appearanceScheme={selectedTheme}
-                  collapsedFileIdsJson={nativeBridge.collapsedFileIdsJson}
-                  collapsedCommentIdsJson={nativeBridge.collapsedCommentIdsJson}
-                  contentResetKey={`${reviewCache.threadKey}:${selectedSection.id}`}
-                  contentWidth={NATIVE_REVIEW_DIFF_CONTENT_WIDTH}
-                  nativeViewRef={nativeReviewDiffViewRef}
-                  rowHeight={nativeReviewDiffStyle.rowHeight}
-                  rowsJson={nativeBridge.rowsJson}
-                  selectedRowIdsJson={nativeBridge.selectedRowIdsJson}
-                  styleJson={nativeBridge.styleJson}
-                  themeJson={nativeBridge.themeJson}
-                  tokensPatchJson={nativeBridge.tokensPatchJson}
-                  tokensResetKey={nativeBridge.tokensResetKey}
-                  viewedFileIdsJson={nativeBridge.viewedFileIdsJson}
-                  onDebug={nativeBridge.onDebug}
-                  onPressLine={commentSelection.onPressLine}
-                  onVisibleFileChange={handleVisibleFileChange}
-                  onToggleComment={nativeBridge.onToggleComment}
-                  onToggleFile={handleNativeToggleFile}
-                  onToggleViewedFile={handleNativeToggleViewedFile}
-                />
+                {NativeReviewDiffView ? (
+                  <NativeReviewDiffView
+                    collapsable={false}
+                    testID="review-native-diff-view"
+                    refreshing={isPullRefreshing}
+                    onPullToRefresh={() => void handlePullToRefresh()}
+                    style={StyleSheet.absoluteFill}
+                    appearanceScheme={selectedTheme}
+                    collapsedFileIdsJson={nativeBridge.collapsedFileIdsJson}
+                    collapsedCommentIdsJson={nativeBridge.collapsedCommentIdsJson}
+                    contentResetKey={`${reviewCache.threadKey}:${selectedSection.id}`}
+                    contentWidth={NATIVE_REVIEW_DIFF_CONTENT_WIDTH}
+                    nativeViewRef={nativeReviewDiffViewRef}
+                    rowHeight={nativeReviewDiffStyle.rowHeight}
+                    rowsJson={nativeBridge.rowsJson}
+                    selectedRowIdsJson={nativeBridge.selectedRowIdsJson}
+                    styleJson={nativeBridge.styleJson}
+                    themeJson={nativeBridge.themeJson}
+                    tokensPatchJson={nativeBridge.tokensPatchJson}
+                    tokensResetKey={nativeBridge.tokensResetKey}
+                    viewedFileIdsJson={nativeBridge.viewedFileIdsJson}
+                    onDebug={nativeBridge.onDebug}
+                    onPressLine={commentSelection.onPressLine}
+                    onVisibleFileChange={handleVisibleFileChange}
+                    onToggleComment={nativeBridge.onToggleComment}
+                    onToggleFile={handleNativeToggleFile}
+                    onToggleViewedFile={handleNativeToggleViewedFile}
+                  />
+                ) : (
+                  <NativeReviewDiffUnavailableNotice theme={nativeBridge.theme} />
+                )}
               </View>
             </View>
           </View>

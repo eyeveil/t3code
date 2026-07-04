@@ -1,0 +1,21 @@
+// Ported from upstream PR pingdotgg/t3code#3579 (branch android-dev-pr-3514).
+// Mirrors modules/t3-terminal/android/build.gradle conventions.
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+group = 'com.t3tools.reviewdiff'
+version = '0.0.0'
+
+android {
+  namespace 'expo.modules.t3reviewdiff'
+  compileSdk rootProject.ext.compileSdkVersion
+
+  defaultConfig {
+    minSdkVersion rootProject.ext.minSdkVersion
+    targetSdkVersion rootProject.ext.targetSdkVersion
+  }
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+}
