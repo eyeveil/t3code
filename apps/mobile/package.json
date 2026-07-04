@@ -86,6 +86,7 @@
     "expo-notifications": "~56.0.18",
     "expo-paste-input": "^0.1.15",
     "expo-secure-store": "~56.0.4",
+    "expo-speech-recognition": "^56.0.1",
     "expo-splash-screen": "~56.0.10",
     "expo-symbols": "~56.0.6",
     "expo-system-ui": "~56.0.5",

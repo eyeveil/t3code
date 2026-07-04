@@ -81,7 +81,7 @@ export function ComposerAttachmentStrip(props: ComposerAttachmentStripProps) {
               onPress={() => props.onRemove(image.id)}
             >
               <SymbolView
-                name="xmark"
+                name={{ ios: "xmark", android: "close" }}
                 size={9}
                 tintColor="#ffffff"
                 type="monochrome"

@@ -133,6 +133,16 @@ const config: ExpoConfig = {
       },
     ],
     [
+      "expo-speech-recognition",
+      {
+        microphonePermission:
+          "Allow T3 Code to use the microphone for voice dictation in the composer.",
+        speechRecognitionPermission:
+          "Allow T3 Code to transcribe your speech for voice dictation in the composer.",
+        androidSpeechServicePackages: ["com.google.android.googlequicksearchbox"],
+      },
+    ],
+    [
       "expo-splash-screen",
       {
         image: variant.splashIcon,

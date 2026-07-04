@@ -19,6 +19,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject
 import {
   ActivityIndicator,
   Image,
+  Platform,
   Pressable,
   useColorScheme,
   View,
@@ -32,6 +33,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
+import { ComposerDictationButton } from "../../components/ComposerDictationButton";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -842,10 +844,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
-                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
+                <ControlPill
+                  icon={{ ios: "stop.fill", android: "stop" }}
+                  variant="danger"
+                  onPress={props.onStopThread}
+                />
               ) : (
                 <ControlPill
-                  icon="arrow.up"
+                  icon={{ ios: "arrow.up", android: "arrow_upward" }}
                   variant="primary"
                   disabled={!canSend}
                   onPress={handleSend}
@@ -864,7 +870,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 fadeTransparent={toolbarFadeTransparent}
               >
                 <ComposerToolbarButton
-                  icon="plus"
+                  icon={{ ios: "plus", android: "add" }}
                   onPress={() => void props.onPickDraftImages()}
                   showChevron={false}
                 />
@@ -886,13 +892,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 >
                   <ComposerToolbarTrigger
                     accessibilityLabel="Configuration"
-                    icon="slider.horizontal.3"
+                    icon={{ ios: "slider.horizontal.3", android: "tune" }}
                     label={configurationLabel}
                   />
                 </ControlPillMenu>
+                {Platform.OS === "android" ? (
+                  <ComposerDictationButton
+                    draftMessage={props.draftMessage}
+                    onChangeDraftMessage={props.onChangeDraftMessage}
+                  />
+                ) : null}
                 {showStopAction ? (
                   <ComposerToolbarButton
-                    icon="stop.fill"
+                    icon={{ ios: "stop.fill", android: "stop" }}
                     variant="danger"
                     onPress={props.onStopThread}
                     showChevron={false}
@@ -901,7 +913,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               </ComposerToolbarScroller>
               <ComposerToolbarButton
                 accessibilityLabel={sendLabel}
-                icon="arrow.up"
+                icon={{ ios: "arrow.up", android: "arrow_upward" }}
                 variant="primary"
                 disabled={!canSend}
                 onPress={handleSend}
