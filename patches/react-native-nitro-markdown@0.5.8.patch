@@ -1,0 +1,148 @@
+diff --git a/lib/commonjs/renderers/image.js b/lib/commonjs/renderers/image.js
+index a45f169a88d75e839ebf31cc31fe66d4e7dc9112..68384c91f98c6e19cba4141282095a525c8b5ac1 100644
+--- a/lib/commonjs/renderers/image.js
++++ b/lib/commonjs/renderers/image.js
+@@ -45,7 +45,7 @@ const Image = ({
+       aspectRatio: aspectRatio,
+       minHeight: aspectRatio ? undefined : 200,
+       borderRadius: theme.borderRadius.m,
+-      backgroundColor: theme.colors.surface
++      backgroundColor: "transparent"
+     },
+     imageHidden: {
+       opacity: 0,
+@@ -57,7 +57,7 @@ const Image = ({
+       aspectRatio: aspectRatio,
+       height: aspectRatio ? undefined : 200,
+       borderRadius: theme.borderRadius.m,
+-      backgroundColor: theme.colors.surface,
++      backgroundColor: "transparent",
+       justifyContent: "center",
+       alignItems: "center"
+     },
+@@ -73,7 +73,7 @@ const Image = ({
+       width: "100%",
+       padding: theme.spacing.l,
+       borderRadius: theme.borderRadius.m,
+-      backgroundColor: theme.colors.surface,
++      backgroundColor: "transparent",
+       alignItems: "center",
+       marginVertical: theme.spacing.m
+     },
+diff --git a/lib/commonjs/renderers/table/index.js b/lib/commonjs/renderers/table/index.js
+index b07ac871dcdea6c5081ffbccc8e234786db2fa05..08e22241e8f31e5e4c08cf71c1b97b0170462aa1 100644
+--- a/lib/commonjs/renderers/table/index.js
++++ b/lib/commonjs/renderers/table/index.js
+@@ -144,8 +144,8 @@ const TableRenderer = ({
+     return "flex-start";
+   };
+   const tableBackgroundStyle = (0, _react.useMemo)(() => ({
+-    backgroundColor: style?.backgroundColor ?? theme.colors.surface ?? "#111827"
+-  }), [style, theme.colors.surface]);
++    backgroundColor: style?.backgroundColor ?? "transparent"
++  }), [style]);
+   if (columnCount === 0) return null;
+   const hasWidths = columnWidths.length === columnCount;
+   const resolvedWidths = hasWidths ? columnWidths : estimatedColumnWidths;
+diff --git a/lib/module/renderers/image.js b/lib/module/renderers/image.js
+index 4711a881d0cb76f0559c8eb6995b8efa9543a54a..b18b34789c03cad83c292f8deedf8bacbf9b6793 100644
+--- a/lib/module/renderers/image.js
++++ b/lib/module/renderers/image.js
+@@ -41,7 +41,7 @@ export const Image = ({
+       aspectRatio: aspectRatio,
+       minHeight: aspectRatio ? undefined : 200,
+       borderRadius: theme.borderRadius.m,
+-      backgroundColor: theme.colors.surface
++      backgroundColor: "transparent"
+     },
+     imageHidden: {
+       opacity: 0,
+@@ -53,7 +53,7 @@ export const Image = ({
+       aspectRatio: aspectRatio,
+       height: aspectRatio ? undefined : 200,
+       borderRadius: theme.borderRadius.m,
+-      backgroundColor: theme.colors.surface,
++      backgroundColor: "transparent",
+       justifyContent: "center",
+       alignItems: "center"
+     },
+@@ -69,7 +69,7 @@ export const Image = ({
+       width: "100%",
+       padding: theme.spacing.l,
+       borderRadius: theme.borderRadius.m,
+-      backgroundColor: theme.colors.surface,
++      backgroundColor: "transparent",
+       alignItems: "center",
+       marginVertical: theme.spacing.m
+     },
+diff --git a/lib/module/renderers/table/index.js b/lib/module/renderers/table/index.js
+index e8d72df1b19887f0965fa09b69991abcd6491731..175f5130c5742e3bbb92fe91a23c6bd6ed6d3f75 100644
+--- a/lib/module/renderers/table/index.js
++++ b/lib/module/renderers/table/index.js
+@@ -140,8 +140,8 @@ export const TableRenderer = ({
+     return "flex-start";
+   };
+   const tableBackgroundStyle = useMemo(() => ({
+-    backgroundColor: style?.backgroundColor ?? theme.colors.surface ?? "#111827"
+-  }), [style, theme.colors.surface]);
++    backgroundColor: style?.backgroundColor ?? "transparent"
++  }), [style]);
+   if (columnCount === 0) return null;
+   const hasWidths = columnWidths.length === columnCount;
+   const resolvedWidths = hasWidths ? columnWidths : estimatedColumnWidths;
+diff --git a/src/renderers/image.tsx b/src/renderers/image.tsx
+index 87fde544098a01261d7b006e6d6a1acb6f2e9450..35890183cbc2fa14658c829f2aa1e84c5c634dd1 100644
+--- a/src/renderers/image.tsx
++++ b/src/renderers/image.tsx
+@@ -61,7 +61,9 @@ export const Image: FC<ImageProps> = ({ url, title, alt, Renderer, style }) => {
+           aspectRatio: aspectRatio,
+           minHeight: aspectRatio ? undefined : 200,
+           borderRadius: theme.borderRadius.m,
+-          backgroundColor: theme.colors.surface,
++          // Transparent so alpha PNGs and the loading state blend into the
++          // themed parent surface instead of a light "#ffffff" surface default.
++          backgroundColor: "transparent",
+         },
+         imageHidden: {
+           opacity: 0,
+@@ -73,7 +75,7 @@ export const Image: FC<ImageProps> = ({ url, title, alt, Renderer, style }) => {
+           aspectRatio: aspectRatio,
+           height: aspectRatio ? undefined : 200,
+           borderRadius: theme.borderRadius.m,
+-          backgroundColor: theme.colors.surface,
++          backgroundColor: "transparent",
+           justifyContent: "center",
+           alignItems: "center",
+         },
+@@ -87,7 +89,7 @@ export const Image: FC<ImageProps> = ({ url, title, alt, Renderer, style }) => {
+           width: "100%",
+           padding: theme.spacing.l,
+           borderRadius: theme.borderRadius.m,
+-          backgroundColor: theme.colors.surface,
++          backgroundColor: "transparent",
+           alignItems: "center",
+           marginVertical: theme.spacing.m,
+         },
+diff --git a/src/renderers/table/index.tsx b/src/renderers/table/index.tsx
+index 7707993bac4a81487a0010043419e7fcae6875f1..4663b2f2a07954ab03cdd2f5be07a794a124aa5f 100644
+--- a/src/renderers/table/index.tsx
++++ b/src/renderers/table/index.tsx
+@@ -216,10 +216,15 @@ export const TableRenderer: FC<TableRendererProps> = ({
+ 
+   const tableBackgroundStyle = useMemo(
+     () => ({
+-      backgroundColor:
+-        style?.backgroundColor ?? theme.colors.surface ?? "#111827",
++      // Default to transparent so the table blends into the themed parent
++      // surface, matching the iOS native renderer. Row/header colors come from
++      // tableRowEven/tableRowOdd/tableHeader; an explicit style.backgroundColor
++      // still wins. Previously this fell back to theme.colors.surface (a light
++      // "#ffffff" default that dark consumers never override), painting the
++      // whole table as a white card in dark mode.
++      backgroundColor: style?.backgroundColor ?? "transparent",
+     }),
+-    [style, theme.colors.surface],
++    [style],
+   );
+ 
+   if (columnCount === 0) return null;

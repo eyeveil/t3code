@@ -79,6 +79,10 @@ function useMarkdownPreviewStyles(): MarkdownPreviewStyles {
           tableBorder: horizontalRule,
           tableHeader: blockquoteBackground,
           tableHeaderText: strong,
+          // Match ThreadFeed: transparent rows so the table blends into the
+          // themed parent instead of the light "#f8fafc" zebra default.
+          tableRowEven: "transparent",
+          tableRowOdd: "transparent",
           code: codeText,
           codeBackground,
         },
