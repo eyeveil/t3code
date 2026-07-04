@@ -66,6 +66,7 @@ import {
   parseReviewCommentMessageSegments,
   type ReviewInlineComment,
 } from "../review/reviewCommentSelection";
+import type { ReviewDiffTheme } from "../review/shikiReviewHighlighter";
 import { resolveNativeReviewDiffView } from "../diffs/nativeReviewDiffSurface";
 import {
   buildNativeReviewDiffData,
@@ -90,6 +91,7 @@ import {
 } from "../../lib/threadActivity";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { ThreadWorkGroupToggle, ThreadWorkLog } from "./thread-work-log";
+import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
 
@@ -203,6 +205,12 @@ const markdownLinkStyles = StyleSheet.create({
   },
 });
 
+const MARKDOWN_MONO_FONT = Platform.select({
+  ios: "ui-monospace",
+  android: "monospace",
+  default: "monospace",
+});
+
 const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   readonly children: ReactNode;
   readonly color: string;
@@ -241,6 +249,137 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   );
 });
 
+// Ported from upstream PR pingdotgg/t3code#3579 by @juliusmarminge ("Use Shiki
+// for markdown code blocks"). Syntax-highlighted, horizontally scrollable code
+// block for the JS markdown renderer (Android; iOS renders via the native
+// SelectableMarkdownText.ios path). Highlighting is async: until the Shiki
+// result resolves the block shows plain themed text, so streaming assistant
+// tokens never flicker. Adapted for our tree: themed colors stay driven by the
+// caller's --color-md-* tokens; only per-token foreground/weight comes from
+// Shiki. Reconcile against PR #3579 on future upstream merges.
+function MarkdownCodeBlock(props: {
+  readonly backgroundColor: string;
+  readonly borderColor: string;
+  readonly content: string;
+  readonly headerTextColor: string;
+  readonly fontSize: number;
+  readonly highlightCode: boolean;
+  readonly language?: string | null;
+  readonly lineHeight: number;
+  readonly textColor: string;
+  readonly theme: ReviewDiffTheme;
+}) {
+  const highlighted = useMarkdownCodeHighlight({
+    code: props.content,
+    enabled: props.highlightCode && Boolean(props.language?.trim()),
+    language: props.language,
+    theme: props.theme,
+  });
+  let tokenOffset = 0;
+
+  return (
+    <View
+      style={{
+        alignSelf: "stretch",
+        backgroundColor: props.backgroundColor,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: props.borderColor,
+        marginVertical: 12,
+        maxWidth: "100%",
+        minWidth: 0,
+        overflow: "hidden",
+      }}
+    >
+      {props.language ? (
+        <View
+          style={{
+            borderBottomWidth: 1,
+            borderBottomColor: props.borderColor,
+            paddingHorizontal: 14,
+            paddingVertical: 8,
+          }}
+        >
+          <NativeText
+            style={{
+              color: props.headerTextColor,
+              fontFamily: MARKDOWN_MONO_FONT,
+              fontSize: props.fontSize,
+              opacity: 0.7,
+              textTransform: "uppercase",
+              ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
+            }}
+          >
+            {props.language}
+          </NativeText>
+        </View>
+      ) : null}
+      <ScrollView
+        horizontal
+        bounces={false}
+        nestedScrollEnabled={Platform.OS === "android"}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 12 }}
+      >
+        <NativeText
+          selectable
+          style={{
+            color: props.textColor,
+            fontFamily: MARKDOWN_MONO_FONT,
+            fontSize: props.fontSize,
+            lineHeight: props.lineHeight,
+            ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
+          }}
+        >
+          {highlighted
+            ? highlighted.map((line, lineIndex) => {
+                const lineStartOffset = tokenOffset;
+                const lineText = line.map((token) => token.content).join("");
+                const renderedLine = (
+                  <NativeText key={`line:${lineStartOffset}:${lineText}`}>
+                    {line.map((token) => {
+                      const startOffset = tokenOffset;
+                      tokenOffset += token.content.length;
+                      const fontStyle =
+                        token.fontStyle !== null && (token.fontStyle & 1) === 1
+                          ? ("italic" as const)
+                          : ("normal" as const);
+                      const fontWeight =
+                        token.fontStyle !== null && (token.fontStyle & 2) === 2
+                          ? ("700" as const)
+                          : ("400" as const);
+
+                      return (
+                        <NativeText
+                          key={`${startOffset}:${token.content}:${token.color ?? ""}:${
+                            token.fontStyle ?? ""
+                          }`}
+                          style={{
+                            color: token.color ?? props.textColor,
+                            fontFamily: MARKDOWN_MONO_FONT,
+                            fontStyle,
+                            fontWeight,
+                          }}
+                        >
+                          {token.content}
+                        </NativeText>
+                      );
+                    })}
+                    {lineIndex + 1 < highlighted.length ? "\n" : ""}
+                  </NativeText>
+                );
+                if (lineIndex + 1 < highlighted.length) {
+                  tokenOffset += 1;
+                }
+                return renderedLine;
+              })
+            : props.content}
+        </NativeText>
+      </ScrollView>
+    </View>
+  );
+}
+
 function useReviewCommentColors(): ReviewCommentColors {
   const background = useThemeColor("--color-card");
   const border = useThemeColor("--color-border");
@@ -264,6 +403,8 @@ function useReviewCommentColors(): ReviewCommentColors {
 
 function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSets {
   const { appearance } = useAppearancePreferences();
+  const colorScheme = useColorScheme();
+  const themeMode: ReviewDiffTheme = colorScheme === "dark" ? "dark" : "light";
   const markdownFontSizes = useMemo(
     () => resolveMarkdownFontSizes(appearance.baseFontSize),
     [appearance.baseFontSize],
@@ -327,7 +468,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
       fontFamilies: {
         regular: "DMSans_400Regular",
         heading: "DMSans_700Bold",
-        mono: "ui-monospace",
+        mono: MARKDOWN_MONO_FONT,
       },
       headingWeight: "700",
       borderRadius: {
@@ -382,6 +523,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
       blockBackgroundColor: string,
       blockTextColor: string,
       preserveSoftBreaks: boolean,
+      highlightCode: boolean,
     ): CustomRenderers => ({
       link: ({ children, href = "" }) => {
         const presentation = resolveMarkdownLinkPresentation(href);
@@ -474,9 +616,10 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           <NativeText
             style={{
               color: inlineCodeTextColor,
-              fontFamily: "ui-monospace",
+              fontFamily: MARKDOWN_MONO_FONT,
               fontSize: markdownFontSizes.codeBlockFontSize,
               lineHeight: markdownFontSizes.bodyLineHeight,
+              ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
             }}
           >
             {value}
@@ -488,58 +631,19 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
             soft_break: () => <NativeText>{"\n"}</NativeText>,
           }
         : {}),
-      code_block: ({ content, language }) => (
-        <View
-          style={{
-            backgroundColor: blockBackgroundColor,
-            borderRadius: 10,
-            borderWidth: 1,
-            borderColor: markdownHrColor,
-            marginVertical: 12,
-            overflow: "hidden",
-          }}
-        >
-          {language ? (
-            <View
-              style={{
-                borderBottomWidth: 1,
-                borderBottomColor: markdownHrColor,
-                paddingHorizontal: 14,
-                paddingVertical: 8,
-              }}
-            >
-              <NativeText
-                style={{
-                  color: markdownBodyColor,
-                  fontFamily: "ui-monospace",
-                  fontSize: markdownFontSizes.codeBlockFontSize,
-                  opacity: 0.7,
-                  textTransform: "uppercase",
-                }}
-              >
-                {language}
-              </NativeText>
-            </View>
-          ) : null}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            bounces={false}
-            contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 12 }}
-          >
-            <NativeText
-              selectable
-              style={{
-                color: blockTextColor,
-                fontFamily: "ui-monospace",
-                fontSize: markdownFontSizes.codeBlockFontSize,
-                lineHeight: markdownFontSizes.codeBlockLineHeight,
-              }}
-            >
-              {content}
-            </NativeText>
-          </ScrollView>
-        </View>
+      code_block: ({ content = "", language }) => (
+        <MarkdownCodeBlock
+          backgroundColor={blockBackgroundColor}
+          borderColor={markdownHrColor}
+          content={content}
+          fontSize={markdownFontSizes.codeBlockFontSize}
+          headerTextColor={markdownBodyColor}
+          highlightCode={highlightCode}
+          language={language}
+          lineHeight={markdownFontSizes.codeBlockLineHeight}
+          textColor={blockTextColor}
+          theme={themeMode}
+        />
       ),
     });
 
@@ -598,6 +702,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           markdownUserFenceBg,
           markdownUserFenceText,
           true,
+          false,
         ),
         nativeTextStyle: {
           color: markdownUserBodyColor,
@@ -629,6 +734,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           markdownCodeBg,
           markdownCodeText,
           false,
+          true,
         ),
         nativeTextStyle: {
           color: markdownBodyColor,
@@ -671,6 +777,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
     markdownUserFenceText,
     nativeMarkdownTypography,
     onLinkPress,
+    themeMode,
   ]);
 }
 
