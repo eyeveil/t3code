@@ -2,20 +2,31 @@
 // @juliusmarminge. Canvas-backed Android counterpart to ios/T3ReviewDiffView.swift;
 // self-contained (Android graphics + org.json + expo-modules-core only). Reconcile
 // against PR #3579 on future upstream merges.
+//
+// DEVIATION FROM PORTED ORIGINAL: PR #3579's Android port omitted the iOS
+// `refreshing` prop + `onPullToRefresh` event (UIRefreshControl on iOS). Added
+// here as a manual overscroll-triggered pull-to-refresh on the custom vertical
+// scroll (see setRefreshing / pull handling in onTouchEvent + the refresh
+// indicator badge), matching ios/T3ReviewDiffView.swift's names and empty payload.
 package expo.modules.t3reviewdiff
 
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.drawable.GradientDrawable
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewConfiguration
 import android.widget.OverScroller
+import android.widget.FrameLayout
+import android.widget.ProgressBar
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
@@ -34,6 +45,8 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
   private val onToggleViewedFile by EventDispatcher()
   private val onPressLine by EventDispatcher()
   private val onToggleComment by EventDispatcher()
+  // DEVIATION FROM PR #3579: pull-to-refresh event, mirrors iOS onPullToRefresh.
+  private val onPullToRefresh by EventDispatcher()
   private var rows: List<DiffRow> = emptyList()
   private var visibleRows: List<DiffRow> = emptyList()
   private var collapsedFileIds: Set<String> = emptySet()
@@ -57,6 +70,35 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
   private var lastTouchY = 0f
   private var velocityTracker: VelocityTracker? = null
 
+  // DEVIATION FROM PR #3579: manual overscroll-driven pull-to-refresh state.
+  // iOS gets this from UIScrollView.refreshControl; the ported Android view owns
+  // its scroll, so the pull is detected inside the custom vertical touch handler.
+  private val density = resources.displayMetrics.density
+  private val refreshTriggerDistancePx = 64f * density
+  private val refreshRestingOffsetPx = 16f * density
+  private val refreshBadgeSizePx = (40f * density).toInt()
+  private val refreshSpinnerSizePx = (24f * density).toInt()
+  private val refreshMaxDragPx = refreshTriggerDistancePx * 1.75f
+  private val refreshPullResistance = 0.5f
+  private var refreshing = false
+  private var isPulling = false
+  private var pullDistance = 0f
+  private val refreshBadgeBackground = GradientDrawable().apply {
+    shape = GradientDrawable.OVAL
+  }
+  private val refreshSpinner = ProgressBar(context).apply { isIndeterminate = true }
+  private val refreshIndicator = FrameLayout(context).apply {
+    background = refreshBadgeBackground
+    elevation = 4f * density
+    visibility = View.GONE
+    isClickable = false
+    isFocusable = false
+    addView(
+      refreshSpinner,
+      FrameLayout.LayoutParams(refreshSpinnerSizePx, refreshSpinnerSizePx, Gravity.CENTER),
+    )
+  }
+
   init {
     canvasView.onRowTap = { row, gesture -> handleRowTap(row, gesture) }
     canvasView.onVisibleRowsChanged = { first, last ->
@@ -70,8 +112,26 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
       emitVisibleFile(first)
     }
 
-    addView(
+    val container = FrameLayout(context)
+    container.addView(
       canvasView,
+      FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.MATCH_PARENT,
+      ),
+    )
+    container.addView(
+      refreshIndicator,
+      FrameLayout.LayoutParams(
+        refreshBadgeSizePx,
+        refreshBadgeSizePx,
+        Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+      ),
+    )
+    refreshIndicator.translationY = refreshHiddenTranslationY()
+    applyRefreshTheme()
+    addView(
+      container,
       LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
     )
   }
@@ -116,10 +176,12 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
 
   fun setAppearanceScheme(value: String) {
     canvasView.theme = DiffTheme.fallback(value)
+    applyRefreshTheme()
   }
 
   fun setThemeJson(value: String) {
     canvasView.theme = DiffTheme.fromJson(value, canvasView.theme)
+    applyRefreshTheme()
   }
 
   fun setStyleJson(value: String) {
@@ -187,7 +249,100 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
 
   fun cleanup() {
     payloadDecodeExecutor.shutdownNow()
+    refreshIndicator.animate().cancel()
   }
+
+  // DEVIATION FROM PR #3579: JS-driven refreshing state, mirrors iOS setRefreshing.
+  // Set to false once the reload completes to retract the spinner.
+  fun setRefreshing(value: Boolean) {
+    if (refreshing == value) return
+    refreshing = value
+    if (value) {
+      isPulling = false
+      startRefreshingIndicator()
+    } else {
+      resetPullIndicator()
+    }
+  }
+
+  private fun handleVerticalMove(deltaY: Int) {
+    // deltaY < 0 means the finger moved down: overscroll past the top edge, which is
+    // the only place a pull-to-refresh can begin. Horizontal pans use DragAxis.HORIZONTAL
+    // and never reach this branch, so the pull cannot fight a horizontal scroll.
+    if (isPulling) {
+      pullDistance = (pullDistance - deltaY * refreshPullResistance).coerceIn(0f, refreshMaxDragPx)
+      if (pullDistance <= 0f) {
+        isPulling = false
+        resetPullIndicator()
+      } else {
+        updatePullIndicator()
+      }
+      return
+    }
+    if (!refreshing && deltaY < 0 && canvasView.verticalOffset() == 0) {
+      isPulling = true
+      refreshIndicator.animate().cancel()
+      pullDistance = (-deltaY * refreshPullResistance).coerceAtMost(refreshMaxDragPx)
+      updatePullIndicator()
+      return
+    }
+    canvasView.scrollByVertical(deltaY)
+  }
+
+  private fun triggerRefresh() {
+    if (refreshing) return
+    refreshing = true
+    startRefreshingIndicator()
+    onPullToRefresh(emptyMap<String, Any>())
+  }
+
+  private fun updatePullIndicator() {
+    refreshIndicator.visibility = View.VISIBLE
+    val progress = (pullDistance / refreshTriggerDistancePx).coerceIn(0f, 1f)
+    refreshIndicator.alpha = progress
+    refreshIndicator.translationY = refreshHiddenTranslationY() + pullDistance
+    val scale = 0.6f + 0.4f * progress
+    refreshIndicator.scaleX = scale
+    refreshIndicator.scaleY = scale
+  }
+
+  private fun startRefreshingIndicator() {
+    refreshIndicator.visibility = View.VISIBLE
+    refreshIndicator.animate().cancel()
+    refreshIndicator.animate()
+      .translationY(refreshRestingOffsetPx)
+      .alpha(1f)
+      .scaleX(1f)
+      .scaleY(1f)
+      .setDuration(200)
+      .start()
+  }
+
+  private fun resetPullIndicator() {
+    pullDistance = 0f
+    refreshIndicator.animate().cancel()
+    refreshIndicator.animate()
+      .translationY(refreshHiddenTranslationY())
+      .alpha(0f)
+      .scaleX(0.6f)
+      .scaleY(0.6f)
+      .setDuration(200)
+      .withEndAction {
+        if (!refreshing && !isPulling) refreshIndicator.visibility = View.GONE
+      }
+      .start()
+  }
+
+  private fun applyRefreshTheme() {
+    val theme = canvasView.theme
+    // Accent on surface: spinner tinted with the accent color, badge filled with the
+    // surface color and a hairline border so it reads against the same-colored canvas.
+    refreshSpinner.indeterminateTintList = ColorStateList.valueOf(theme.hunkText)
+    refreshBadgeBackground.setColor(theme.background)
+    refreshBadgeBackground.setStroke(max(1, (density).toInt()), theme.border)
+  }
+
+  private fun refreshHiddenTranslationY(): Float = -refreshBadgeSizePx.toFloat()
 
   fun scrollToFile(fileId: String, animated: Boolean) {
     val index = visibleRows.indexOfFirst { it.kind == "file" && it.resolvedFileId == fileId }
@@ -250,7 +405,7 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
         val deltaX = (lastTouchX - event.x).toInt()
         val deltaY = (lastTouchY - event.y).toInt()
         if (axis == DragAxis.VERTICAL) {
-          canvasView.scrollByVertical(deltaY)
+          handleVerticalMove(deltaY)
         } else {
           canvasView.scrollByHorizontal(deltaX)
         }
@@ -258,7 +413,20 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
         lastTouchY = event.y
       }
       MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-        if (event.actionMasked == MotionEvent.ACTION_UP) {
+        val wasPulling = isPulling
+        isPulling = false
+        if (wasPulling) {
+          // A vertical pull-to-refresh gesture never turns into a fling.
+          if (
+            event.actionMasked == MotionEvent.ACTION_UP &&
+            !refreshing &&
+            pullDistance >= refreshTriggerDistancePx
+          ) {
+            triggerRefresh()
+          } else {
+            resetPullIndicator()
+          }
+        } else if (event.actionMasked == MotionEvent.ACTION_UP) {
           velocityTracker?.computeCurrentVelocity(1000)
           if (axis == DragAxis.VERTICAL) {
             val velocity = -(velocityTracker?.yVelocity ?: 0f).toInt()
