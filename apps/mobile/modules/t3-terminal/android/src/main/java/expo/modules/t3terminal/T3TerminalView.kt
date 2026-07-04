@@ -1,58 +1,63 @@
 package expo.modules.t3terminal
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.text.InputType
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
+import android.widget.FrameLayout
 import androidx.core.widget.doAfterTextChanged
 import expo.modules.kotlin.AppContext
-import expo.modules.kotlin.views.ExpoView
 import expo.modules.kotlin.viewevent.EventDispatcher
+import expo.modules.kotlin.views.ExpoView
+import expo.modules.t3terminal.vt.FocusedTerminalEmulator
+import expo.modules.t3terminal.vt.TerminalCell
+import kotlin.math.floor
 import kotlin.math.max
-import kotlin.math.min
 
 class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
-  private val container = LinearLayout(context)
-  private val scrollView = ScrollView(context)
-  private val textView = TextView(context)
-  private val inputView = EditText(context)
   private val onInput by EventDispatcher()
   private val onResize by EventDispatcher()
-  private var lastWidth = 0
-  private var lastHeight = 0
+  private val emulator = FocusedTerminalEmulator()
+  private val terminalView = TerminalCanvasView(context, emulator)
+  private val inputView = EditText(context)
   private var clearingInput = false
+  private var lastAppliedBuffer = ""
+  private var lastReportedCols = 0
+  private var lastReportedRows = 0
   private var backgroundColorValue = Color.parseColor("#24292E")
   private var foregroundColorValue = Color.parseColor("#D1D5DA")
   private var mutedForegroundColorValue = Color.parseColor("#959DA5")
 
   var terminalKey: String = ""
     set(value) {
+      if (field == value) return
       field = value
       contentDescription = "t3-terminal-$value"
+      resetAndReplay()
     }
 
   var initialBuffer: String = ""
     set(value) {
       field = value
-      textView.text = value.ifEmpty { "$ " }
-      scrollView.post {
-        scrollView.fullScroll(View.FOCUS_DOWN)
-      }
+      applyRemoteBuffer(value)
     }
 
   var fontSize: Float = 10f
     set(value) {
-      field = value
-      textView.textSize = value
-      inputView.textSize = max(value, 13f)
-      emitResize()
+      field = value.coerceAtLeast(4f)
+      terminalView.fontSizeSp = field
+      inputView.textSize = max(field, 13f)
+      recalculateGrid()
     }
 
   var appearanceScheme: String = "dark"
@@ -93,46 +98,48 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     }
 
   init {
+    isClickable = true
+    isFocusable = true
     applyTheme()
-    container.orientation = LinearLayout.VERTICAL
-    textView.typeface = Typeface.MONOSPACE
-    textView.textSize = fontSize
-    textView.setPadding(8, 8, 8, 8)
-    textView.text = "$ "
 
-    inputView.setSingleLine(true)
+    terminalView.layoutParams = LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT,
+      ViewGroup.LayoutParams.MATCH_PARENT,
+    )
+    terminalView.onGridChanged = { cols, rows -> resizeTerminal(cols, rows) }
+    terminalView.setOnClickListener { requestKeyboardFocus() }
+
+    inputView.layoutParams = FrameLayout.LayoutParams(1, 1)
     inputView.setTextColor(Color.TRANSPARENT)
     inputView.setHintTextColor(Color.TRANSPARENT)
     inputView.setBackgroundColor(Color.TRANSPARENT)
     inputView.typeface = Typeface.MONOSPACE
     inputView.textSize = max(fontSize, 13f)
-    inputView.hint = ""
     inputView.alpha = 0.02f
-    inputView.imeOptions = EditorInfo.IME_ACTION_SEND
+    inputView.imeOptions = EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+    inputView.inputType = InputType.TYPE_CLASS_TEXT or
+      InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+      InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
     inputView.setPadding(0, 0, 0, 0)
     inputView.setOnFocusChangeListener { _, hasFocus ->
-      if (hasFocus) {
-        showKeyboard()
-      }
+      terminalView.hasTerminalFocus = hasFocus
+      if (hasFocus) showKeyboard()
     }
-    inputView.setOnEditorActionListener { view, actionId, _ ->
-      if (actionId != EditorInfo.IME_ACTION_SEND) return@setOnEditorActionListener false
+    inputView.setOnEditorActionListener { _, actionId, event ->
+      val isEnterKey = event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN
+      if (actionId != EditorInfo.IME_ACTION_SEND && !isEnterKey) return@setOnEditorActionListener false
       onInput(mapOf("data" to "\n"))
       true
     }
     inputView.setOnKeyListener { _, keyCode, event ->
-      if (event.action != android.view.KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+      if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
       when {
-        keyCode == android.view.KeyEvent.KEYCODE_DEL -> {
+        keyCode == KeyEvent.KEYCODE_DEL -> {
           onInput(mapOf("data" to "\u007F"))
           true
         }
-        // Hardware keyboard Ctrl+A..Z -> control bytes 0x01..0x1A (Ctrl+C, Ctrl+Z, ...).
-        event.isCtrlPressed &&
-          keyCode in android.view.KeyEvent.KEYCODE_A..android.view.KeyEvent.KEYCODE_Z -> {
-          onInput(
-            mapOf("data" to (keyCode - android.view.KeyEvent.KEYCODE_A + 1).toChar().toString()),
-          )
+        event.isCtrlPressed && keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> {
+          onInput(mapOf("data" to (keyCode - KeyEvent.KEYCODE_A + 1).toChar().toString()))
           true
         }
         else -> false
@@ -148,53 +155,52 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       clearingInput = false
     }
 
-    textView.setOnClickListener { requestKeyboardFocus() }
-    scrollView.setOnClickListener { requestKeyboardFocus() }
-    container.setOnClickListener { requestKeyboardFocus() }
-    isClickable = true
+    addView(terminalView)
+    addView(inputView)
     setOnClickListener { requestKeyboardFocus() }
 
-    scrollView.addView(
-      textView,
-      LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
-    )
-    container.addView(
-      scrollView,
-      LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        0,
-        1f,
-      ),
-    )
-    container.addView(
-      inputView,
-      LinearLayout.LayoutParams(1, 1),
-    )
-    addView(
-      container,
-      LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
-    )
-
-    post {
-      requestKeyboardFocus()
-    }
+    post { requestKeyboardFocus() }
   }
 
   override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
     super.onSizeChanged(width, height, oldWidth, oldHeight)
-    if (width == lastWidth && height == lastHeight) return
-    lastWidth = width
-    lastHeight = height
-    emitResize()
+    recalculateGrid()
   }
 
-  private fun emitResize() {
-    if (width <= 0 || height <= 0) return
-    val density = resources.displayMetrics.scaledDensity
-    val fontPx = max(fontSize * density, 1f)
-    val cols = max(20, min(400, (width / (fontPx * 0.62f)).toInt()))
-    val terminalHeight = max(height - inputView.height, 0)
-    val rows = max(5, min(200, (terminalHeight / (fontPx * 1.35f)).toInt()))
+  private fun applyRemoteBuffer(buffer: String) {
+    if (buffer.startsWith(lastAppliedBuffer)) {
+      val suffix = buffer.substring(lastAppliedBuffer.length)
+      if (suffix.isNotEmpty()) {
+        emulator.feed(suffix)
+        terminalView.invalidate()
+      }
+      lastAppliedBuffer = buffer
+      return
+    }
+
+    resetAndReplay()
+  }
+
+  private fun resetAndReplay() {
+    emulator.reset()
+    lastAppliedBuffer = ""
+    if (initialBuffer.isNotEmpty()) {
+      emulator.feed(initialBuffer)
+      lastAppliedBuffer = initialBuffer
+    }
+    terminalView.invalidate()
+  }
+
+  private fun recalculateGrid() {
+    terminalView.recalculateGrid()
+  }
+
+  private fun resizeTerminal(cols: Int, rows: Int) {
+    emulator.resize(cols, rows)
+    terminalView.invalidate()
+    if (cols == lastReportedCols && rows == lastReportedRows) return
+    lastReportedCols = cols
+    lastReportedRows = rows
     onResize(mapOf("cols" to cols, "rows" to rows))
   }
 
@@ -205,13 +211,13 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
 
   private fun applyTheme() {
     setBackgroundColor(backgroundColorValue)
-    container.setBackgroundColor(backgroundColorValue)
-    scrollView.setBackgroundColor(backgroundColorValue)
-    textView.setTextColor(foregroundColorValue)
-    textView.setBackgroundColor(backgroundColorValue)
+    terminalView.backgroundColorValue = backgroundColorValue
+    terminalView.foregroundColorValue = foregroundColorValue
+    terminalView.mutedForegroundColorValue = mutedForegroundColorValue
     inputView.setTextColor(Color.TRANSPARENT)
     inputView.setHintTextColor(mutedForegroundColorValue)
     inputView.setBackgroundColor(Color.TRANSPARENT)
+    terminalView.invalidate()
   }
 
   private fun parseColor(value: String, fallback: Int): Int =
@@ -224,5 +230,136 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
   private fun showKeyboard() {
     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
     imm?.showSoftInput(inputView, InputMethodManager.SHOW_IMPLICIT)
+  }
+}
+
+private class TerminalCanvasView(
+  context: Context,
+  private val emulator: FocusedTerminalEmulator,
+) : View(context) {
+  private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
+  private val backgroundPaint = Paint()
+  private val cursorPaint = Paint()
+  private var cellWidth = 1f
+  private var cellHeight = 1f
+  private var baselineOffset = 0f
+  private var measuredCols = 80
+  private var measuredRows = 24
+
+  var onGridChanged: ((cols: Int, rows: Int) -> Unit)? = null
+  var backgroundColorValue: Int = Color.parseColor("#24292E")
+    set(value) {
+      field = value
+      setBackgroundColor(value)
+    }
+  var foregroundColorValue: Int = Color.parseColor("#D1D5DA")
+  var mutedForegroundColorValue: Int = Color.parseColor("#959DA5")
+  var hasTerminalFocus: Boolean = false
+    set(value) {
+      field = value
+      invalidate()
+    }
+  var fontSizeSp: Float = 10f
+    set(value) {
+      field = value.coerceAtLeast(4f)
+      configurePaint()
+      recalculateGrid()
+      invalidate()
+    }
+
+  init {
+    isClickable = true
+    isFocusable = false
+    textPaint.typeface = Typeface.MONOSPACE
+    configurePaint()
+    setBackgroundColor(backgroundColorValue)
+  }
+
+  override fun onTouchEvent(event: MotionEvent): Boolean {
+    if (event.action == MotionEvent.ACTION_UP) performClick()
+    return true
+  }
+
+  override fun performClick(): Boolean {
+    super.performClick()
+    return true
+  }
+
+  override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+    super.onSizeChanged(width, height, oldWidth, oldHeight)
+    recalculateGrid()
+  }
+
+  override fun onDraw(canvas: Canvas) {
+    super.onDraw(canvas)
+    val snapshot = emulator.snapshot()
+    canvas.drawColor(backgroundColorValue)
+
+    for (row in 0 until snapshot.rows) {
+      val y = row * cellHeight
+      val line = snapshot.cells[row]
+      for (col in 0 until snapshot.cols) {
+        val cell = line[col]
+        drawCellBackground(canvas, cell, col, y)
+      }
+      for (col in 0 until snapshot.cols) {
+        val cell = line[col]
+        if (cell.codePoint == 32) continue
+        drawCellText(canvas, cell, col, y)
+      }
+    }
+
+    if (snapshot.showCursor && hasTerminalFocus) {
+      cursorPaint.color = mutedForegroundColorValue
+      cursorPaint.style = Paint.Style.STROKE
+      cursorPaint.strokeWidth = max(1f, resources.displayMetrics.density)
+      val left = snapshot.cursorCol * cellWidth
+      val top = snapshot.cursorRow * cellHeight
+      canvas.drawRect(RectF(left, top, left + cellWidth, top + cellHeight), cursorPaint)
+    }
+  }
+
+  fun recalculateGrid() {
+    if (width <= 0 || height <= 0) return
+    configurePaint()
+    val nextCols = max(1, floor(width / cellWidth).toInt())
+    val nextRows = max(1, floor(height / cellHeight).toInt())
+    if (nextCols == measuredCols && nextRows == measuredRows) return
+    measuredCols = nextCols
+    measuredRows = nextRows
+    onGridChanged?.invoke(nextCols, nextRows)
+  }
+
+  private fun configurePaint() {
+    textPaint.textSize = fontSizeSp * resources.displayMetrics.scaledDensity
+    textPaint.typeface = Typeface.MONOSPACE
+    val metrics = textPaint.fontMetrics
+    cellWidth = max(textPaint.measureText("W"), 1f)
+    cellHeight = max(metrics.descent - metrics.ascent, 1f)
+    baselineOffset = -metrics.ascent
+  }
+
+  private fun drawCellBackground(canvas: Canvas, cell: TerminalCell, col: Int, top: Float) {
+    val background = if (cell.inverse) {
+      cell.foreground ?: foregroundColorValue
+    } else {
+      cell.background ?: backgroundColorValue
+    }
+    if (background == backgroundColorValue) return
+    backgroundPaint.color = background
+    val left = col * cellWidth
+    canvas.drawRect(left, top, left + cellWidth, top + cellHeight, backgroundPaint)
+  }
+
+  private fun drawCellText(canvas: Canvas, cell: TerminalCell, col: Int, top: Float) {
+    textPaint.color = if (cell.inverse) {
+      cell.background ?: backgroundColorValue
+    } else {
+      cell.foreground ?: foregroundColorValue
+    }
+    textPaint.isFakeBoldText = cell.bold
+    val chars = Character.toChars(cell.codePoint)
+    canvas.drawText(chars, 0, chars.size, col * cellWidth, top + baselineOffset, textPaint)
+    textPaint.isFakeBoldText = false
   }
 }
