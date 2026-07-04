@@ -640,7 +640,7 @@ export function NewTaskDraftScreen(props: {
               fadeTransparent={sheetFadeTransparent}
             >
               <ComposerToolbarButton
-                icon="plus"
+                icon={{ ios: "plus", android: "add" }}
                 onPress={() => void handlePickImages()}
                 showChevron={false}
               />
@@ -662,7 +662,7 @@ export function NewTaskDraftScreen(props: {
               >
                 <ComposerToolbarTrigger
                   accessibilityLabel="Configuration"
-                  icon="slider.horizontal.3"
+                  icon={{ ios: "slider.horizontal.3", android: "tune" }}
                   label={configurationLabel}
                 />
               </ControlPillMenu>
@@ -672,7 +672,7 @@ export function NewTaskDraftScreen(props: {
               >
                 <ComposerToolbarTrigger
                   accessibilityLabel="Environment"
-                  icon="desktopcomputer"
+                  icon={{ ios: "desktopcomputer", android: "computer" }}
                   label={selectedEnvironmentLabel}
                 />
               </ControlPillMenu>
@@ -682,7 +682,10 @@ export function NewTaskDraftScreen(props: {
               >
                 <ComposerToolbarTrigger
                   accessibilityLabel="Workspace"
-                  icon="point.topleft.down.curvedto.point.bottomright.up"
+                  icon={{
+                    ios: "point.topleft.down.curvedto.point.bottomright.up",
+                    android: "account_tree",
+                  }}
                   label={workspaceLabel}
                 />
               </ControlPillMenu>

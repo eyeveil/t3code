@@ -14,12 +14,13 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Platform, Pressable, StyleSheet, View, useColorScheme } from "react-native";
+import { Platform, Pressable, StyleSheet, View } from "react-native";
 import type { ColorValue } from "react-native";
-import { MenuView, type MenuAction } from "@react-native-menu/menu";
+import type { MenuAction } from "@react-native-menu/menu";
 import { SymbolView, type AndroidSymbol, type SFSymbol } from "expo-symbols";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { MaterialMenuAndroid } from "../components/MaterialMenuAndroid";
 import { useThemeColor } from "../lib/useThemeColor";
 
 export {
@@ -382,16 +383,16 @@ function AndroidToolbarPressable(props: {
 function AndroidToolbarMenu(props: {
   readonly item: Extract<NativeStackHeaderItem, { type: "menu" }>;
   readonly tintColor: ColorValue;
+  readonly anchoredToRight?: boolean;
 }) {
-  const isDark = useColorScheme() === "dark";
   const handlers = new Map<string, () => void>();
   const actions = buildAndroidMenuActions(props.item.menu.items, handlers, "menu");
   return (
-    <MenuView
+    <MaterialMenuAndroid
       title={props.item.menu.title}
       actions={actions}
+      isAnchoredToRight={props.anchoredToRight}
       onPressAction={({ nativeEvent }) => handlers.get(nativeEvent.event)?.()}
-      themeVariant={isDark ? "dark" : "light"}
     >
       <AndroidToolbarPressable
         icon={props.item.icon}
@@ -399,7 +400,7 @@ function AndroidToolbarMenu(props: {
         disabled={props.item.disabled}
         tintColor={props.tintColor}
       />
-    </MenuView>
+    </MaterialMenuAndroid>
   );
 }
 
@@ -407,6 +408,7 @@ function AndroidToolbarItem(props: {
   readonly item: NativeStackHeaderItem;
   readonly variant: "bottom" | "inline";
   readonly tintColor: ColorValue;
+  readonly anchoredToRight?: boolean;
 }) {
   const { item } = props;
   if (item.type === "button") {
@@ -421,7 +423,13 @@ function AndroidToolbarItem(props: {
     );
   }
   if (item.type === "menu") {
-    return <AndroidToolbarMenu item={item} tintColor={item.tintColor ?? props.tintColor} />;
+    return (
+      <AndroidToolbarMenu
+        item={item}
+        tintColor={item.tintColor ?? props.tintColor}
+        anchoredToRight={props.anchoredToRight}
+      />
+    );
   }
   // Spacers carry layout meaning only inline; the bottom bar uses space-between
   // and drops them.
@@ -431,12 +439,21 @@ function AndroidToolbarItem(props: {
   return null;
 }
 
-function AndroidHeaderItems(props: { readonly items: readonly NativeStackHeaderItem[] }) {
+function AndroidHeaderItems(props: {
+  readonly items: readonly NativeStackHeaderItem[];
+  readonly anchoredToRight?: boolean;
+}) {
   const iconColor = useThemeColor("--color-icon");
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 4 }}>
       {props.items.map((item, index) => (
-        <AndroidToolbarItem key={index} item={item} variant="inline" tintColor={iconColor} />
+        <AndroidToolbarItem
+          key={index}
+          item={item}
+          variant="inline"
+          tintColor={iconColor}
+          anchoredToRight={props.anchoredToRight}
+        />
       ))}
     </View>
   );
@@ -526,7 +543,9 @@ function NativeHeaderToolbarRoot(props: {
         navigation.setOptions({ headerLeft: undefined });
       };
     }
-    navigation.setOptions({ headerRight: () => <AndroidHeaderItems items={items} /> });
+    navigation.setOptions({
+      headerRight: () => <AndroidHeaderItems items={items} anchoredToRight />,
+    });
     return () => {
       navigation.setOptions({ headerRight: undefined });
     };

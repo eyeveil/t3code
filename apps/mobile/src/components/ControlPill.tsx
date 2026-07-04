@@ -1,11 +1,12 @@
 import { MenuView } from "@react-native-menu/menu";
 import type { ComponentProps, ReactNode } from "react";
-import { Pressable, useColorScheme, View } from "react-native";
+import { Platform, Pressable, useColorScheme, View } from "react-native";
 import { SymbolView } from "expo-symbols";
 import { useThemeColor } from "../lib/useThemeColor";
 
 import { cn } from "../lib/cn";
 import { AppText as Text } from "./AppText";
+import { MaterialMenuAndroid } from "./MaterialMenuAndroid";
 
 export function ControlPill(props: {
   readonly icon?: ComponentProps<typeof SymbolView>["name"];
@@ -80,6 +81,26 @@ export function ControlPillMenu(
   },
 ) {
   const isDarkMode = useColorScheme() === "dark";
+
+  // Android's native PopupMenu surface is unstyleable from JS (square corners,
+  // flat gray). Render a Material 3 popover instead; iOS keeps the native
+  // UIMenu / liquid-glass MenuView untouched.
+  if (Platform.OS === "android") {
+    const { children, ...menuProps } = props;
+    return (
+      <MaterialMenuAndroid
+        actions={menuProps.actions}
+        title={menuProps.title}
+        isAnchoredToRight={menuProps.isAnchoredToRight}
+        shouldOpenOnLongPress={menuProps.shouldOpenOnLongPress}
+        onPressAction={menuProps.onPressAction}
+        onOpenMenu={menuProps.onOpenMenu}
+        onCloseMenu={menuProps.onCloseMenu}
+      >
+        {children}
+      </MaterialMenuAndroid>
+    );
+  }
 
   return (
     <MenuView {...props} themeVariant={isDarkMode ? "dark" : "light"}>

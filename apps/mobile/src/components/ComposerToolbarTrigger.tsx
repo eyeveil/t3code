@@ -238,7 +238,12 @@ export function ComposerToolbarButton(props: {
         </Text>
       ) : null}
       {props.showChevron === false ? null : (
-        <SymbolView name="chevron.down" size={11} tintColor={iconTintColor} type="monochrome" />
+        <SymbolView
+          name={{ ios: "chevron.down", android: "keyboard_arrow_down" }}
+          size={11}
+          tintColor={iconTintColor}
+          type="monochrome"
+        />
       )}
     </Pressable>
   );

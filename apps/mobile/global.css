@@ -102,6 +102,10 @@
       --color-drawer: rgba(255, 255, 255, 0.99);
       --color-drawer-shadow: rgba(0, 0, 0, 0.12);
 
+      /* Android Material 3 menu (popover surface — tonal elevated) */
+      --color-menu-surface: #ffffff;
+      --color-menu-ripple: rgba(0, 0, 0, 0.08);
+
       /* Misc */
       --color-dot-separator: rgba(0, 0, 0, 0.2);
       --color-wordmark: #262626;
@@ -205,6 +209,10 @@
       --color-backdrop: rgba(0, 0, 0, 0.48);
       --color-drawer: rgba(22, 22, 22, 0.99);
       --color-drawer-shadow: rgba(0, 0, 0, 0.32);
+
+      /* Android Material 3 menu (popover surface — tonal elevated) */
+      --color-menu-surface: #2a2a2c;
+      --color-menu-ripple: rgba(255, 255, 255, 0.1);
 
       /* Misc */
       --color-dot-separator: rgba(255, 255, 255, 0.2);

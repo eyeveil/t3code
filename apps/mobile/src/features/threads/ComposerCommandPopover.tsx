@@ -78,6 +78,9 @@ function PopoverSurface(props: {
           backgroundColor: props.isDarkMode ? "rgba(44,44,46,0.96)" : "rgba(255,255,255,0.96)",
           borderWidth: 1,
           borderColor: props.isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
+          // Material elevation on Android (ignored on iOS, which uses the
+          // liquid-glass branch above); lifts the popover off the composer.
+          elevation: 8,
         },
       ]}
     >
@@ -90,9 +93,9 @@ function itemIcon(item: ComposerCommandItem) {
   switch (item.type) {
     case "slash-command":
     case "provider-slash-command":
-      return "terminal" as const;
+      return { ios: "terminal", android: "terminal" } as const;
     case "skill":
-      return "cube" as const;
+      return { ios: "cube", android: "deployed_code" } as const;
     case "path":
       return null;
   }
