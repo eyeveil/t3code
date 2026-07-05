@@ -142,6 +142,21 @@ export function flattenQueuedThreadMessages(
   return Object.values(queues).flat();
 }
 
+/**
+ * One-line preview for queue UI rows. Whitespace runs collapse so a message
+ * that starts with blank lines still shows text instead of clipping to
+ * nothing; attachment-only messages get a count label.
+ */
+export function queuedThreadMessagePreview(message: QueuedThreadMessage): string {
+  const text = message.text.replace(/\s+/g, " ").trim();
+  if (text.length > 0) {
+    return text;
+  }
+  return message.attachments.length === 1
+    ? "1 image attachment"
+    : `${message.attachments.length} image attachments`;
+}
+
 export function threadOutboxRetryDelayMs(attempt: number): number {
   return Math.min(1_000 * 2 ** Math.max(0, attempt - 1), THREAD_OUTBOX_MAX_RETRY_DELAY_MS);
 }

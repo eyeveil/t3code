@@ -63,7 +63,9 @@ import {
   resolveProviderOptionDescriptors,
 } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
+import type { QueuedThreadMessage } from "../../state/thread-outbox";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
+import { ThreadComposerQueuedMessages } from "./ThreadComposerQueuedMessages";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -94,7 +96,7 @@ export interface ThreadComposerProps {
   readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
-  readonly queueCount: number;
+  readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -105,6 +107,9 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onSteerQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
+  readonly onEditQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
+  readonly onDeleteQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -298,7 +303,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.status === "starting";
 
   const sendLabel =
-    props.connectionState !== "connected" || props.activeThreadBusy || props.queueCount > 0
+    props.connectionState !== "connected" ||
+    props.activeThreadBusy ||
+    props.queuedMessages.length > 0
       ? "Queue"
       : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
@@ -501,6 +508,16 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
   // ── Handle command selection ──────────────────────────────
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
+  const { onEditQueuedMessage } = props;
+
+  const handleEditQueuedMessage = useCallback(
+    async (message: QueuedThreadMessage) => {
+      await onEditQueuedMessage(message);
+      // The message is in the draft now; put the caret there for editing.
+      inputRef.current?.focus();
+    },
+    [inputRef, onEditQueuedMessage],
+  );
 
   const handleSend = useCallback(async () => {
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
@@ -736,6 +753,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           />
         ) : null}
 
+        <ThreadComposerQueuedMessages
+          messages={props.queuedMessages}
+          steerEnabled={props.connectionState === "connected"}
+          onSteer={props.onSteerQueuedMessage}
+          onEdit={handleEditQueuedMessage}
+          onDelete={props.onDeleteQueuedMessage}
+        />
+
         <ComposerSurface
           isDarkMode={isDarkMode}
           style={
@@ -920,16 +945,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 showChevron={false}
               />
             </ComposerToolbarRow>
-          </Animated.View>
-        ) : null}
-
-        {/* Queue count */}
-        {props.queueCount > 0 ? (
-          <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
-            <Text className="text-xs text-foreground-muted" style={{ paddingTop: 8 }}>
-              {props.queueCount} queued message{props.queueCount === 1 ? "" : "s"} will send
-              automatically.
-            </Text>
           </Animated.View>
         ) : null}
       </Animated.View>

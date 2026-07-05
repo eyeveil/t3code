@@ -15,6 +15,7 @@ import {
   groupQueuedThreadMessages,
   isQueuedThreadCreationSendable,
   modelSelectionsEqual,
+  queuedThreadMessagePreview,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxFailureAction,
   resolveQueuedThreadSettings,
@@ -449,6 +450,35 @@ describe("thread outbox", () => {
       }),
     ).toBe(true);
     expect(shouldRetryThreadOutboxDelivery(new Error("Thread no longer exists"))).toBe(false);
+  });
+
+  it("previews queued messages as a single collapsed line", () => {
+    const message = queuedMessage({
+      messageId: "message-1",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+
+    expect(
+      queuedThreadMessagePreview({ ...message, text: "\n\n  fix the bug\nthen run tests  " }),
+    ).toBe("fix the bug then run tests");
+    expect(
+      queuedThreadMessagePreview({
+        ...message,
+        text: "   ",
+        attachments: [
+          {
+            id: "image-1",
+            previewUri: "file:///a.png",
+            type: "image",
+            name: "a.png",
+            mimeType: "image/png",
+            sizeBytes: 1,
+            dataUrl: "data:image/png;base64,",
+          },
+        ],
+      }),
+    ).toBe("1 image attachment");
+    expect(queuedThreadMessagePreview({ ...message, text: "" })).toBe("0 image attachments");
   });
 
   it("retains queued messages when settings synchronization fails before startTurn", () => {
