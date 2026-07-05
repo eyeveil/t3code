@@ -881,6 +881,35 @@ const make = Effect.gen(function* () {
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+
+    // Interrupting by session succeeds vacuously when the provider runtime has
+    // no turn in flight. If the orchestration session still reports "running"
+    // in that state, its activeTurnId is a ghost no provider event will ever
+    // settle — the session-set/turn event race can strand a stale queued-turn
+    // reference, wedging the thread: queued prompts stall behind the phantom
+    // turn and stop becomes a no-op. The provider runtime is ground truth
+    // here, so force-settle the session and let the queue drain. A racing
+    // real turn is safe either way: if the provider still tracks it we skip,
+    // and a concurrent turn.completed just overwrites this settle.
+    const session = thread.session;
+    if (session && session.status === "running" && session.activeTurnId !== null) {
+      const providerSessions = yield* providerService.listSessions();
+      const providerSession = providerSessions.find(
+        (entry) => entry.threadId === event.payload.threadId,
+      );
+      if (providerSession?.activeTurnId === undefined) {
+        yield* setThreadSession({
+          threadId: event.payload.threadId,
+          session: {
+            ...session,
+            status: "interrupted",
+            activeTurnId: null,
+            updatedAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
+      }
+    }
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
