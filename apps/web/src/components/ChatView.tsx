@@ -2398,6 +2398,10 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onDeleteQueuedMessage = useCallback(
     async (queuedMessage: QueuedThreadMessage) => {
+      if (dispatchingQueuedMessageId === queuedMessage.messageId) {
+        // Mid-delivery; removing now would look deleted while it still sends.
+        return;
+      }
       // Hold the drain off while removing so it cannot deliver mid-delete.
       holdEditingQueuedMessage(queuedMessage.messageId);
       try {
@@ -2411,7 +2415,7 @@ function ChatViewContent(props: ChatViewProps) {
         releaseEditingQueuedMessage(queuedMessage.messageId);
       }
     },
-    [setThreadError],
+    [dispatchingQueuedMessageId, setThreadError],
   );
 
   const addTerminalContextToDraft = useCallback(
