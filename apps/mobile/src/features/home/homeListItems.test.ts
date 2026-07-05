@@ -49,6 +49,8 @@ function makeThread(id: string, projectId: ProjectId): EnvironmentThreadShell {
     archivedAt: null,
     session: null,
     latestUserMessageAt: null,
+    lastActivitySummary: null,
+    lastActivityAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,

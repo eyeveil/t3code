@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
@@ -275,6 +276,36 @@ function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
+
+// A single running thread appends work-log activities in bursts; each one
+// re-reads and re-broadcasts the thread shell. Coalesce those bursts per thread
+// within a short window so subscribers see the latest shell, not every step.
+const SHELL_COALESCE_WINDOW_MS = 250;
+const SHELL_COALESCE_MAX_BATCH = 256;
+
+/**
+ * Collapse a batch of domain events to at most one per thread aggregate,
+ * keeping each thread's last event (per-thread ordering is preserved, and
+ * terminal events such as archive/delete are naturally last in the log).
+ * Non-thread events pass through untouched.
+ */
+const coalesceLatestThreadEvents = (
+  events: ReadonlyArray<OrchestrationEvent>,
+): ReadonlyArray<OrchestrationEvent> => {
+  if (events.length <= 1) {
+    return events;
+  }
+  const lastIndexByThread = new Map<string, number>();
+  events.forEach((event, index) => {
+    if (event.aggregateKind === "thread") {
+      lastIndexByThread.set(event.aggregateId, index);
+    }
+  });
+  return events.filter(
+    (event, index) =>
+      event.aggregateKind !== "thread" || lastIndexByThread.get(event.aggregateId) === index,
+  );
+};
 
 const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [ORCHESTRATION_WS_METHODS.dispatchCommand, AuthOrchestrationOperateScope],
@@ -1065,11 +1096,32 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
             Effect.gen(function* () {
+              // Per-subscriber dedup: skip re-emitting a thread whose encoded
+              // shell is byte-for-byte identical to the last one we sent.
+              const lastEncodedThreadShellById = new Map<string, string>();
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
-                Stream.mapEffect(toShellStreamEvent),
-                Stream.flatMap((event) =>
-                  Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                Stream.groupedWithin(
+                  SHELL_COALESCE_MAX_BATCH,
+                  Duration.millis(SHELL_COALESCE_WINDOW_MS),
                 ),
+                Stream.flatMap((events) => Stream.fromIterable(coalesceLatestThreadEvents(events))),
+                Stream.mapEffect(toShellStreamEvent),
+                Stream.filterMap((event) => {
+                  if (Option.isNone(event)) {
+                    return Result.failVoid;
+                  }
+                  const shellEvent = event.value;
+                  if (shellEvent.kind === "thread-removed") {
+                    lastEncodedThreadShellById.delete(shellEvent.threadId);
+                  } else if (shellEvent.kind === "thread-upserted") {
+                    const encoded = JSON.stringify(shellEvent.thread);
+                    if (lastEncodedThreadShellById.get(shellEvent.thread.id) === encoded) {
+                      return Result.failVoid;
+                    }
+                    lastEncodedThreadShellById.set(shellEvent.thread.id, encoded);
+                  }
+                  return Result.succeed(shellEvent);
+                }),
               );
 
               // When the client already holds a shell snapshot (cached, or loaded

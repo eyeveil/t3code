@@ -37,6 +37,8 @@ const stubThread = {
   updatedAt: "2026-04-01T00:00:00.000Z",
   archivedAt: null,
   latestUserMessageAt: null,
+  lastActivitySummary: null,
+  lastActivityAt: null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,

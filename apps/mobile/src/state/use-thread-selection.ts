@@ -60,6 +60,8 @@ function threadDetailToShell(
     archivedAt: thread.archivedAt,
     session: thread.session,
     latestUserMessageAt: latestUserMessageAt(thread),
+    lastActivitySummary: null,
+    lastActivityAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,

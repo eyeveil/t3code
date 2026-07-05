@@ -2704,3 +2704,126 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 });
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-activity-summary-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("mirrors the latest work-log activity onto the thread shell", () =>
+      Effect.gen(function* () {
+        const eventStore = yield* OrchestrationEventStore;
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-activity-summary-1"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-activity-summary"),
+          occurredAt: now,
+          commandId: CommandId.make("cmd-activity-summary-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-activity-summary-1"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-activity-summary"),
+            projectId: ProjectId.make("project-activity-summary"),
+            title: "Thread Activity Summary",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        const emptyRows = yield* sql<{
+          readonly lastActivitySummary: string | null;
+          readonly lastActivityAt: string | null;
+        }>`
+          SELECT
+            last_activity_summary AS "lastActivitySummary",
+            last_activity_at AS "lastActivityAt"
+          FROM projection_threads
+          WHERE thread_id = 'thread-activity-summary'
+        `;
+        assert.deepEqual(emptyRows, [{ lastActivitySummary: null, lastActivityAt: null }]);
+
+        yield* appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-activity-summary-2"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-activity-summary"),
+          occurredAt: "2026-01-01T00:00:01.000Z",
+          commandId: CommandId.make("cmd-activity-summary-2"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-activity-summary-2"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-activity-summary"),
+            activity: {
+              id: EventId.make("activity-summary-editing"),
+              tone: "info",
+              kind: "tool.invoked",
+              summary: "Editing config.ts",
+              payload: {},
+              turnId: null,
+              createdAt: "2026-01-01T00:00:01.000Z",
+            },
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-activity-summary-3"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-activity-summary"),
+          occurredAt: "2026-01-01T00:00:02.000Z",
+          commandId: CommandId.make("cmd-activity-summary-3"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-activity-summary-3"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make("thread-activity-summary"),
+            activity: {
+              id: EventId.make("activity-summary-running"),
+              tone: "info",
+              kind: "tool.invoked",
+              summary: "Running tests",
+              payload: {},
+              turnId: null,
+              createdAt: "2026-01-01T00:00:02.000Z",
+            },
+          },
+        });
+
+        const rows = yield* sql<{
+          readonly lastActivitySummary: string | null;
+          readonly lastActivityAt: string | null;
+        }>`
+          SELECT
+            last_activity_summary AS "lastActivitySummary",
+            last_activity_at AS "lastActivityAt"
+          FROM projection_threads
+          WHERE thread_id = 'thread-activity-summary'
+        `;
+        assert.deepEqual(rows, [
+          {
+            lastActivitySummary: "Running tests",
+            lastActivityAt: "2026-01-01T00:00:02.000Z",
+          },
+        ]);
+      }),
+    );
+  },
+);

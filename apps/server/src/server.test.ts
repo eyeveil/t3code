@@ -194,6 +194,8 @@ const makeDefaultOrchestrationThreadShell = (
     archivedAt: null,
     session: null,
     latestUserMessageAt: null,
+    lastActivitySummary: null,
+    lastActivityAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
