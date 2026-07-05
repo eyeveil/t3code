@@ -22,9 +22,12 @@ import {
   shouldRetryThreadOutboxDelivery,
   threadOutboxRetryDelayMs,
   type QueuedThreadMessage,
-} from "./thread-outbox-model";
-import { createThreadOutboxManager, ThreadOutboxManagerError } from "./thread-outbox-manager";
-import type { ThreadOutboxStorage } from "./thread-outbox-storage";
+} from "@t3tools/client-runtime/state/thread-outbox-model";
+import {
+  createThreadOutboxManager,
+  ThreadOutboxManagerError,
+  type ThreadOutboxStorage,
+} from "@t3tools/client-runtime/state/thread-outbox-manager";
 
 function queuedMessage(input: {
   readonly environmentId?: string;
@@ -142,6 +145,7 @@ describe("thread outbox", () => {
         write: async () => undefined,
         remove: async () => undefined,
       },
+      warn: () => {},
     });
     const order: string[] = [];
     let releaseFirst!: () => void;
@@ -193,7 +197,7 @@ describe("thread outbox", () => {
         stored.delete(candidate.messageId);
       },
     };
-    const manager = createThreadOutboxManager({ registry, storage });
+    const manager = createThreadOutboxManager({ registry, storage, warn: () => {} });
 
     const loading = manager.load();
     await Promise.resolve();
@@ -265,7 +269,7 @@ describe("thread outbox", () => {
         stored.delete(message.messageId);
       },
     };
-    const manager = createThreadOutboxManager({ registry, storage });
+    const manager = createThreadOutboxManager({ registry, storage, warn: () => {} });
     const message = queuedMessage({
       messageId: "message-1",
       createdAt: "2026-06-08T10:00:01.000Z",
@@ -307,7 +311,7 @@ describe("thread outbox", () => {
         stored.delete(message.messageId);
       },
     };
-    const manager = createThreadOutboxManager({ registry, storage });
+    const manager = createThreadOutboxManager({ registry, storage, warn: () => {} });
     const message = queuedMessage({
       messageId: "message-1",
       createdAt: "2026-06-08T10:00:01.000Z",

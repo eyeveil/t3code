@@ -22,7 +22,7 @@ import {
   type QueuedThreadCreation,
   type QueuedThreadMessage,
   type ThreadOutboxCommandStage,
-} from "./thread-outbox-model";
+} from "@t3tools/client-runtime/state/thread-outbox-model";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
 

@@ -150,7 +150,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
-import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
@@ -202,7 +202,20 @@ import {
   useThreadRefs,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
+import {
+  claimQueuedMessageDispatch,
+  dispatchingQueuedMessageIdAtom,
+  enqueueThreadOutboxMessage,
+  finishDispatchingQueuedMessage,
+  holdEditingQueuedMessage,
+  releaseEditingQueuedMessage,
+  removeThreadOutboxMessage,
+  useThreadOutboxMessages,
+} from "../state/threadOutbox";
+import { useThreadOutboxDelivery } from "../state/threadOutboxDelivery";
+import type { QueuedThreadMessage } from "@t3tools/client-runtime/state/thread-outbox-model";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { ComposerQueuedMessages } from "./chat/ComposerQueuedMessages";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -265,6 +278,7 @@ const PreviewPanel = lazy(() =>
 const DiffPanel = lazy(() => import("./DiffPanel"));
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
+const EMPTY_QUEUED_MESSAGES: ReadonlyArray<QueuedThreadMessage> = [];
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
   "textarea",
@@ -1293,6 +1307,12 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const queuedMessagesByThreadKey = useThreadOutboxMessages();
+  const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
+  const activeQueuedMessages =
+    isServerThread && activeThreadKey !== null
+      ? (queuedMessagesByThreadKey[activeThreadKey] ?? EMPTY_QUEUED_MESSAGES)
+      : EMPTY_QUEUED_MESSAGES;
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
     readonly messageId: MessageId | null;
@@ -2281,6 +2301,119 @@ function ChatViewContent(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+
+  const { sendQueuedMessage } = useThreadOutboxDelivery();
+
+  const onSteerQueuedMessage = useCallback(
+    async (queuedMessage: QueuedThreadMessage) => {
+      // Steer bypasses the drain's thread-busy gate on purpose: the server
+      // treats a turn start on a running thread as a steer into that turn.
+      if (
+        !activeThread ||
+        !isServerThread ||
+        activeThread.environmentId !== queuedMessage.environmentId ||
+        activeThread.id !== queuedMessage.threadId
+      ) {
+        return;
+      }
+      if (!claimQueuedMessageDispatch(queuedMessage.messageId)) {
+        // Another delivery holds the dispatch slot; steering now could send
+        // the same message twice.
+        return;
+      }
+      try {
+        const sent = await sendQueuedMessage(queuedMessage, {
+          modelSelection: activeThread.modelSelection,
+          runtimeMode: activeThread.runtimeMode,
+          interactionMode: activeThread.interactionMode,
+        });
+        if (!sent) {
+          setThreadError(
+            queuedMessage.threadId,
+            "Could not send the queued message. It stays queued.",
+          );
+        }
+      } finally {
+        finishDispatchingQueuedMessage(queuedMessage.messageId);
+      }
+    },
+    [activeThread, isServerThread, sendQueuedMessage, setThreadError],
+  );
+
+  const onEditQueuedMessage = useCallback(
+    async (queuedMessage: QueuedThreadMessage) => {
+      if (dispatchingQueuedMessageId === queuedMessage.messageId) {
+        // Mid-delivery; pulling it into the draft now would fork the payload.
+        return;
+      }
+      // Hold the drain off this message while it moves into the draft, so it
+      // cannot be delivered between the decision to edit and the removal.
+      holdEditingQueuedMessage(queuedMessage.messageId);
+      try {
+        await removeThreadOutboxMessage(queuedMessage);
+      } catch (error) {
+        setThreadError(
+          queuedMessage.threadId,
+          error instanceof Error ? error.message : "Failed to load the queued message for editing.",
+        );
+        return;
+      } finally {
+        releaseEditingQueuedMessage(queuedMessage.messageId);
+      }
+      // Restore into the composer draft, preserving any text already typed.
+      const existing = promptRef.current;
+      const separator = existing.trim().length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
+      const nextPrompt = `${existing}${separator}${queuedMessage.text}`;
+      promptRef.current = nextPrompt;
+      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+      // Carry the queued settings into the draft so a later send keeps what
+      // the user originally picked for this message.
+      if (queuedMessage.modelSelection !== undefined) {
+        setComposerDraftModelSelection(composerDraftTarget, queuedMessage.modelSelection);
+      }
+      if (queuedMessage.runtimeMode !== undefined) {
+        setComposerDraftRuntimeMode(composerDraftTarget, queuedMessage.runtimeMode);
+      }
+      if (queuedMessage.interactionMode !== undefined) {
+        setComposerDraftInteractionMode(composerDraftTarget, queuedMessage.interactionMode);
+      }
+      composerRef.current?.resetCursorState({
+        cursor: collapseExpandedComposerCursor(nextPrompt, nextPrompt.length),
+        prompt: nextPrompt,
+      });
+      scheduleComposerFocus();
+    },
+    [
+      composerDraftTarget,
+      composerRef,
+      dispatchingQueuedMessageId,
+      scheduleComposerFocus,
+      setComposerDraftInteractionMode,
+      setComposerDraftModelSelection,
+      setComposerDraftPrompt,
+      setComposerDraftRuntimeMode,
+      setThreadError,
+    ],
+  );
+
+  const onDeleteQueuedMessage = useCallback(
+    async (queuedMessage: QueuedThreadMessage) => {
+      // Hold the drain off while removing so it cannot deliver mid-delete.
+      holdEditingQueuedMessage(queuedMessage.messageId);
+      try {
+        await removeThreadOutboxMessage(queuedMessage);
+      } catch (error) {
+        setThreadError(
+          queuedMessage.threadId,
+          error instanceof Error ? error.message : "Failed to delete the queued message.",
+        );
+      } finally {
+        releaseEditingQueuedMessage(queuedMessage.messageId);
+      }
+    },
+    [setThreadError],
+  );
+
   const addTerminalContextToDraft = useCallback(
     (selection: TerminalContextSelection) => {
       composerRef.current?.addTerminalContext(selection);
@@ -3996,6 +4129,84 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
 
+    const composerImagesSnapshot = [...composerImages];
+    const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
+    const composerElementContextsSnapshot = [...composerElementContexts];
+    const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
+    const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
+    const messageTextWithContexts = appendElementContextsToPrompt(
+      appendTerminalContextsToPrompt(promptForSend, composerTerminalContextsSnapshot),
+      composerElementContextsSnapshot,
+    );
+    const messageTextWithPreviewAnnotations = composerPreviewAnnotationsSnapshot.reduce(
+      (text, annotation) => appendPreviewAnnotationPrompt(text, annotation),
+      messageTextWithContexts,
+    );
+    const messageTextForSend = appendReviewCommentsToPrompt(
+      messageTextWithPreviewAnnotations,
+      composerReviewCommentsSnapshot,
+    );
+    const messageIdForSend = newMessageId();
+    const messageCreatedAt = new Date().toISOString();
+    const outgoingMessageText = formatOutgoingPrompt({
+      provider: ctxSelectedProvider,
+      model: ctxSelectedModel,
+      models: ctxSelectedProviderModels,
+      effort: ctxSelectedPromptEffort,
+      text: messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+    });
+
+    // While a turn is running (or starting), plain text sends queue into the
+    // visible outbox instead of steering immediately; the drain delivers them
+    // once the thread goes idle. Attachment sends keep steering right away —
+    // queued attachments are deliberately unsupported on web. Queued sends
+    // never touch the local dispatch latch or the optimistic timeline: those
+    // belong to actual dispatches only.
+    const activeSessionStatus = activeThread.session?.status;
+    const shouldQueueWhileBusy =
+      isServerThread &&
+      (activeSessionStatus === "running" || activeSessionStatus === "starting") &&
+      composerImagesSnapshot.length === 0;
+    if (shouldQueueWhileBusy) {
+      try {
+        await enqueueThreadOutboxMessage({
+          environmentId: activeThread.environmentId,
+          threadId: threadIdForSend,
+          messageId: messageIdForSend,
+          commandId: newCommandId(),
+          text: outgoingMessageText,
+          attachments: [],
+          ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
+          runtimeMode,
+          interactionMode,
+          createdAt: messageCreatedAt,
+        });
+      } catch (error) {
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error ? error.message : "Failed to queue the message.",
+        );
+        return;
+      }
+      if (expiredTerminalContextCount > 0) {
+        const toastCopy = buildExpiredTerminalContextToastCopy(
+          expiredTerminalContextCount,
+          "omitted",
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: toastCopy.title,
+            description: toastCopy.description,
+          }),
+        );
+      }
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
+
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
 
@@ -4003,32 +4214,6 @@ function ChatViewContent(props: ChatViewProps) {
     // the in-flight latch set, or every future Enter is silently swallowed.
     let turnStartSucceeded = false;
     try {
-      const composerImagesSnapshot = [...composerImages];
-      const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
-      const composerElementContextsSnapshot = [...composerElementContexts];
-      const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
-      const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
-      const messageTextWithContexts = appendElementContextsToPrompt(
-        appendTerminalContextsToPrompt(promptForSend, composerTerminalContextsSnapshot),
-        composerElementContextsSnapshot,
-      );
-      const messageTextWithPreviewAnnotations = composerPreviewAnnotationsSnapshot.reduce(
-        (text, annotation) => appendPreviewAnnotationPrompt(text, annotation),
-        messageTextWithContexts,
-      );
-      const messageTextForSend = appendReviewCommentsToPrompt(
-        messageTextWithPreviewAnnotations,
-        composerReviewCommentsSnapshot,
-      );
-      const messageIdForSend = newMessageId();
-      const messageCreatedAt = new Date().toISOString();
-      const outgoingMessageText = formatOutgoingPrompt({
-        provider: ctxSelectedProvider,
-        model: ctxSelectedModel,
-        models: ctxSelectedProviderModels,
-        effort: ctxSelectedPromptEffort,
-        text: messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT,
-      });
       const turnAttachmentsPromise = Promise.all(
         composerImagesSnapshot.map(async (image) => ({
           type: "image" as const,
@@ -5178,6 +5363,14 @@ function ChatViewContent(props: ChatViewProps) {
               <div className="chat-composer-horizontal-inset">
                 <div className="pointer-events-auto relative z-10 isolate">
                   <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
+                  <ComposerQueuedMessages
+                    messages={activeQueuedMessages}
+                    dispatchingMessageId={dispatchingQueuedMessageId}
+                    steerEnabled={!activeEnvironmentUnavailable}
+                    onSteer={(message) => void onSteerQueuedMessage(message)}
+                    onEdit={(message) => void onEditQueuedMessage(message)}
+                    onDelete={(message) => void onDeleteQueuedMessage(message)}
+                  />
                   <div className="relative z-10">
                     <ChatComposer
                       composerRef={composerRef}

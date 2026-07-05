@@ -1,14 +1,11 @@
+import type { DraftComposerImageAttachment } from "@t3tools/client-runtime/state/composer-attachment";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  type UploadChatImageAttachment,
 } from "@t3tools/contracts";
 import { uuidv4 } from "./uuid";
 
-export interface DraftComposerImageAttachment extends UploadChatImageAttachment {
-  readonly id: string;
-  readonly previewUri: string;
-}
+export type { DraftComposerImageAttachment };
 
 const OWNED_PASTED_IMAGE_DIRECTORY = "t3-composer-paste";
 

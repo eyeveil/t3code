@@ -1,32 +1,26 @@
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  EnvironmentProject,
-  EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/shell";
-import type { MessageId } from "@t3tools/contracts";
-import { useEffect, useRef, useState } from "react";
-
-import { scopedThreadKey } from "../lib/scopedEntities";
-import { useProjects, useThreadShells } from "./entities";
-import { ensureThreadOutboxLoaded, removeThreadOutboxMessage } from "./thread-outbox";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
-  isQueuedThreadCreationSendable,
   resolveThreadOutboxDeliveryAction,
   threadOutboxRetryDelayMs,
   type QueuedThreadMessage,
 } from "@t3tools/client-runtime/state/thread-outbox-model";
+import type { MessageId } from "@t3tools/contracts";
+import { useEffect, useRef, useState } from "react";
+
+import { useThreadShells } from "./entities";
+import { useEnvironments } from "./environments";
 import {
   claimQueuedMessageDispatch,
   dispatchingQueuedMessageIdAtom,
-  finishDispatchingQueuedMessage,
-  useThreadOutboxDelivery,
-} from "./use-thread-outbox-delivery";
-import {
   editingQueuedMessageIdsAtom,
+  ensureThreadOutboxLoaded,
+  finishDispatchingQueuedMessage,
+  removeThreadOutboxMessage,
   useThreadOutboxMessages,
   useThreadOutboxShellStatuses,
-} from "./use-thread-outbox";
-import { useRemoteConnectionStatus } from "./use-remote-environment-registry";
+} from "./threadOutbox";
+import { useThreadOutboxDelivery } from "./threadOutboxDelivery";
 
 function findThread(
   threads: ReadonlyArray<EnvironmentThreadShell>,
@@ -38,26 +32,19 @@ function findThread(
   );
 }
 
-function findCreationProject(
-  projects: ReadonlyArray<EnvironmentProject>,
-  message: QueuedThreadMessage,
-): EnvironmentProject | undefined {
-  return projects.find(
-    (candidate) =>
-      candidate.environmentId === message.environmentId &&
-      candidate.id === message.creation?.projectId,
-  );
-}
-
+/**
+ * Background drain for the web thread outbox: delivers queued messages in
+ * order once their thread is idle and its environment connected. Mirrors
+ * mobile's use-thread-outbox-drain, minus queued thread creations.
+ */
 export function useThreadOutboxDrain(): void {
-  const { sendQueuedMessage, sendQueuedCreation } = useThreadOutboxDelivery();
+  const { sendQueuedMessage } = useThreadOutboxDelivery();
   const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
   const editingQueuedMessageIds = useAtomValue(editingQueuedMessageIdsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const shellStatuses = useThreadOutboxShellStatuses();
   const threads = useThreadShells();
-  const projects = useProjects();
-  const { connectedEnvironments } = useRemoteConnectionStatus();
+  const { environments } = useEnvironments();
   const [retryTick, setRetryTick] = useState(0);
   const retryAttemptRef = useRef(new Map<MessageId, number>());
   const retryNotBeforeRef = useRef(new Map<MessageId, number>());
@@ -78,9 +65,13 @@ export function useThreadOutboxDrain(): void {
       return;
     }
 
-    for (const [threadKey, queuedMessages] of Object.entries(queuedMessagesByThreadKey)) {
+    for (const queuedMessages of Object.values(queuedMessagesByThreadKey)) {
       const nextQueuedMessage = queuedMessages[0];
       if (!nextQueuedMessage) {
+        continue;
+      }
+      // Queued creations are a mobile-only concept; never deliver one here.
+      if (nextQueuedMessage.creation !== undefined) {
         continue;
       }
       if (editingQueuedMessageIds[nextQueuedMessage.messageId]) {
@@ -91,72 +82,42 @@ export function useThreadOutboxDrain(): void {
       }
 
       const thread = findThread(threads, nextQueuedMessage);
-      if (thread && scopedThreadKey(thread.environmentId, thread.id) !== threadKey) {
-        continue;
-      }
-
-      const creation = nextQueuedMessage.creation;
-      const environment = connectedEnvironments.find(
+      const environment = environments.find(
         (candidate) => candidate.environmentId === nextQueuedMessage.environmentId,
       );
       const shellStatus = shellStatuses.get(nextQueuedMessage.environmentId) ?? "empty";
       const deliveryAction = resolveThreadOutboxDeliveryAction({
-        isCreation: creation !== undefined,
+        isCreation: false,
         threadExists: thread !== undefined,
         shellStatus,
-        environmentConnected: environment?.connectionState === "connected",
+        environmentConnected: environment?.connection.phase === "connected",
         threadBusy: thread?.session?.status === "running" || thread?.session?.status === "starting",
       });
       if (deliveryAction === "wait") {
         continue;
-      }
-      // The live project shell is preferred for the workspace path, with the
-      // snapshot taken at enqueue time as the fallback so a task never dies
-      // just because its project shell is not loaded.
-      const creationProjectCwd =
-        creation !== undefined
-          ? (findCreationProject(projects, nextQueuedMessage)?.workspaceRoot ??
-            creation.projectCwd ??
-            null)
-          : null;
-      // An incomplete pending task (e.g. worktree mode without a branch) stays
-      // queued until the user finishes it in the editor.
-      if (deliveryAction === "send" && creation !== undefined) {
-        if (!isQueuedThreadCreationSendable(nextQueuedMessage)) {
-          continue;
-        }
-        if (creationProjectCwd === null && shellStatus !== "live") {
-          continue;
-        }
       }
 
       // A manual steer may have grabbed the slot since this effect rendered.
       if (!claimQueuedMessageDispatch(nextQueuedMessage.messageId)) {
         return;
       }
-      const removeQueuedMessage = (warning: string) =>
-        removeThreadOutboxMessage(nextQueuedMessage).then(
-          () => true,
-          (error) => {
-            console.warn(warning, {
-              environmentId: nextQueuedMessage.environmentId,
-              threadId: nextQueuedMessage.threadId,
-              messageId: nextQueuedMessage.messageId,
-              error,
-            });
-            return false;
-          },
-        );
       const delivery =
         deliveryAction === "remove"
-          ? removeQueuedMessage("[thread-outbox] failed to remove message for a missing thread")
-          : creation !== undefined
-            ? creationProjectCwd !== null
-              ? sendQueuedCreation(nextQueuedMessage, creation, creationProjectCwd)
-              : removeQueuedMessage("[thread-outbox] dropped pending task for a missing project")
-            : thread !== undefined
-              ? sendQueuedMessage(nextQueuedMessage, thread)
-              : Promise.resolve(false);
+          ? removeThreadOutboxMessage(nextQueuedMessage).then(
+              () => true,
+              (error) => {
+                console.warn("[thread-outbox] failed to remove message for a missing thread", {
+                  environmentId: nextQueuedMessage.environmentId,
+                  threadId: nextQueuedMessage.threadId,
+                  messageId: nextQueuedMessage.messageId,
+                  error,
+                });
+                return false;
+              },
+            )
+          : thread !== undefined
+            ? sendQueuedMessage(nextQueuedMessage, thread)
+            : Promise.resolve(false);
       void delivery
         .then((sent) => {
           if (sent) {
@@ -190,13 +151,11 @@ export function useThreadOutboxDrain(): void {
       return;
     }
   }, [
-    connectedEnvironments,
     dispatchingQueuedMessageId,
     editingQueuedMessageIds,
-    projects,
+    environments,
     queuedMessagesByThreadKey,
     retryTick,
-    sendQueuedCreation,
     sendQueuedMessage,
     shellStatuses,
     threads,

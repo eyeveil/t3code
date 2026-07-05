@@ -6,8 +6,30 @@ import {
   flattenQueuedThreadMessages,
   groupQueuedThreadMessages,
   type QueuedThreadMessage,
-} from "./thread-outbox-model";
-import type { ThreadOutboxStorage } from "./thread-outbox-storage";
+} from "./threadOutboxModel.ts";
+
+export class ThreadOutboxStorageError extends Schema.TaggedErrorClass<ThreadOutboxStorageError>()(
+  "ThreadOutboxStorageError",
+  {
+    operation: Schema.Literals(["load", "read-message", "write", "remove"]),
+    environmentId: Schema.NullOr(EnvironmentId),
+    threadId: Schema.NullOr(ThreadId),
+    messageId: Schema.NullOr(MessageId),
+    fileName: Schema.NullOr(Schema.String),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Thread outbox storage operation ${this.operation} failed for environment ${this.environmentId ?? "unknown"}, thread ${this.threadId ?? "unknown"}, message ${this.messageId ?? "unknown"}, file ${this.fileName ?? "unknown"}.`;
+  }
+}
+
+/** Platform persistence for queued outbox messages (Expo files, localStorage, ...). */
+export interface ThreadOutboxStorage {
+  readonly load: () => Promise<ReadonlyArray<QueuedThreadMessage>>;
+  readonly write: (message: QueuedThreadMessage) => Promise<void>;
+  readonly remove: (message: QueuedThreadMessage) => Promise<void>;
+}
 
 export class ThreadOutboxManagerError extends Schema.TaggedErrorClass<ThreadOutboxManagerError>()(
   "ThreadOutboxManagerError",
@@ -34,18 +56,16 @@ export class ThreadOutboxManagerError extends Schema.TaggedErrorClass<ThreadOutb
 export interface ThreadOutboxManagerOptions {
   readonly registry: AtomRegistry.AtomRegistry;
   readonly storage: ThreadOutboxStorage;
-  readonly warn?: (message: string, error: unknown) => void;
+  readonly atomLabel?: string;
+  /** Non-fatal failure reporting (e.g. console.warn); owned by the platform caller. */
+  readonly warn: (message: string, error: unknown) => void;
 }
 
 export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
   const queuedMessagesByThreadKeyAtom = Atom.make<
     Record<string, ReadonlyArray<QueuedThreadMessage>>
-  >({}).pipe(Atom.keepAlive, Atom.withLabel("mobile:thread-outbox:queued-messages"));
-  const warn =
-    options.warn ??
-    ((message: string, error: unknown) => {
-      console.warn(message, error);
-    });
+  >({}).pipe(Atom.keepAlive, Atom.withLabel(options.atomLabel ?? "thread-outbox:queued-messages"));
+  const warn = options.warn;
   let loadPromise: Promise<void> | null = null;
   let mutationQueue: Promise<void> = Promise.resolve();
 

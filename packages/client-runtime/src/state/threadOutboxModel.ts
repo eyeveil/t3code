@@ -1,5 +1,3 @@
-import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
-import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import {
   CommandId,
   EnvironmentId,
@@ -17,9 +15,13 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { DraftComposerImageAttachmentSchema } from "../lib/composer-image-schema";
-import type { DraftComposerImageAttachment } from "../lib/composerImages";
-import { scopedThreadKey } from "../lib/scopedEntities";
+import { scopedThreadKey, scopeThreadRef } from "../environment/scoped.ts";
+import { isTransportConnectionErrorMessage } from "../errors/transport.ts";
+import {
+  DraftComposerImageAttachmentSchema,
+  type DraftComposerImageAttachment,
+} from "./composerAttachment.ts";
+import type { EnvironmentShellStatus } from "./shell.ts";
 
 const THREAD_OUTBOX_SCHEMA_VERSION = 3;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
@@ -58,12 +60,12 @@ const encodeStoredQueuedThreadMessage = Schema.encodeUnknownSync(QueuedThreadMes
 
 export interface QueuedThreadCreation {
   readonly projectId: ProjectIdType;
-  readonly projectTitle?: string;
-  readonly projectCwd?: string;
+  readonly projectTitle?: string | undefined;
+  readonly projectCwd?: string | undefined;
   readonly workspaceMode: "local" | "worktree";
   readonly branch: string | null;
   readonly worktreePath: string | null;
-  readonly startFromOrigin?: boolean;
+  readonly startFromOrigin?: boolean | undefined;
 }
 
 export interface QueuedThreadMessage {
@@ -73,10 +75,10 @@ export interface QueuedThreadMessage {
   readonly commandId: CommandId;
   readonly text: string;
   readonly attachments: ReadonlyArray<DraftComposerImageAttachment>;
-  readonly modelSelection?: ModelSelectionType;
-  readonly runtimeMode?: RuntimeModeType;
-  readonly interactionMode?: ProviderInteractionModeType;
-  readonly creation?: QueuedThreadCreation;
+  readonly modelSelection?: ModelSelectionType | undefined;
+  readonly runtimeMode?: RuntimeModeType | undefined;
+  readonly interactionMode?: ProviderInteractionModeType | undefined;
+  readonly creation?: QueuedThreadCreation | undefined;
   readonly createdAt: string;
 }
 
@@ -117,6 +119,10 @@ export function decodeQueuedThreadMessage(value: unknown): QueuedThreadMessage {
   return message;
 }
 
+export function queuedThreadMessageKey(message: QueuedThreadMessage): string {
+  return scopedThreadKey(scopeThreadRef(message.environmentId, message.threadId));
+}
+
 export function groupQueuedThreadMessages(
   messages: ReadonlyArray<QueuedThreadMessage>,
 ): Record<string, ReadonlyArray<QueuedThreadMessage>> {
@@ -127,8 +133,7 @@ export function groupQueuedThreadMessages(
 
   const grouped: Record<string, Array<QueuedThreadMessage>> = {};
   for (const message of deduplicated.values()) {
-    const threadKey = scopedThreadKey(message.environmentId, message.threadId);
-    (grouped[threadKey] ??= []).push(message);
+    (grouped[queuedThreadMessageKey(message)] ??= []).push(message);
   }
   for (const queue of Object.values(grouped)) {
     queue.sort((left, right) => left.createdAt.localeCompare(right.createdAt));

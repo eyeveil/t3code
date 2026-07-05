@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import { useEffect } from "react";
 import { Atom } from "effect/unstable/reactivity";
 
-import { DraftComposerImageAttachmentSchema } from "../lib/composer-image-schema";
+import { DraftComposerImageAttachmentSchema } from "@t3tools/client-runtime/state/composer-attachment";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { appAtomRegistry } from "./atom-registry";
 
