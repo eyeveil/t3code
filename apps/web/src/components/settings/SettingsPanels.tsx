@@ -398,6 +398,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
         : []),
+      ...(settings.verboseWorkLog !== DEFAULT_UNIFIED_SETTINGS.verboseWorkLog
+        ? ["Verbose work log"]
+        : []),
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
@@ -426,6 +429,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     [
       isGitWritingModelDirty,
       settings.autoOpenPlanSidebar,
+      settings.verboseWorkLog,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
@@ -458,6 +462,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
+      verboseWorkLog: DEFAULT_UNIFIED_SETTINGS.verboseWorkLog,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
@@ -717,6 +722,30 @@ export function GeneralSettingsPanel() {
                 updateSettings({ autoOpenPlanSidebar: Boolean(checked) })
               }
               aria-label="Open the task panel automatically"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Verbose work log"
+          description="Show live tool calls (including in-progress ones) while the agent works, instead of a bare working indicator."
+          resetAction={
+            settings.verboseWorkLog !== DEFAULT_UNIFIED_SETTINGS.verboseWorkLog ? (
+              <SettingResetButton
+                label="verbose work log"
+                onClick={() =>
+                  updateSettings({
+                    verboseWorkLog: DEFAULT_UNIFIED_SETTINGS.verboseWorkLog,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.verboseWorkLog}
+              onCheckedChange={(checked) => updateSettings({ verboseWorkLog: Boolean(checked) })}
+              aria-label="Show live tool call detail"
             />
           }
         />

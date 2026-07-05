@@ -393,6 +393,23 @@ export interface LocalDispatchSnapshot {
   latestTurnCompletedAt: string | null;
   sessionStatus: NonNullable<Thread["session"]>["status"] | null;
   sessionUpdatedAt: string | null;
+  latestUserMessageId: string | null;
+}
+
+/** Last server-persisted user message — optimistic messages never appear here. */
+export function deriveLatestUserMessageId(
+  messages: ReadonlyArray<{ id: string; role: string }> | undefined,
+): string | null {
+  if (!messages) {
+    return null;
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && message.role === "user") {
+      return message.id;
+    }
+  }
+  return null;
 }
 
 export function createLocalDispatchSnapshot(
@@ -410,6 +427,7 @@ export function createLocalDispatchSnapshot(
     latestTurnCompletedAt: latestTurn?.completedAt ?? null,
     sessionStatus: session?.status ?? null,
     sessionUpdatedAt: session?.updatedAt ?? null,
+    latestUserMessageId: deriveLatestUserMessageId(activeThread?.messages),
   };
 }
 
@@ -418,6 +436,7 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   phase: SessionPhase;
   latestTurn: Thread["latestTurn"] | null;
   session: Thread["session"] | null;
+  latestUserMessageId: string | null;
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
   threadError: string | null | undefined;
@@ -436,6 +455,14 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||
     input.localDispatch.latestTurnStartedAt !== (latestTurn?.startedAt ?? null) ||
     input.localDispatch.latestTurnCompletedAt !== (latestTurn?.completedAt ?? null);
+
+  // Steering an already-running turn leaves latestTurn identity untouched on
+  // providers that inject into the active turn — the persisted user message is
+  // the only acknowledgment there. Without this, isSendBusy stays stuck until
+  // the turn completes and Enter silently does nothing.
+  if (input.latestUserMessageId !== input.localDispatch.latestUserMessageId) {
+    return true;
+  }
 
   if (input.phase === "running") {
     if (!latestTurnChanged) {

@@ -171,6 +171,7 @@ function buildProps() {
     isWorking: false,
     activeTurnInProgress: false,
     activeTurnStartedAt: null,
+    verboseWorkLog: false,
     listRef: createRef<LegendListRef | null>(),
     latestTurn: null,
     runningTurnId: null,

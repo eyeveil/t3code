@@ -10,6 +10,8 @@ import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../..
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
+/** Verbose mode keeps a live tail of the running turn's tool calls on screen. */
+export const MAX_VISIBLE_ACTIVE_WORK_LOG_ENTRIES = 8;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
@@ -100,6 +102,8 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
+      /** Verbose live view: render in-progress (neutral) tool entries too. */
+      showInProgressEntries: boolean;
     }
   | {
       kind: "work-toggle";
@@ -370,6 +374,7 @@ export function deriveMessagesTimelineRows(input: {
   expandedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
+  verboseWorkLog?: boolean;
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
@@ -436,22 +441,33 @@ export function deriveMessagesTimelineRows(input: {
         groupedEntries.push(nextEntry.entry);
         cursor += 1;
       }
-      const visibleGroupedEntries = groupedEntries.filter(
-        (entry) => !workEntryIndicatesToolNeutralStatus(entry),
-      );
+      // Verbose live view: the running turn keeps its in-progress tool calls
+      // visible and shows a longer tail, instead of the bare working shimmer.
+      const groupTurnId = groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null;
+      const isVerboseActiveGroup =
+        (input.verboseWorkLog ?? false) &&
+        unsettledTurnId !== null &&
+        groupTurnId === unsettledTurnId;
+      const visibleGroupedEntries = isVerboseActiveGroup
+        ? groupedEntries
+        : groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry));
+      const maxVisibleEntries = isVerboseActiveGroup
+        ? MAX_VISIBLE_ACTIVE_WORK_LOG_ENTRIES
+        : MAX_VISIBLE_WORK_LOG_ENTRIES;
       if (visibleGroupedEntries.length > 0) {
-        if (visibleGroupedEntries.length <= MAX_VISIBLE_WORK_LOG_ENTRIES) {
+        if (visibleGroupedEntries.length <= maxVisibleEntries) {
           nextRows.push({
             kind: "work",
             id: timelineEntry.id,
             createdAt: timelineEntry.createdAt,
             groupedEntries: visibleGroupedEntries,
+            showInProgressEntries: isVerboseActiveGroup,
           });
         } else {
           const groupId = `work-group:${timelineEntry.id}`;
           const expanded = input.expandedWorkGroupIds?.has(groupId) ?? false;
-          const hiddenEntries = visibleGroupedEntries.slice(0, -MAX_VISIBLE_WORK_LOG_ENTRIES);
-          const visibleEntries = visibleGroupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES);
+          const hiddenEntries = visibleGroupedEntries.slice(0, -maxVisibleEntries);
+          const visibleEntries = visibleGroupedEntries.slice(-maxVisibleEntries);
           const renderedEntries = expanded ? [...hiddenEntries, ...visibleEntries] : visibleEntries;
 
           for (const workEntry of renderedEntries) {
@@ -460,6 +476,7 @@ export function deriveMessagesTimelineRows(input: {
               id: workEntry.id,
               createdAt: workEntry.createdAt,
               groupedEntries: [workEntry],
+              showInProgressEntries: isVerboseActiveGroup,
             });
           }
 
@@ -571,8 +588,13 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
-    case "work":
-      return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);
+    case "work": {
+      const bw = b as typeof a;
+      return (
+        a.showInProgressEntries === bw.showInProgressEntries &&
+        Equal.equals(a.groupedEntries, bw.groupedEntries)
+      );
+    }
 
     case "work-toggle": {
       const bw = b as typeof a;

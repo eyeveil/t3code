@@ -12,8 +12,10 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveSubagentRailItems,
   deriveTimelineEntries,
   deriveWorkLogEntries,
+  type WorkLogEntry,
   findLatestProposedPlan,
   findSidebarProposedPlan,
   hasActionableProposedPlan,
@@ -691,7 +693,7 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("omits tool started entries and keeps completed entries", () => {
+  it("keeps tool started entries and collapses them into their completion", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "tool-complete",
@@ -708,7 +710,10 @@ describe("deriveWorkLogEntries", () => {
     ];
 
     const entries = deriveWorkLogEntries(activities);
-    expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
+    // The merged row keeps its first appearance (stable id) but carries the
+    // terminal lifecycle status.
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-start"]);
+    expect(entries[0]?.toolLifecycleStatus).toBe("completed");
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {
@@ -1207,7 +1212,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "grep-complete",
+      id: "grep-update",
       toolTitle: "grep",
       detail: "19 files",
       itemType: "web_search",
@@ -1256,7 +1261,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "read-complete",
+      id: "read-update",
       toolTitle: "Read File",
       detail: 'import * as Effect from "effect/Effect"',
       itemType: "dynamic_tool_call",
@@ -1332,7 +1337,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "legacy-read-complete",
+      id: "legacy-read-update",
       toolTitle: "Read File",
       itemType: "dynamic_tool_call",
     });
@@ -1385,8 +1390,8 @@ describe("deriveWorkLogEntries", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "tool-complete",
-      createdAt: "2026-02-23T00:00:03.000Z",
+      id: "tool-update-1",
+      createdAt: "2026-02-23T00:00:01.000Z",
       label: "Tool call completed",
       detail: 'Read: {"file_path":"/tmp/app.ts"}',
       command: "sed -n 1,40p /tmp/app.ts",
@@ -1445,7 +1450,7 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
 
-    expect(entries.map((entry) => entry.id)).toEqual(["tool-1-complete", "tool-2-complete"]);
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-1-update", "tool-2-update"]);
   });
 
   it("collapses same-timestamp lifecycle rows even when completed sorts before updated by id", () => {
@@ -1488,7 +1493,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
 
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.id).toBe("a-complete-same-timestamp");
+    expect(entries[0]?.id).toBe("z-update-earlier");
   });
 });
 
@@ -1684,5 +1689,73 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("deriveSubagentRailItems", () => {
+  const turnId = TurnId.make("turn-rail");
+
+  function makeRailEntry(overrides: Partial<WorkLogEntry> & { id: string }): WorkLogEntry {
+    return {
+      createdAt: "2026-02-23T00:00:01.000Z",
+      turnId,
+      label: "Task",
+      tone: "tool",
+      itemType: "collab_agent_tool_call",
+      ...overrides,
+    };
+  }
+
+  it("returns collab agent calls for the active turn with parsed names and statuses", () => {
+    const entries: WorkLogEntry[] = [
+      makeRailEntry({
+        id: "agent-1",
+        detail: "Explore: map the activity pipeline",
+        toolLifecycleStatus: "inProgress",
+      }),
+      makeRailEntry({
+        id: "agent-2",
+        detail: "general-purpose: implement the mobile queue",
+        toolLifecycleStatus: "completed",
+      }),
+      makeRailEntry({
+        id: "agent-3",
+        detail: "no separator here at all really nothing to split on for names",
+        toolTitle: "Task",
+        toolLifecycleStatus: "failed",
+      }),
+      // Ignored: other turn, or not a collab agent call.
+      makeRailEntry({ id: "other-turn", turnId: TurnId.make("turn-other") }),
+      makeRailEntry({ id: "not-agent", itemType: "command_execution" }),
+    ];
+
+    expect(deriveSubagentRailItems(entries, turnId)).toEqual([
+      {
+        id: "agent-1",
+        name: "Explore",
+        detail: "map the activity pipeline",
+        status: "running",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+      {
+        id: "agent-2",
+        name: "general-purpose",
+        detail: "implement the mobile queue",
+        status: "completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+      {
+        id: "agent-3",
+        name: "Task",
+        detail: "no separator here at all really nothing to split on for names",
+        status: "failed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+    ]);
+  });
+
+  it("returns nothing without an active turn", () => {
+    const entries = [makeRailEntry({ id: "agent-1", toolLifecycleStatus: "inProgress" })];
+    expect(deriveSubagentRailItems(entries, null)).toEqual([]);
   });
 });

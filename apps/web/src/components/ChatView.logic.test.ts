@@ -360,6 +360,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         phase: "ready",
         latestTurn: completedTurn,
         session: readySession,
+        latestUserMessageId: null,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
@@ -385,6 +386,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         phase: "ready",
         latestTurn: newerTurn,
         session: { ...readySession, updatedAt: newerTurn.completedAt },
+        latestUserMessageId: null,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
@@ -415,6 +417,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
           status: "running",
           activeTurnId: TurnId.make("turn-other"),
         },
+        latestUserMessageId: null,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
@@ -430,10 +433,45 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
           status: "running",
           activeTurnId: runningTurn.turnId,
         },
+        latestUserMessageId: null,
         hasPendingApproval: false,
         hasPendingUserInput: false,
         threadError: null,
       }),
+    ).toBe(true);
+  });
+
+  it("acknowledges a steer once its user message persists, even when the running turn is unchanged", () => {
+    const runningTurn = {
+      ...completedTurn,
+      state: "running" as const,
+      completedAt: null,
+    };
+    const runningSession = {
+      ...readySession,
+      status: "running" as const,
+      activeTurnId: runningTurn.turnId,
+    };
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: runningTurn, session: runningSession }),
+    );
+    const common = {
+      localDispatch,
+      phase: "running" as const,
+      latestTurn: runningTurn,
+      session: runningSession,
+      hasPendingApproval: false,
+      hasPendingUserInput: false,
+      threadError: null,
+    };
+
+    // Providers that inject a steer into the active turn never change
+    // latestTurn — the persisted user message is the only server signal.
+    expect(hasServerAcknowledgedLocalDispatch({ ...common, latestUserMessageId: null })).toBe(
+      false,
+    );
+    expect(
+      hasServerAcknowledgedLocalDispatch({ ...common, latestUserMessageId: "message-steer" }),
     ).toBe(true);
   });
 
@@ -444,6 +482,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       phase: "ready" as const,
       latestTurn: null,
       session: null,
+      latestUserMessageId: null,
       hasPendingApproval: false,
       hasPendingUserInput: false,
       threadError: null,

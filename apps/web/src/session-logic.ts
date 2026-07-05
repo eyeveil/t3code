@@ -78,12 +78,13 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  /** Provider tool-call identity — groups lifecycle events of one call. */
+  toolCallId?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
-  toolCallId?: string;
 }
 
 export interface PendingApproval {
@@ -630,7 +631,8 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
-    if (activity.kind === "tool.started") continue;
+    // tool.started is kept so long-running tools are visible while they run;
+    // lifecycle collapsing merges it into the eventual updated/completed row.
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
@@ -641,6 +643,57 @@ export function deriveWorkLogEntries(
     const { activityKind, collapseKey: _collapseKey, ...rest } = entry;
     return Object.assign(rest, { sourceActivityKind: activityKind });
   });
+}
+
+export type SubagentRailStatus = "running" | "completed" | "failed";
+
+export interface SubagentRailItem {
+  id: string;
+  name: string;
+  detail: string | null;
+  status: SubagentRailStatus;
+  createdAt: string;
+}
+
+/**
+ * Live subagent overview for the running turn. Provider adapters label collab
+ * agent tool calls with a "<subagent-type>: <description>" detail — the type
+ * becomes the display name when present.
+ */
+export function deriveSubagentRailItems(
+  entries: ReadonlyArray<WorkLogEntry>,
+  activeTurnId: TurnId | null,
+): SubagentRailItem[] {
+  if (activeTurnId === null) {
+    return [];
+  }
+  const items: SubagentRailItem[] = [];
+  for (const entry of entries) {
+    if (entry.itemType !== "collab_agent_tool_call") continue;
+    if (entry.turnId !== activeTurnId) continue;
+    const status: SubagentRailStatus =
+      entry.toolLifecycleStatus === "failed" || entry.toolLifecycleStatus === "declined"
+        ? "failed"
+        : entry.toolLifecycleStatus === "completed" || entry.toolLifecycleStatus === "stopped"
+          ? "completed"
+          : "running";
+    const { name, detail } = parseSubagentName(entry);
+    items.push({ id: entry.id, name, detail, status, createdAt: entry.createdAt });
+  }
+  return items;
+}
+
+function parseSubagentName(entry: WorkLogEntry): { name: string; detail: string | null } {
+  const raw = entry.detail?.trim() ?? "";
+  const separatorIndex = raw.indexOf(": ");
+  if (separatorIndex > 0 && separatorIndex <= 40 && !raw.slice(0, separatorIndex).includes("\n")) {
+    return {
+      name: raw.slice(0, separatorIndex),
+      detail: raw.slice(separatorIndex + 2) || null,
+    };
+  }
+  const fallback = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  return { name: fallback, detail: raw.length > 0 && raw !== fallback ? raw : null };
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
@@ -753,6 +806,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (!toolLifecycleStatus && activity.kind === "tool.completed") {
     toolLifecycleStatus = "completed";
   }
+  if (!toolLifecycleStatus && activity.kind === "tool.started") {
+    toolLifecycleStatus = "inProgress";
+  }
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
   }
@@ -767,13 +823,31 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
+  // Lifecycle events of one tool call are rarely adjacent while other tools
+  // run in between — merge by collapse key in place so a long-running call
+  // stays a single row that updates where it first appeared.
+  const indexByCollapseKey = new Map<string, number>();
   for (const entry of entries) {
+    const keyedIndex =
+      entry.collapseKey !== undefined ? indexByCollapseKey.get(entry.collapseKey) : undefined;
+    if (keyedIndex !== undefined) {
+      const existing = collapsed[keyedIndex];
+      if (existing && shouldCollapseToolLifecycleEntries(existing, entry)) {
+        collapsed[keyedIndex] = mergeDerivedWorkLogEntries(existing, entry);
+        continue;
+      }
+    }
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
       collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
       continue;
     }
     collapsed.push(entry);
+    if (entry.collapseKey !== undefined) {
+      // Latest entry wins the key: a repeated identical call must merge its
+      // lifecycle into the new row, not the earlier completed one.
+      indexByCollapseKey.set(entry.collapseKey, collapsed.length - 1);
+    }
   }
   return collapsed;
 }
@@ -782,7 +856,11 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (previous.activityKind !== "tool.updated" && previous.activityKind !== "tool.completed") {
+  if (
+    previous.activityKind !== "tool.started" &&
+    previous.activityKind !== "tool.updated" &&
+    previous.activityKind !== "tool.completed"
+  ) {
     return false;
   }
   if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
@@ -821,6 +899,10 @@ function mergeDerivedWorkLogEntries(
   return {
     ...previous,
     ...next,
+    // The merged row keeps its first appearance: stable id avoids re-keying,
+    // and the original createdAt keeps it ordered where the tool call began.
+    id: previous.id,
+    createdAt: previous.createdAt,
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
@@ -847,7 +929,11 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
-  if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
+  if (
+    entry.activityKind !== "tool.started" &&
+    entry.activityKind !== "tool.updated" &&
+    entry.activityKind !== "tool.completed"
+  ) {
     return undefined;
   }
   if (entry.toolCallId) {
