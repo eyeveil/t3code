@@ -2642,4 +2642,65 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       ]);
     }),
   );
+
+  it.effect("moves a projected thread to another project on thread.meta.update", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+
+      const createProject = (suffix: string) =>
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make(`cmd-move-project-${suffix}`),
+          projectId: ProjectId.make(`project-move-${suffix}`),
+          title: `Project Move ${suffix}`,
+          workspaceRoot: `/tmp/project-move-${suffix}`,
+          createdAt,
+        });
+      yield* createProject("source");
+      yield* createProject("target");
+
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-move-thread-create"),
+        threadId: ThreadId.make("thread-move"),
+        projectId: ProjectId.make("project-move-source"),
+        title: "Thread Move",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+
+      yield* engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-move-thread-meta"),
+        threadId: ThreadId.make("thread-move"),
+        projectId: ProjectId.make("project-move-target"),
+      });
+
+      const threadRows = yield* sql<{
+        readonly projectId: string;
+        readonly title: string;
+      }>`
+        SELECT
+          project_id AS "projectId",
+          title
+        FROM projection_threads
+        WHERE thread_id = 'thread-move'
+      `;
+      assert.deepEqual(threadRows, [
+        {
+          projectId: "project-move-target",
+          title: "Thread Move",
+        },
+      ]);
+    }),
+  );
 });

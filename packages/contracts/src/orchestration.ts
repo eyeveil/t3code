@@ -553,6 +553,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  projectId: Schema.optional(ProjectId),
 });
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({
@@ -894,6 +895,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  projectId: Schema.optional(ProjectId),
   updatedAt: IsoDateTime,
 });
 
