@@ -59,6 +59,8 @@ interface HomeScreenProps {
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly threadSortOrder: SidebarThreadSortOrder;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
+  readonly refreshing: boolean;
+  readonly onRefresh: () => void;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectSortOrderChange: (sortOrder: HomeProjectSortOrder) => void;
@@ -428,6 +430,8 @@ export function HomeScreen(props: HomeScreenProps) {
           keyboardShouldPersistTaps="handled"
           {...scrollGateHandlers}
           recycleItems
+          onRefresh={props.onRefresh}
+          refreshing={props.refreshing}
           scrollEventThrottle={16}
           contentContainerStyle={{
             paddingTop: Platform.OS === "ios" ? 0 : ANDROID_HEADER_CONTENT_GAP,

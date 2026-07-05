@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
+import { useEnvironmentPullRefresh } from "../../state/use-environment-pull-refresh";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
@@ -56,6 +57,15 @@ export function HomeRouteScreen() {
     setThreadSortOrder,
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
+  // Pull-to-refresh resyncs the filtered environment, or every saved one.
+  const refreshEnvironmentIds = useMemo(
+    () =>
+      selectedEnvironmentId !== null
+        ? [selectedEnvironmentId]
+        : environments.map((environment) => environment.environmentId),
+    [environments, selectedEnvironmentId],
+  );
+  const { isRefreshing, onRefresh } = useEnvironmentPullRefresh(refreshEnvironmentIds);
 
   // In split layouts the persistent sidebar IS the thread list — Home becomes
   // an empty detail pane so selecting a thread never transitions layouts.
@@ -132,9 +142,11 @@ export function HomeRouteScreen() {
             },
           });
         }}
+        onRefresh={() => void onRefresh()}
         onStartNewTask={() => navigation.navigate("NewTaskSheet", { screen: "NewTask" })}
         onThreadSortOrderChange={setThreadSortOrder}
         pendingTasks={pendingTasks}
+        refreshing={isRefreshing}
         projectGroupingMode={listOptions.projectGroupingMode}
         projects={projects}
         projectSortOrder={listOptions.projectSortOrder}
