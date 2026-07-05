@@ -71,6 +71,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { ensureClaudeSessionTranscriptForCwd } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
@@ -3093,6 +3094,38 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
+
+      // Claude Code resolves `--resume` against the project directory derived
+      // from the spawn cwd. When the thread's workspace changed since the
+      // session was created (e.g. it moved to another project), migrate the
+      // transcript so the resume still finds it. Best-effort: a failure here
+      // surfaces as the pre-existing resume error, not a new one.
+      if (existingResumeSessionId !== undefined && input.cwd !== undefined) {
+        const migration = yield* ensureClaudeSessionTranscriptForCwd({
+          claudeSettings,
+          sessionId: existingResumeSessionId,
+          cwd: input.cwd,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("claude.session.transcript-migration-failed", {
+              threadId,
+              sessionId: existingResumeSessionId,
+              cwd: input.cwd,
+              cause,
+            }).pipe(Effect.as({ outcome: "not-found" as const })),
+          ),
+        );
+        if (migration.outcome === "migrated") {
+          yield* Effect.logInfo("claude.session.transcript-migrated", {
+            threadId,
+            sessionId: existingResumeSessionId,
+            fromProjectDir: migration.fromProjectDir,
+            toProjectDir: migration.toProjectDir,
+          });
+        }
+      }
 
       const runtimeContext = yield* Effect.context<never>();
       const runFork = Effect.runForkWith(runtimeContext);
