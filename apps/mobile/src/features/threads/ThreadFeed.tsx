@@ -1252,37 +1252,13 @@ function ThreadFeedPlaceholder(props: {
   );
 }
 
-/**
- * Measured feed row heights, kept across list remounts (the empty↔filled key
- * flip, screen re-push) keyed by thread + content width. Fed back through
- * getFixedItemSize so revisited rows lay out at their real height instead of
- * the flat estimate, which rendered short rows with a stretched gap until
- * measurement corrected them. Rows still measure, so stale entries (streamed
- * growth, changed disclosures) self-correct.
- */
-const MEASURED_FEED_SIZE_CACHE_LIMIT = 8;
-const measuredFeedSizeCache = new Map<string, Map<string, number>>();
-
-function measuredFeedSizes(threadKey: string, viewportWidth: number): Map<string, number> {
-  const cacheKey = `${threadKey}:${viewportWidth}`;
-  let sizes = measuredFeedSizeCache.get(cacheKey);
-  if (sizes === undefined) {
-    sizes = new Map();
-    measuredFeedSizeCache.set(cacheKey, sizes);
-    if (measuredFeedSizeCache.size > MEASURED_FEED_SIZE_CACHE_LIMIT) {
-      // Map iterates in insertion order; evict the oldest thread's cache.
-      const oldestKey = measuredFeedSizeCache.keys().next().value;
-      if (oldestKey !== undefined) {
-        measuredFeedSizeCache.delete(oldestKey);
-      }
-    }
-  }
-  return sizes;
-}
-
-// Chrome rows have near-constant heights (content box + margin); seeding them
-// avoids the 180px flat estimate stretching them ~4x while unmeasured. Font
-// scaling can nudge the real height — measurement corrects it.
+// Chrome rows have genuinely fixed heights (content box + margin) that never
+// change with content: seeding them via getFixedItemSize avoids the 180px flat
+// estimate stretching them ~4x while unmeasured. Only truly immutable rows may
+// be seeded — feeding measured heights of mutable rows (messages, activity
+// groups) back into getFixedItemSize poisons @legendapp/list's sizesKnown
+// ground truth (getKnownOrFixedSize adds scrollAxisGap on top, and native
+// isNativeLayoutNoise then drops the real correction), which overlapped rows.
 const TURN_FOLD_ROW_HEIGHT = 56;
 const WORK_TOGGLE_ROW_HEIGHT = 36;
 
@@ -1421,35 +1397,20 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     setViewportHeight((current) => (Math.abs(current - nextHeight) > 1 ? nextHeight : current));
   }, []);
 
-  // Heights depend on content width, so the cache only activates once the
-  // viewport has measured (split layout starts at 0).
-  const threadSizeCacheKey = `${props.environmentId}:${props.threadId}`;
-  const measuredSizes = useMemo(
-    () => (viewportWidth > 0 ? measuredFeedSizes(threadSizeCacheKey, viewportWidth) : null),
-    [threadSizeCacheKey, viewportWidth],
-  );
-  const getFixedItemSize = useCallback(
-    (entry: ThreadFeedEntry) => {
-      const measured = measuredSizes?.get(entry.id);
-      if (measured !== undefined) {
-        return measured;
-      }
-      if (entry.type === "turn-fold") {
-        return TURN_FOLD_ROW_HEIGHT;
-      }
-      if (entry.type === "work-toggle") {
-        return WORK_TOGGLE_ROW_HEIGHT;
-      }
-      return undefined;
-    },
-    [measuredSizes],
-  );
-  const handleItemSizeChanged = useCallback(
-    (info: { readonly itemKey: string; readonly size: number }) => {
-      measuredSizes?.set(info.itemKey, info.size);
-    },
-    [measuredSizes],
-  );
+  // Only genuinely fixed-height chrome rows may be seeded. Mutable rows
+  // (messages, activity groups) return undefined so LegendList measures them
+  // and learns per-type averages from getItemType — never a persisted per-row
+  // size, which poisoned the library's measurement ground truth and overlapped
+  // rows on native.
+  const getFixedItemSize = useCallback((entry: ThreadFeedEntry) => {
+    if (entry.type === "turn-fold") {
+      return TURN_FOLD_ROW_HEIGHT;
+    }
+    if (entry.type === "work-toggle") {
+      return WORK_TOGGLE_ROW_HEIGHT;
+    }
+    return undefined;
+  }, []);
 
   const pullRefresh = useEnvironmentPullRefresh(
     useMemo(() => [props.environmentId], [props.environmentId]),
@@ -1810,7 +1771,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             scrollToOverflowEnabled
             estimatedItemSize={180}
             getFixedItemSize={getFixedItemSize}
-            onItemSizeChanged={handleItemSizeChanged}
             initialScrollAtEnd
             onRefresh={() => void pullRefresh.onRefresh()}
             refreshing={pullRefresh.isRefreshing}
