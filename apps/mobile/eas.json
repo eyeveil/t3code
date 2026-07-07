@@ -18,7 +18,8 @@
       "corepack": true,
       "env": {
         "APP_VARIANT": "preview",
-        "EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP": "1"
+        "EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP": "1",
+        "MOBILE_VERSION_POLICY": "appVersion"
       },
       "channel": "preview",
       "environment": "preview",
