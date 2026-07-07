@@ -72,6 +72,7 @@ const makeCliTestServerConfig = (baseDir: string) =>
       mode: "web",
       port: 0,
       host: "127.0.0.1",
+      publicUrl: undefined,
       cwd: process.cwd(),
       baseDir,
       ...derivedPaths,

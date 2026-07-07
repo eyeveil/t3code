@@ -1,13 +1,36 @@
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
+import * as ServerConfig from "./config.ts";
+import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import {
   buildPairingUrl,
   formatHeadlessServeOutput,
+  issueHeadlessServeAccessInfo,
   renderTerminalQrCode,
   resolveHeadlessConnectionHost,
   resolveHeadlessConnectionString,
   resolveListeningPort,
 } from "./startupAccess.ts";
+
+const makeServerConfigLayer = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      return {
+        ...config,
+        ...overrides,
+      } satisfies ServerConfig.ServerConfig["Service"];
+    }),
+  ).pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-startup-access-test-" })),
+  );
 
 it("prefers localhost when no explicit host is configured", () => {
   expect(resolveHeadlessConnectionHost(undefined)).toBe("localhost");
@@ -51,6 +74,24 @@ it("prefers the actual bound port when an http server address is available", () 
   expect(resolveListeningPort("pipe", 3773)).toBe(3773);
   expect(resolveListeningPort(null, 3773)).toBe(3773);
 });
+
+it.effect("advertises the configured public URL for the headless pairing url", () =>
+  Effect.gen(function* () {
+    const accessInfo = yield* issueHeadlessServeAccessInfo();
+    expect(accessInfo.connectionString).toBe("https://t3.rjmp.net");
+    expect(accessInfo.pairingUrl).toBe(`https://t3.rjmp.net/pair#token=${accessInfo.token}`);
+  }).pipe(
+    Effect.provide(
+      EnvironmentAuth.layer.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+        Layer.provide(ServerSecretStore.layer),
+        Layer.provideMerge(makeServerConfigLayer({ publicUrl: "https://t3.rjmp.net" })),
+        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    ),
+  ),
+);
 
 it("builds a pairing URL that embeds the token in the hash", () => {
   expect(buildPairingUrl("http://192.168.1.42:3773", "PAIRCODE")).toBe(
