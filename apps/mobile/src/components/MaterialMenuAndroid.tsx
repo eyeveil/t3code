@@ -169,7 +169,6 @@ function MaterialMenuSurface(props: {
   const insets = useSafeAreaInsets();
 
   const surfaceColor = useThemeColor("--color-menu-surface");
-  const borderColor = useThemeColor("--color-border");
   const separatorColor = useThemeColor("--color-separator");
 
   const { anchorRect } = props;
@@ -207,11 +206,11 @@ function MaterialMenuSurface(props: {
           maxWidth,
           maxHeight,
           borderRadius: MENU_CORNER_RADIUS,
+          // M3 elevated menu: tonal surface-container-highest + level-2 elevation,
+          // no outline (tonal elevation does the separating, not a border).
           backgroundColor: surfaceColor,
-          borderWidth: 1,
-          borderColor,
           overflow: "hidden",
-          elevation: 8,
+          elevation: 3,
           paddingVertical: 6,
         }}
       >
@@ -260,7 +259,8 @@ function MaterialMenuBackHeader(props: {
   readonly onPress: () => void;
 }) {
   const iconColor = useThemeColor("--color-icon");
-  const rippleColor = useThemeColor("--color-menu-ripple");
+  // Accent state-layer ripple (M3 Material You tint).
+  const rippleColor = useThemeColor("--color-accent");
   return (
     <Pressable
       accessibilityRole="button"
@@ -303,7 +303,8 @@ const MaterialMenuRow = memo(function MaterialMenuRow(props: {
   const dangerColor = useThemeColor("--color-danger-foreground");
   const iconSubtle = useThemeColor("--color-icon-subtle");
   const accentColor = useThemeColor("--color-primary");
-  const rippleColor = useThemeColor("--color-menu-ripple");
+  // Accent state-layer ripple (M3 Material You tint).
+  const rippleColor = useThemeColor("--color-accent");
 
   const disabled = action.attributes?.disabled ?? false;
   const destructive = action.attributes?.destructive ?? false;

@@ -18,15 +18,21 @@ export function ControlPill(props: {
   readonly disabled?: boolean;
 }) {
   const variant = props.variant ?? "circle";
+  const isAndroid = Platform.OS === "android";
 
   const iconColor = useThemeColor("--color-icon");
   const iconSubtle = useThemeColor("--color-icon-subtle");
   const primaryFg = useThemeColor("--color-primary-foreground");
   const dangerFg = useThemeColor("--color-danger-foreground");
+  const accentForeground = useThemeColor("--color-accent-foreground");
+  // Android idle send reads as a low-emphasis tonal accent (M3), not grey — so
+  // the send arrow stays "the material color" even when disabled.
   const iconTintColor =
     variant === "primary"
       ? props.disabled
-        ? iconSubtle
+        ? isAndroid
+          ? accentForeground
+          : iconSubtle
         : primaryFg
       : variant === "danger"
         ? dangerFg
@@ -42,7 +48,9 @@ export function ControlPill(props: {
         : "h-11 flex-row items-center justify-center gap-2 rounded-full px-3.5",
     variant === "primary"
       ? props.disabled
-        ? "bg-subtle-strong"
+        ? isAndroid
+          ? "bg-primary-tonal"
+          : "bg-subtle-strong"
         : "bg-primary"
       : variant === "danger"
         ? "bg-danger"
@@ -52,7 +60,9 @@ export function ControlPill(props: {
     "text-center text-xs font-t3-bold",
     variant === "primary"
       ? props.disabled
-        ? "text-foreground-muted"
+        ? isAndroid
+          ? "text-accent-foreground"
+          : "text-foreground-muted"
         : "text-primary-foreground"
       : "",
   );

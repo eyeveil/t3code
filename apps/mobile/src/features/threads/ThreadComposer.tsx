@@ -70,14 +70,20 @@ import { ThreadComposerQueuedMessages } from "./ThreadComposerQueuedMessages";
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
  * Exported so the parent can compute feed overlap / content insets.
+ *
+ * Android runs the tighter Material 3 layout (44px send button + 3px pill pad =
+ * 50 pill, + 4px outer top/bottom = 58); iOS keeps its taller liquid-glass pill.
  */
-export const COMPOSER_COLLAPSED_CHROME = 60;
+export const COMPOSER_COLLAPSED_CHROME = Platform.OS === "android" ? 58 : 60;
 
 /**
  * Height of the expanded composer (card + toolbar + vertical padding, excluding safe-area inset).
  * Used by the parent to compute the larger feed bottom inset when the composer is focused.
+ *
+ * Android: card (60 editor + 2×10 pad = 80) + toolbar (8 + 44 + 8 = 60) + outer
+ * (2×8 = 16) = 156. iOS keeps its taller card.
  */
-export const COMPOSER_EXPANDED_CHROME = 174;
+export const COMPOSER_EXPANDED_CHROME = Platform.OS === "android" ? 156 : 174;
 
 export interface ThreadComposerProps {
   readonly draftMessage: string;
@@ -132,19 +138,20 @@ function ComposerSurface(props: {
 }) {
   const shadowColor = useThemeColor("--color-drawer-shadow");
   const surfaceColor = useThemeColor("--color-card-translucent");
+  const composerSurface = useThemeColor("--color-composer-surface");
   const borderColor = useThemeColor("--color-border");
-  // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
-  // (needed to clip content to the pill shape) would clip the shadow on iOS.
-  const shadowStyle: ViewStyle = {
-    borderRadius: props.style.borderRadius,
-    shadowColor,
-    shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
-  };
 
   if (isLiquidGlassSupported) {
+    // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
+    // (needed to clip content to the pill shape) would clip the shadow on iOS.
+    const shadowStyle: ViewStyle = {
+      borderRadius: props.style.borderRadius,
+      shadowColor,
+      shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
+      shadowRadius: 14,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 10,
+    };
     return (
       <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={shadowStyle}>
         <LiquidGlassView
@@ -159,6 +166,34 @@ function ComposerSurface(props: {
     );
   }
 
+  if (Platform.OS === "android") {
+    // Material 3 filled-tonal surface: opaque surface-container fill, no outline,
+    // and a restrained level-2 elevation instead of the glassy translucent fill +
+    // hairline border + heavy drop shadow (which read as Apple / liquid-glass).
+    const shadowStyle: ViewStyle = {
+      borderRadius: props.style.borderRadius,
+      shadowColor,
+      shadowOpacity: props.isDarkMode ? 0.22 : 0.06,
+      shadowRadius: 3,
+      shadowOffset: { width: 0, height: 1 },
+      elevation: 2,
+    };
+    return (
+      <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={shadowStyle}>
+        <View style={[props.style, { backgroundColor: composerSurface }]}>{props.children}</View>
+      </Animated.View>
+    );
+  }
+
+  // Non-glass iOS fallback keeps the original translucent + bordered surface.
+  const shadowStyle: ViewStyle = {
+    borderRadius: props.style.borderRadius,
+    shadowColor,
+    shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+  };
   return (
     <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={shadowStyle}>
       <View
@@ -709,13 +744,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
   }
 
+  // Android's compact Material layout hugs the bottom edge a little tighter than
+  // the roomier iOS liquid-glass composer.
+  const isAndroid = Platform.OS === "android";
+  const collapsedOuterPadding = isAndroid ? 4 : 6;
+
   return (
     <Animated.View
       layout={COMPOSER_LAYOUT_TRANSITION}
       style={{
         paddingHorizontal: 16,
-        paddingTop: isExpanded ? 8 : 6,
-        paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
+        paddingTop: isExpanded ? 8 : collapsedOuterPadding,
+        paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : collapsedOuterPadding),
         experimental_backgroundImage: isDarkMode
           ? "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.9) 100%)"
           : "linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 55%, rgba(255,255,255,0.9) 100%)",
@@ -766,19 +806,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           style={
             isExpanded
               ? {
-                  borderRadius: 20,
+                  // Android: smaller M3 radius + tighter card padding.
+                  borderRadius: isAndroid ? 16 : 20,
                   overflow: "hidden" as const,
-                  paddingHorizontal: 14,
-                  paddingVertical: 12,
+                  paddingHorizontal: isAndroid ? 12 : 14,
+                  paddingVertical: isAndroid ? 10 : 12,
                 }
               : {
-                  borderRadius: 999,
+                  // Android: Material rounded field instead of the full 999 pill,
+                  // with tighter padding so the collapsed bar is visibly shorter.
+                  borderRadius: isAndroid ? 24 : 999,
                   overflow: "hidden" as const,
                   flexDirection: "row" as const,
                   alignItems: "center" as const,
-                  paddingLeft: 18,
-                  paddingRight: 5,
-                  paddingVertical: 5,
+                  paddingLeft: isAndroid ? 14 : 18,
+                  paddingRight: isAndroid ? 6 : 5,
+                  paddingVertical: isAndroid ? 3 : 5,
                 }
           }
         >
@@ -816,8 +859,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               style={
                 isExpanded
                   ? {
-                      minHeight: 80,
-                      maxHeight: 160,
+                      // Android: shorter editor so the expanded card doesn't
+                      // dominate the screen.
+                      minHeight: isAndroid ? 60 : 80,
+                      maxHeight: isAndroid ? 140 : 160,
                       paddingHorizontal: 4,
                       paddingVertical: 4,
                     }

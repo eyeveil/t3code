@@ -27,6 +27,11 @@ export function resolveMaterialAccentVariables(
     "--color-primary": action,
     "--color-primary-foreground": actionForeground,
     "--color-primary-shadow": alpha(action, mode === "dark" ? 0.26 : 0.22),
+    // Low-emphasis tonal accent fill for the Android idle send button.
+    "--color-primary-tonal": alpha(action, mode === "dark" ? 0.24 : 0.16),
+    // Opaque M3 tonal surfaces: the composer bar and the elevated menu popover.
+    "--color-composer-surface": scheme.surfaceContainerHigh,
+    "--color-menu-surface": scheme.surfaceContainerHighest,
     "--color-ring": link,
     "--color-accent": alpha(action, mode === "dark" ? 0.18 : 0.1),
     "--color-accent-foreground": link,

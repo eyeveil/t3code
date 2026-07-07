@@ -2,6 +2,7 @@ import { SymbolView } from "expo-symbols";
 import type { ComponentProps, ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import {
+  Platform,
   Pressable,
   ScrollView,
   View,
@@ -153,10 +154,12 @@ export function ComposerToolbarButton(props: {
   readonly style?: StyleProp<ViewStyle>;
 }) {
   const isDarkMode = useColorScheme() === "dark";
+  const isAndroid = Platform.OS === "android";
   const iconColor = useThemeColor("--color-icon");
   const iconSubtle = useThemeColor("--color-icon-subtle");
   const primaryFg = useThemeColor("--color-primary-foreground");
   const dangerFg = useThemeColor("--color-danger-foreground");
+  const accentForeground = useThemeColor("--color-accent-foreground");
   const variant = props.variant ?? "default";
   const isCircle = !props.label && props.showChevron === false;
   const defaultBorderColor = isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
@@ -167,10 +170,13 @@ export function ComposerToolbarButton(props: {
       : props.disabled
         ? defaultBorderColor
         : "rgba(255,255,255,0.18)";
+  // Android idle send reads as a low-emphasis tonal accent (M3), not grey.
   const iconTintColor =
     variant === "primary"
       ? props.disabled
-        ? iconSubtle
+        ? isAndroid
+          ? accentForeground
+          : iconSubtle
         : primaryFg
       : variant === "danger"
         ? dangerFg
@@ -187,7 +193,9 @@ export function ComposerToolbarButton(props: {
         isCircle ? "w-11" : "gap-2 px-3.5",
         variant === "primary"
           ? props.disabled
-            ? "bg-subtle-strong"
+            ? isAndroid
+              ? "bg-primary-tonal"
+              : "bg-subtle-strong"
             : "bg-primary"
           : variant === "danger"
             ? "bg-danger"
@@ -226,7 +234,9 @@ export function ComposerToolbarButton(props: {
             "shrink text-center text-sm font-t3-bold",
             variant === "primary"
               ? props.disabled
-                ? "text-foreground-muted"
+                ? isAndroid
+                  ? "text-accent-foreground"
+                  : "text-foreground-muted"
                 : "text-primary-foreground"
               : "text-foreground",
           )}
