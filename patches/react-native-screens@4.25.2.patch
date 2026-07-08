@@ -1,42 +1,42 @@
 diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenStackHeaderConfigViewManager.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenStackHeaderConfigViewManager.kt
-index 03d8d9f3a5c403c93282d53cbacf1a339e877e85..156e7f013861c2ce0e226109bb9cb228edac65ff 100644
+index 03d8d9f3a5c403c93282d53cbacf1a339e877e85..54d5eabc6c8a408e711a5be97286fdbb8ab1c461 100644
 --- a/android/src/main/java/com/swmansion/rnscreens/ScreenStackHeaderConfigViewManager.kt
 +++ b/android/src/main/java/com/swmansion/rnscreens/ScreenStackHeaderConfigViewManager.kt
-@@ -210,6 +210,34 @@ class ScreenStackHeaderConfigViewManager :
+@@ -103,6 +103,34 @@ class ScreenStackHeaderConfigViewManager :
+         config.setTitle(title)
+     }
  
-     // iOS only
- 
-+    // T3 patch: iOS-26 header additions exist only in the patched codegen
-+    // spec + iOS native; stub them here so the generated manager interface
-+    // stays implemented and Android keeps building.
++    // The t3 patch adds these iOS glass-chrome props to the native spec; they have
++    // no Android implementation, but the codegen-generated interface requires the
++    // setters to exist. No-ops keep the Android build compiling.
 +    override fun setSubtitle(
-+        view: ScreenStackHeaderConfig?,
-+        value: String?,
++        config: ScreenStackHeaderConfig,
++        subtitle: String?,
 +    ) = Unit
 +
 +    override fun setLargeSubtitle(
-+        view: ScreenStackHeaderConfig?,
-+        value: String?,
++        config: ScreenStackHeaderConfig,
++        largeSubtitle: String?,
 +    ) = Unit
 +
 +    override fun setNavigationItemStyle(
-+        view: ScreenStackHeaderConfig?,
-+        value: String?,
++        config: ScreenStackHeaderConfig,
++        navigationItemStyle: String?,
 +    ) = Unit
 +
 +    override fun setHeaderCenterBarButtonItems(
-+        view: ScreenStackHeaderConfig?,
-+        value: ReadableArray?,
++        config: ScreenStackHeaderConfig,
++        headerCenterBarButtonItems: ReadableArray?,
 +    ) = Unit
 +
 +    override fun setHeaderToolbarItems(
-+        view: ScreenStackHeaderConfig?,
-+        value: ReadableArray?,
++        config: ScreenStackHeaderConfig,
++        headerToolbarItems: ReadableArray?,
 +    ) = Unit
 +
-     override fun setBackTitle(
-         view: ScreenStackHeaderConfig?,
-         value: String?,
+     override fun setTitleFontFamily(
+         config: ScreenStackHeaderConfig,
+         titleFontFamily: String?,
 diff --git a/ios/RNSBarButtonItem.h b/ios/RNSBarButtonItem.h
 index ea5325ea8d17b1ddfa790ff8dab48ce83142d4d3..acd2fd7ceb7162ed300abc4d3c9f0c24f4d63898 100644
 --- a/ios/RNSBarButtonItem.h
@@ -54,7 +54,7 @@ diff --git a/ios/RNSBarButtonItem.mm b/ios/RNSBarButtonItem.mm
 index 0eb1f09dee82edd99e3e614938233db5cdeaebfe..73298f10807520970f625e166d7f5dd1338206f1 100644
 --- a/ios/RNSBarButtonItem.mm
 +++ b/ios/RNSBarButtonItem.mm
-@@ -110,6 +110,58 @@ static UIMenuOptions RNSMakeUIMenuOptionsFromConfig(NSDictionary *config);
+@@ -110,6 +110,58 @@ - (instancetype)initWithConfig:(NSDictionary<NSString *, id> *)dict
    if (dict[@"accessibilityHint"]) {
      self.accessibilityHint = dict[@"accessibilityHint"];
    }
@@ -143,7 +143,7 @@ diff --git a/ios/RNSScreenStackHeaderConfig.mm b/ios/RNSScreenStackHeaderConfig.
 index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d652cbb83 100644
 --- a/ios/RNSScreenStackHeaderConfig.mm
 +++ b/ios/RNSScreenStackHeaderConfig.mm
-@@ -30,6 +30,20 @@ namespace react = facebook::react;
+@@ -30,6 +30,20 @@
  static const NSNumber *const DEFAULT_TITLE_FONT_SIZE = @17;
  static const NSNumber *const DEFAULT_TITLE_LARGE_FONT_SIZE = @34;
  
@@ -164,7 +164,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  @interface RCTImageLoader (Private)
  - (id<RCTImageCache>)imageCache;
  @end
-@@ -47,6 +61,9 @@ static const NSNumber *const DEFAULT_TITLE_LARGE_FONT_SIZE = @34;
+@@ -47,6 +61,9 @@ + (BOOL)rnscreens_isBlankOrNull:(NSString *)string
  @end
  
  @interface RNSScreenStackHeaderConfig () <RCTMountingTransactionObserving>
@@ -174,7 +174,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  @end
  
  @implementation RNSScreenStackHeaderConfig {
-@@ -81,6 +98,7 @@ static const NSNumber *const DEFAULT_TITLE_LARGE_FONT_SIZE = @34;
+@@ -81,6 +98,7 @@ - (void)initProps
    self.hidden = YES;
    _reactSubviews = [NSMutableArray new];
    _backTitleVisible = YES;
@@ -182,7 +182,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
    _blurEffect = RNSBlurEffectStyleNone;
  }
  
-@@ -496,6 +514,10 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -496,6 +514,10 @@ + (void)updateViewController:(UIViewController *)vc
  
    if (shouldHide) {
      navitem.title = config.title;
@@ -193,7 +193,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  
      // Setting navigation bar visibility is split to mitigate iOS 26 bug with bar button items.
      [navctr setNavigationBarHidden:YES animated:animated];
-@@ -512,11 +534,19 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -512,11 +534,19 @@ + (void)updateViewController:(UIViewController *)vc
    }
    navitem.largeTitleDisplayMode =
        config.largeTitle ? UINavigationItemLargeTitleDisplayModeAlways : UINavigationItemLargeTitleDisplayModeNever;
@@ -213,7 +213,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  
  // appearance does not apply to the tvOS so we need to use lagacy customization
  #if TARGET_OS_TV
-@@ -637,10 +667,286 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -637,10 +667,286 @@ + (void)updateViewController:(UIViewController *)vc
    // This assignment should be done after `navitem.titleView = ...` assignment (iOS 16.0 bug).
    // See: https://github.com/software-mansion/react-native-screens/issues/1570 (comments)
    navitem.title = config.title;
@@ -504,7 +504,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  
    // Setting navigation bar visibility is split to mitigate iOS 26 bug with bar button items
    // (setting nav bar visibility should be done after `navitem.*BarButtonItems`).
-@@ -773,6 +1079,7 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -773,6 +1079,7 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
  
  - (NSArray<UIBarButtonItem *> *)barButtonItemsFromConfigs:(NSArray<NSDictionary<NSString *, id> *> *)dicts
                                           withCurrentItems:(NSArray<UIBarButtonItem *> *)currentItems
@@ -512,7 +512,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  {
    if (dicts.count == 0) {
      return currentItems;
-@@ -781,7 +1088,197 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -781,7 +1088,197 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
    [items addObjectsFromArray:currentItems];
    for (NSUInteger i = 0; i < dicts.count; i++) {
      NSDictionary *dict = dicts[i];
@@ -711,7 +711,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
        RNSBarButtonItem *item = [[RNSBarButtonItem alloc] initWithConfig:dict
            action:^(NSString *buttonId) {
              auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
-@@ -809,11 +1306,15 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -809,11 +1306,15 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
          [items addObject:item];
        }
      } else if (dict[@"spacing"]) {
@@ -731,7 +731,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
        NSNumber *index = dict[@"index"];
        if (index.integerValue < items.count) {
          [items insertObject:item atIndex:index.integerValue];
-@@ -825,6 +1326,47 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -825,6 +1326,47 @@ - (void)applySemanticContentAttributeIfNeededToNavCtrl:(UINavigationController *
    return items;
  }
  
@@ -779,7 +779,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  RNS_IGNORE_SUPER_CALL_BEGIN
  - (void)insertReactSubview:(RNSScreenStackHeaderSubview *)subview atIndex:(NSInteger)atIndex
  {
-@@ -1013,6 +1555,8 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1013,6 +1555,8 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
    }
  
    _title = RCTNSStringFromStringNilIfEmpty(newScreenProps.title);
@@ -788,7 +788,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
    if (newScreenProps.titleFontFamily != oldScreenProps.titleFontFamily) {
      _titleFontFamily = RCTNSStringFromStringNilIfEmpty(newScreenProps.titleFontFamily);
    }
-@@ -1038,6 +1582,7 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1038,6 +1582,7 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
    _disableBackButtonMenu = newScreenProps.disableBackButtonMenu;
    _backButtonDisplayMode =
        [RNSConvert UINavigationItemBackButtonDisplayModeFromCppEquivalent:newScreenProps.backButtonDisplayMode];
@@ -796,7 +796,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..073a72a68688369f39e54b61d1381b8d
  
    if (newScreenProps.userInterfaceStyle != oldScreenProps.userInterfaceStyle) {
      _userInterfaceStyle = [RNSConvert UIUserInterfaceStyleFromCppEquivalent:newScreenProps.userInterfaceStyle];
-@@ -1084,6 +1629,30 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1084,6 +1629,30 @@ - (void)updateProps:(react::Props::Shared const &)props oldProps:(react::Props::
      _headerRightBarButtonItems = array;
    }
  
