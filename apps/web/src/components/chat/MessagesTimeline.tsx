@@ -1781,26 +1781,37 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
-function buildToolCallExpandedBody(
+export function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
+  // Providers sometimes repeat the same text across the command/raw/detail
+  // fields (e.g. a Bash `detail` that duplicates its command), which would
+  // render the same paragraph twice. Dedupe by trimmed equality so each
+  // distinct block appears once, preserving order.
+  const seen = new Set<string>();
+  const pushBlock = (block: string | null | undefined) => {
+    const trimmed = block?.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    blocks.push(trimmed);
+  };
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
-    blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+    pushBlock(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
-    blocks.push(raw.trim());
+    pushBlock(raw);
   } else if (workEntry.command?.trim()) {
-    blocks.push(workEntry.command.trim());
+    pushBlock(workEntry.command);
   }
-  if (workEntry.detail?.trim()) {
-    blocks.push(workEntry.detail.trim());
-  }
+  pushBlock(workEntry.detail);
   const changedFiles = workEntry.changedFiles ?? [];
   if (changedFiles.length > 0) {
-    blocks.push(
+    pushBlock(
       changedFiles
         .map((filePath) => formatWorkspaceRelativePath(filePath, workspaceRoot))
         .join("\n"),

@@ -35,17 +35,33 @@ export const SubagentRail = memo(function SubagentRail({
               <Popover>
                 <PopoverTrigger
                   className={cn(
-                    "flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] leading-5 outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted/60",
-                    item.status !== "running" && "opacity-60",
+                    "flex w-full items-start gap-1.5 rounded-md px-1 py-1 text-left text-[12px] leading-5 outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted/60",
+                    item.status === "completed" && "opacity-60",
                   )}
                 >
-                  <SubagentStatusGlyph status={item.status} />
-                  <span className="min-w-0 flex-1 truncate font-medium text-foreground/82">
-                    {item.name}
+                  <span className="mt-0.5">
+                    <SubagentStatusGlyph status={item.status} />
                   </span>
-                  {item.status === "running" ? (
-                    <SubagentElapsed startedAt={item.createdAt} />
-                  ) : null}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="min-w-0 flex-1 truncate font-medium text-foreground/82">
+                        {item.name}
+                      </span>
+                      {item.status === "running" ? (
+                        <SubagentElapsed startedAt={item.createdAt} />
+                      ) : null}
+                    </span>
+                    <span
+                      className={cn(
+                        "block truncate text-[11px] leading-4",
+                        item.detail
+                          ? "text-muted-foreground/70"
+                          : "text-muted-foreground/45 italic",
+                      )}
+                    >
+                      {subagentTaskLabel(item)}
+                    </span>
+                  </span>
                 </PopoverTrigger>
                 <PopoverContent side="left" align="start" className="w-72 max-w-[80vw]">
                   <div className="flex items-center gap-1.5">
@@ -58,7 +74,10 @@ export const SubagentRail = memo(function SubagentRail({
                     </span>
                   </div>
                   <p className="mt-2 whitespace-pre-wrap text-[12px] text-muted-foreground leading-5">
-                    {item.detail ?? "No description provided for this subagent."}
+                    {item.detail ??
+                      (item.status === "running"
+                        ? "This subagent is just getting started — no task description reported yet."
+                        : "No description provided for this subagent.")}
                   </p>
                 </PopoverContent>
               </Popover>
@@ -69,6 +88,18 @@ export const SubagentRail = memo(function SubagentRail({
     </aside>
   );
 });
+
+/**
+ * One-line task summary for a rail row. A running agent that hasn't reported a
+ * task yet reads as alive ("Subagent starting…") rather than blank; the CSS
+ * `truncate` on the caller keeps it to a single line.
+ */
+function subagentTaskLabel(item: SubagentRailItem): string {
+  if (item.detail) {
+    return item.detail;
+  }
+  return item.status === "running" ? "Subagent starting…" : "No task recorded";
+}
 
 /** Status indicator — running reuses the sky "Working" dot from the session status pill. */
 function SubagentStatusGlyph({ status }: { status: SubagentRailItem["status"] }) {

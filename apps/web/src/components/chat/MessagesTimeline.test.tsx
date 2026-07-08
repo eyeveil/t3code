@@ -566,3 +566,31 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Tool call failed"');
   });
 });
+
+describe("buildToolCallExpandedBody", () => {
+  async function build(entry: Record<string, unknown>): Promise<string | null> {
+    const { buildToolCallExpandedBody } = await import("./MessagesTimeline");
+    return buildToolCallExpandedBody(
+      entry as unknown as Parameters<typeof buildToolCallExpandedBody>[0],
+      undefined,
+    );
+  }
+
+  it("does not repeat a command that the detail duplicates", async () => {
+    expect(await build({ command: "echo hi", detail: "echo hi" })).toBe("echo hi");
+  });
+
+  it("shows the command line and then its distinct stdout", async () => {
+    expect(await build({ command: "echo hi", detail: "hi" })).toBe("echo hi\n\nhi");
+  });
+
+  it("dedupes a raw command that repeats the detail", async () => {
+    expect(
+      await build({
+        command: "bun run lint",
+        rawCommand: "pwsh -c 'bun run lint'",
+        detail: "pwsh -c 'bun run lint'",
+      }),
+    ).toBe("pwsh -c 'bun run lint'");
+  });
+});

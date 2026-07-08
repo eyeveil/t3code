@@ -716,6 +716,87 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.toolLifecycleStatus).toBe("completed");
   });
 
+  it("drops an identity-less tool.started that can never collapse (noise)", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      // Empty payload + empty summary → no toolCallId/title/detail/itemType, so
+      // no collapse key. It can never merge, so it must not render as a row.
+      makeActivity({
+        id: "empty-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "",
+        payload: {},
+      }),
+      makeActivity({
+        id: "real-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: { itemType: "command_execution", data: { item: { command: "ls" } } },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries.map((entry) => entry.id)).toEqual(["real-complete"]);
+  });
+
+  it("keeps an identity-bearing tool.started and merges it into its completion", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "id-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Ran command",
+        payload: { itemType: "command_execution", data: { toolCallId: "call-x" } },
+      }),
+      makeActivity({
+        id: "id-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolCallId: "call-x",
+            item: { command: "echo hi" },
+            rawOutput: { stdout: "hi\n" },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries.map((entry) => entry.id)).toEqual(["id-start"]);
+    expect(entries[0]?.toolLifecycleStatus).toBe("completed");
+  });
+
+  it("surfaces a completed command's stdout as detail and keeps the command once", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "cmd-with-output",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          title: "Ran command",
+          // Some providers (codex) put the command — not stdout — in `detail`.
+          detail: "echo hello",
+          data: {
+            item: { command: "echo hello" },
+            rawOutput: { stdout: "hello world\n" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.command).toBe("echo hello");
+    // The detail now carries the command's output, not a copy of the command,
+    // so the expanded body reads command-line then output (command shown once).
+    expect(entry?.detail).toBe("hello world");
+    expect(entry?.detail).not.toBe(entry?.command);
+  });
+
   it("omits task.started but shows task.progress and task.completed", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1757,5 +1838,54 @@ describe("deriveSubagentRailItems", () => {
   it("returns nothing without an active turn", () => {
     const entries = [makeRailEntry({ id: "agent-1", toolLifecycleStatus: "inProgress" })];
     expect(deriveSubagentRailItems(entries, null)).toEqual([]);
+  });
+
+  it("orders running subagents ahead of finished ones (stable within a group)", () => {
+    const entries: WorkLogEntry[] = [
+      makeRailEntry({
+        id: "done-1",
+        detail: "Explore: first task",
+        toolLifecycleStatus: "completed",
+      }),
+      makeRailEntry({
+        id: "run-1",
+        detail: "Explore: second task",
+        toolLifecycleStatus: "inProgress",
+      }),
+      makeRailEntry({ id: "done-2", detail: "Explore: third task", toolLifecycleStatus: "failed" }),
+      makeRailEntry({
+        id: "run-2",
+        detail: "Explore: fourth task",
+        toolLifecycleStatus: "inProgress",
+      }),
+    ];
+
+    expect(deriveSubagentRailItems(entries, turnId).map((item) => item.id)).toEqual([
+      "run-1",
+      "run-2",
+      "done-1",
+      "done-2",
+    ]);
+  });
+
+  it("never surfaces a braces-only or empty payload as an agent task", () => {
+    const entries: WorkLogEntry[] = [
+      makeRailEntry({
+        id: "empty-agent",
+        detail: "{}",
+        toolTitle: "Task",
+        toolLifecycleStatus: "inProgress",
+      }),
+    ];
+
+    expect(deriveSubagentRailItems(entries, turnId)).toEqual([
+      {
+        id: "empty-agent",
+        name: "Task",
+        detail: null,
+        status: "running",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+    ]);
   });
 });

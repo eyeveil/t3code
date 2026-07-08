@@ -637,7 +637,15 @@ export function deriveWorkLogEntries(
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity));
+    const entry = toDerivedWorkLogEntry(activity);
+    // Some providers (e.g. codex) emit tool.started with an empty payload — no
+    // toolCallId, title, command, or detail — which derives a collapseKey of
+    // undefined. Such a row can never merge into its later updated/completed
+    // event, so keeping it only produces standalone noise ("… started {}").
+    // Identity-bearing starts (a real collapseKey) still surface early and then
+    // collapse into their completion.
+    if (activity.kind === "tool.started" && entry.collapseKey === undefined) continue;
+    entries.push(entry);
   }
   return collapseDerivedWorkLogEntries(entries).map((entry) => {
     const { activityKind, collapseKey: _collapseKey, ...rest } = entry;
@@ -680,11 +688,26 @@ export function deriveSubagentRailItems(
     const { name, detail } = parseSubagentName(entry);
     items.push({ id: entry.id, name, detail, status, createdAt: entry.createdAt });
   }
-  return items;
+  // Surface still-running subagents first — they're the live, actionable rows —
+  // while keeping each group in dispatch order (stable sort).
+  return items
+    .map((item, index) => ({ item, index }))
+    .toSorted((left, right) => {
+      const leftRank = left.item.status === "running" ? 0 : 1;
+      const rightRank = right.item.status === "running" ? 0 : 1;
+      return leftRank - rightRank || left.index - right.index;
+    })
+    .map(({ item }) => item);
+}
+
+/** Braces-only / empty payloads (e.g. an unstarted `{}`) carry no task text. */
+function isEmptySubagentDetail(raw: string): boolean {
+  return raw.length === 0 || /^\{\s*\}$/.test(raw);
 }
 
 function parseSubagentName(entry: WorkLogEntry): { name: string; detail: string | null } {
-  const raw = entry.detail?.trim() ?? "";
+  const rawDetail = entry.detail?.trim() ?? "";
+  const raw = isEmptySubagentDetail(rawDetail) ? "" : rawDetail;
   const separatorIndex = raw.indexOf(": ");
   if (separatorIndex > 0 && separatorIndex <= 40 && !raw.slice(0, separatorIndex).includes("\n")) {
     return {
@@ -755,7 +778,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       payload.detail.length > 0
       ? stripTrailingExitCode(payload.detail).output
       : null
-    : extractToolDetail(payload, title ?? activity.summary);
+    : extractToolDetail(payload, title ?? activity.summary, commandPreview.command);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
@@ -1250,17 +1273,44 @@ function isCommandToolDetail(payload: Record<string, unknown> | null, heading: s
 function extractToolDetail(
   payload: Record<string, unknown> | null,
   heading: string,
+  command: string | null,
 ): string | null {
   const rawDetail = asTrimmedString(payload?.detail);
   const detail = rawDetail ? stripTrailingExitCode(rawDetail).output : null;
   const normalizedHeading = normalizePreviewForComparison(heading);
   const normalizedDetail = normalizePreviewForComparison(detail);
+  const normalizedCommand = normalizePreviewForComparison(command);
 
-  if (detail && normalizedHeading !== normalizedDetail) {
+  // A command execution whose `detail` merely repeats the command line carries
+  // no extra information — the command already renders via the entry's
+  // `command` field, so echoing it as detail duplicates the row. Skip it here
+  // and fall through to surface the command's stdout instead.
+  const detailRepeatsCommand =
+    normalizedCommand !== null &&
+    normalizedDetail !== null &&
+    normalizedDetail === normalizedCommand;
+
+  if (detail && normalizedHeading !== normalizedDetail && !detailRepeatsCommand) {
     return detail;
   }
 
   if (isCommandToolDetail(payload, heading)) {
+    // Without a known command, bare stdout is misleading (which command ran?),
+    // so show nothing. With a command, repurpose the detail to show its output
+    // so a completed command surfaces stdout beneath the command line.
+    if (!command) {
+      return null;
+    }
+    const rawOutputSummary = summarizeToolRawOutput(payload);
+    if (rawOutputSummary) {
+      const normalizedRawOutputSummary = normalizePreviewForComparison(rawOutputSummary);
+      if (
+        normalizedRawOutputSummary !== normalizedHeading &&
+        normalizedRawOutputSummary !== normalizedCommand
+      ) {
+        return rawOutputSummary;
+      }
+    }
     return null;
   }
 
