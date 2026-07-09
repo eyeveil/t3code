@@ -15,6 +15,7 @@
     "@clerk/electron": "catalog:",
     "@clerk/electron-passkeys": "catalog:",
     "@effect/platform-node": "catalog:",
+    "@standard-schema/spec": "^1.1.0",
     "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
@@ -25,9 +26,17 @@
     "electron-store": "^8.2.0",
     "electron-updater": "^6.6.2",
     "fast-check": "4.8.0",
+    "find-my-way-ts": "^0.1.6",
+    "ini": "^7.0.0",
+    "kubernetes-types": "^1.30.0",
+    "msgpackr": "^2.0.1",
+    "multipasta": "^0.2.7",
     "playwright-core": "1.60.0",
     "pure-rand": "8.4.0",
-    "react-grab": "^0.1.32"
+    "react-grab": "^0.1.32",
+    "toml": "^4.1.1",
+    "uuid": "^14.0.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

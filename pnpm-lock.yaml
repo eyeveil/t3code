@@ -115,6 +115,9 @@ importers:
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.0)(utf-8-validate@6.0.6)
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
       '@t3tools/client-runtime':
         specifier: workspace:*
         version: link:../../packages/client-runtime
@@ -145,6 +148,21 @@ importers:
       fast-check:
         specifier: 4.8.0
         version: 4.8.0
+      find-my-way-ts:
+        specifier: ^0.1.6
+        version: 0.1.6
+      ini:
+        specifier: ^7.0.0
+        version: 7.0.0
+      kubernetes-types:
+        specifier: ^1.30.0
+        version: 1.30.0
+      msgpackr:
+        specifier: ^2.0.1
+        version: 2.0.2
+      multipasta:
+        specifier: ^0.2.7
+        version: 0.2.7
       playwright-core:
         specifier: 1.60.0
         version: 1.60.0
@@ -154,6 +172,15 @@ importers:
       react-grab:
         specifier: ^0.1.32
         version: 0.1.44(react@19.2.6)
+      toml:
+        specifier: ^4.1.1
+        version: 4.1.1
+      uuid:
+        specifier: ^14.0.0
+        version: 14.0.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
     devDependencies:
       '@effect/vitest':
         specifier: 4.0.0-beta.78
