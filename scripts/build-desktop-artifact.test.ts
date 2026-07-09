@@ -481,9 +481,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       const mac = config.mac as Record<string, unknown>;
       assert.equal(config.appId, "com.t3tools.t3code");
-      // afterPack must be an absolute path into the stage dir: electron-builder
-      // resolves hook paths relative to its CWD, not the staged projectDir.
+      // Hooks must be absolute paths into the stage dir: electron-builder resolves
+      // hook paths relative to its CWD, not the staged projectDir. win/linux patch
+      // node_modules in afterPack, macOS in afterSign (after codesign).
       assert.equal(config.afterPack, "/tmp/stage-app/afterPack.cjs");
+      assert.equal(config.afterSign, "/tmp/stage-app/afterSign.cjs");
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
       assert.deepStrictEqual(mac.protocols, [
