@@ -1428,7 +1428,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         readonly provisioningProfilePath: string;
       }
     | undefined,
+  stageAppDir: string,
 ) {
+  const path = yield* Path.Path;
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
@@ -1460,8 +1462,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // crashes on launch with ERR_MODULE_NOT_FOUND. The hook (written into the
     // stage dir below) replaces the packed node_modules with the complete staged
     // tree after pack, so `pnpm dist:desktop:*` produces a working app with no
-    // manual post-build step. Path is resolved relative to the staged projectDir.
-    afterPack: "./afterPack.cjs",
+    // manual post-build step. Absolute path: electron-builder resolves hook paths
+    // relative to its CWD (apps/desktop via the vp --filter run), not the stage.
+    afterPack: path.join(stageAppDir, "afterPack.cjs"),
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
@@ -1828,6 +1831,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
             provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
           }
         : undefined,
+      stageAppDir,
     ),
     dependencies: stageDependencies,
     devDependencies: {
