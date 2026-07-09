@@ -578,16 +578,7 @@ interface StagePackageJson {
   };
 }
 
-// Force a flat node_modules for the packaged app. The default isolated pnpm
-// layout leaves transitive/deduped leaves (ms, pure-rand, …) unreachable
-// inside the asar, crashing the app at launch. vp only forwards args after a
-// `--` separator to pnpm, so the node-linker override goes there.
-export const STAGE_INSTALL_ARGS = [
-  "install",
-  "--prod",
-  "--",
-  "--config.node-linker=hoisted",
-] as const;
+export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
 
 export interface MacPasskeySigningConfiguration {
@@ -1399,11 +1390,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     directories: {
       buildResources: "apps/desktop/resources",
     },
-    // pnpm's isolated layout keeps transitive deps under node_modules/.pnpm/*/
-    // node_modules with the top-level entries as symlinks. Without this,
-    // electron-builder skips those nested dirs and the packaged app crashes on
-    // deduped leaves (ms, pure-rand, …) that live only inside .pnpm.
-    includeSubNodeModules: true,
+    // asar disabled: electron-builder mis-collects pnpm's isolated node_modules
+    // into the asar (deduped leaves like ms/pure-rand dropped -> crash on
+    // launch). Shipping the app unpacked lets the post-build step replace
+    // node_modules with the complete staged tree so every dep resolves.
+    asar: false,
     // The Windows primary backend runs the server bundle through
     // ELECTRON_RUN_AS_NODE (asar-aware), so it reads bin.mjs straight out of
     // app.asar. The WSL backend instead launches plain `wsl.exe -- node`, which
