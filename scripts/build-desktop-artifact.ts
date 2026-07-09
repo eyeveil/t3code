@@ -581,6 +581,52 @@ interface StagePackageJson {
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
 
+// CommonJS afterPack hook written into the stage dir and referenced from the
+// electron-builder config. electron-builder mis-collects pnpm's isolated
+// node_modules when packing (deduped transitive leaves like ms/pure-rand are
+// dropped), so the shipped app crashes on launch with ERR_MODULE_NOT_FOUND.
+// This runs after pack and swaps in the complete staged node_modules (symlinks
+// preserved, matching the old manual `cp -R`) so every import resolves. Applies
+// to all platforms; asar is disabled so the tree lives at Resources/app/node_modules.
+export const STAGE_AFTER_PACK_HOOK = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+
+exports.default = async function afterPack(context) {
+  const stageNodeModules = path.join(__dirname, "node_modules");
+  if (!fs.existsSync(stageNodeModules)) {
+    throw new Error("[afterPack] staged node_modules missing at " + stageNodeModules);
+  }
+  const resourcesApp =
+    context.electronPlatformName === "darwin"
+      ? path.join(
+          context.appOutDir,
+          context.packager.appInfo.productFilename + ".app",
+          "Contents",
+          "Resources",
+          "app",
+        )
+      : path.join(context.appOutDir, "resources", "app");
+  if (!fs.existsSync(resourcesApp)) {
+    throw new Error("[afterPack] packed app dir missing at " + resourcesApp);
+  }
+  const dst = path.join(resourcesApp, "node_modules");
+  const tmp = dst + ".complete";
+  fs.rmSync(tmp, { recursive: true, force: true });
+  // dereference:false keeps pnpm's intra-tree symlinks intact.
+  fs.cpSync(stageNodeModules, tmp, { recursive: true, dereference: false });
+  fs.rmSync(dst, { recursive: true, force: true });
+  fs.renameSync(tmp, dst);
+  const count = fs.readdirSync(dst).length;
+  console.log(
+    "[afterPack] replaced packed node_modules with complete staged tree (" +
+      count +
+      " entries) at " +
+      dst,
+  );
+};
+`;
+
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
   readonly teamId: string;
@@ -1409,6 +1455,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // files through the asar (transparently redirected to the unpacked copy), so
     // there's no duplication.
     asarUnpack: [...DESKTOP_ASAR_UNPACK, "apps/server/dist/**", "**/node_modules/**"],
+    // electron-builder's own file collection drops deduped transitive leaves out
+    // of pnpm's isolated node_modules (ms, pure-rand, ...), so the packed app
+    // crashes on launch with ERR_MODULE_NOT_FOUND. The hook (written into the
+    // stage dir below) replaces the packed node_modules with the complete staged
+    // tree after pack, so `pnpm dist:desktop:*` produces a working app with no
+    // manual post-build step. Path is resolved relative to the staged projectDir.
+    afterPack: "./afterPack.cjs",
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
@@ -1784,6 +1837,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
+  // afterPack hook (referenced from createBuildConfig): after electron-builder
+  // packs the app, replace its node_modules with the complete staged tree. This
+  // is the durable form of the old manual `cp -R stage/node_modules -> app` step;
+  // without it electron-builder ships an app missing deduped transitive deps.
+  // __dirname is the staged projectDir, so its node_modules is the full install.
+  yield* fs.writeFileString(path.join(stageAppDir, "afterPack.cjs"), STAGE_AFTER_PACK_HOOK);
   const stageWorkspaceConfig = createStageWorkspaceConfig({
     platform: options.platform,
     arch: options.arch,
