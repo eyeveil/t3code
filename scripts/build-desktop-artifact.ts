@@ -613,8 +613,16 @@ exports.default = async function afterPack(context) {
   const dst = path.join(resourcesApp, "node_modules");
   const tmp = dst + ".complete";
   fs.rmSync(tmp, { recursive: true, force: true });
+  // Skip the build-only 'electron' package: it carries a nested Electron.app +
+  // Framework that codesign (which runs after this hook) chokes on, and the
+  // packaged app never needs it — the app itself IS the Electron runtime.
+  const electronDir = path.join(stageNodeModules, "electron");
   // dereference:false keeps pnpm's intra-tree symlinks intact.
-  fs.cpSync(stageNodeModules, tmp, { recursive: true, dereference: false });
+  fs.cpSync(stageNodeModules, tmp, {
+    recursive: true,
+    dereference: false,
+    filter: (src) => src !== electronDir && !src.startsWith(electronDir + path.sep),
+  });
   fs.rmSync(dst, { recursive: true, force: true });
   fs.renameSync(tmp, dst);
   const count = fs.readdirSync(dst).length;
