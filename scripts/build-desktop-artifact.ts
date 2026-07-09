@@ -1399,6 +1399,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     directories: {
       buildResources: "apps/desktop/resources",
     },
+    // pnpm's isolated layout keeps transitive deps under node_modules/.pnpm/*/
+    // node_modules with the top-level entries as symlinks. Without this,
+    // electron-builder skips those nested dirs and the packaged app crashes on
+    // deduped leaves (ms, pure-rand, …) that live only inside .pnpm.
+    includeSubNodeModules: true,
     // The Windows primary backend runs the server bundle through
     // ELECTRON_RUN_AS_NODE (asar-aware), so it reads bin.mjs straight out of
     // app.asar. The WSL backend instead launches plain `wsl.exe -- node`, which
