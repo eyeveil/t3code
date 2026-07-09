@@ -1,4 +1,10 @@
-import { Maximize2Icon, Minimize2Icon, PanelBottomIcon, PanelRightIcon } from "lucide-react";
+import {
+  BotIcon,
+  Maximize2Icon,
+  Minimize2Icon,
+  PanelBottomIcon,
+  PanelRightIcon,
+} from "lucide-react";
 import { memo } from "react";
 
 import { Toggle } from "../ui/toggle";
@@ -11,8 +17,11 @@ interface PanelLayoutControlsProps {
   rightPanelAvailable: boolean;
   rightPanelOpen: boolean;
   rightPanelShortcutLabel: string | null;
+  subagentsPanelAvailable: boolean;
+  subagentsPanelOpen: boolean;
   onToggleTerminal: () => void;
   onToggleRightPanel: () => void;
+  onToggleSubagents: () => void;
 }
 
 export const PanelLayoutControls = memo(function PanelLayoutControls({
@@ -22,8 +31,11 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   rightPanelAvailable,
   rightPanelOpen,
   rightPanelShortcutLabel,
+  subagentsPanelAvailable,
+  subagentsPanelOpen,
   onToggleTerminal,
   onToggleRightPanel,
+  onToggleSubagents,
 }: PanelLayoutControlsProps) {
   return (
     <div
@@ -72,6 +84,28 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
           {rightPanelAvailable
             ? `Toggle right panel${rightPanelShortcutLabel ? ` (${rightPanelShortcutLabel})` : ""}`
             : "Right panel is unavailable"}
+        </TooltipPopup>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Toggle
+              className="shrink-0 [-webkit-app-region:no-drag]"
+              pressed={subagentsPanelOpen}
+              onPressedChange={onToggleSubagents}
+              aria-label="Toggle subagents panel"
+              variant="ghost"
+              size="sm"
+              disabled={!subagentsPanelAvailable}
+            >
+              <BotIcon className="size-3.5" />
+            </Toggle>
+          }
+        />
+        <TooltipPopup side="bottom">
+          {subagentsPanelAvailable
+            ? "Toggle subagents panel"
+            : "Subagents panel needs the verbose work log"}
         </TooltipPopup>
       </Tooltip>
     </div>

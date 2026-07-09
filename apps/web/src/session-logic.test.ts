@@ -12,6 +12,7 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveSubagentPanelItems,
   deriveSubagentRailItems,
   deriveTimelineEntries,
   deriveWorkLogEntries,
@@ -1887,5 +1888,86 @@ describe("deriveSubagentRailItems", () => {
         createdAt: "2026-02-23T00:00:01.000Z",
       },
     ]);
+  });
+});
+
+describe("deriveSubagentPanelItems", () => {
+  const turnId = TurnId.make("turn-panel");
+
+  function makePanelEntry(overrides: Partial<WorkLogEntry> & { id: string }): WorkLogEntry {
+    return {
+      createdAt: "2026-02-23T00:00:01.000Z",
+      turnId,
+      label: "Task",
+      tone: "tool",
+      itemType: "collab_agent_tool_call",
+      ...overrides,
+    };
+  }
+
+  it("keeps every status of the turn's subagents, running-first", () => {
+    const entries: WorkLogEntry[] = [
+      makePanelEntry({
+        id: "done-1",
+        detail: "Explore: first task",
+        toolLifecycleStatus: "completed",
+      }),
+      makePanelEntry({
+        id: "run-1",
+        detail: "general-purpose: second task",
+        toolLifecycleStatus: "inProgress",
+      }),
+      makePanelEntry({
+        id: "failed-1",
+        detail: "Explore: third task",
+        toolLifecycleStatus: "failed",
+      }),
+      // Ignored: different turn, or not a collab agent call.
+      makePanelEntry({ id: "other-turn", turnId: TurnId.make("turn-other") }),
+      makePanelEntry({ id: "not-agent", itemType: "command_execution" }),
+    ];
+
+    expect(deriveSubagentPanelItems(entries, turnId)).toEqual([
+      {
+        id: "run-1",
+        name: "general-purpose",
+        detail: "second task",
+        status: "running",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+      {
+        id: "done-1",
+        name: "Explore",
+        detail: "first task",
+        status: "completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+      {
+        id: "failed-1",
+        name: "Explore",
+        detail: "third task",
+        status: "failed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+    ]);
+  });
+
+  it("returns the turn's subagents even after it settles (no running gate)", () => {
+    const entries = [
+      makePanelEntry({
+        id: "done-only",
+        detail: "Explore: reviewed the change",
+        toolLifecycleStatus: "completed",
+      }),
+    ];
+
+    // Unlike the rail, callers pass the latest turn id even when idle, and the
+    // completed agent stays reviewable.
+    expect(deriveSubagentPanelItems(entries, turnId).map((item) => item.id)).toEqual(["done-only"]);
+  });
+
+  it("returns nothing without a turn", () => {
+    const entries = [makePanelEntry({ id: "agent-1", toolLifecycleStatus: "completed" })];
+    expect(deriveSubagentPanelItems(entries, null)).toEqual([]);
   });
 });

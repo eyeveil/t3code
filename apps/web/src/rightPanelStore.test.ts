@@ -253,6 +253,28 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("plan");
   });
 
+  it("opens and toggles a subagents surface like other singletons", () => {
+    useRightPanelStore.getState().open(refA, "subagents");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "subagents",
+      surfaces: [{ id: "subagents", kind: "subagents" }],
+    });
+
+    useRightPanelStore.getState().toggle(refA, "subagents");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBeNull();
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: false,
+      activeSurfaceId: "subagents",
+      surfaces: [{ id: "subagents", kind: "subagents" }],
+    });
+
+    useRightPanelStore.getState().toggle(refA, "subagents");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      "subagents",
+    );
+  });
+
   it("removeThread clears persisted state", () => {
     useRightPanelStore.getState().open(refA, "plan");
     useRightPanelStore.getState().removeThread(refA);

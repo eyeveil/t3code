@@ -672,13 +672,34 @@ export function deriveSubagentRailItems(
   entries: ReadonlyArray<WorkLogEntry>,
   activeTurnId: TurnId | null,
 ): SubagentRailItem[] {
-  if (activeTurnId === null) {
+  return collectTurnSubagents(entries, activeTurnId);
+}
+
+/**
+ * Subagents for a turn regardless of whether it is still running — backs the
+ * toggleable Subagents right-panel. Unlike the floating rail (which only tracks
+ * the live turn and vanishes once it settles), the panel keeps completed and
+ * failed agents reviewable, so callers pass the latest turn id even after the
+ * session goes idle. Running-first ordering and status parsing are shared.
+ */
+export function deriveSubagentPanelItems(
+  entries: ReadonlyArray<WorkLogEntry>,
+  turnId: TurnId | null,
+): SubagentRailItem[] {
+  return collectTurnSubagents(entries, turnId);
+}
+
+function collectTurnSubagents(
+  entries: ReadonlyArray<WorkLogEntry>,
+  turnId: TurnId | null,
+): SubagentRailItem[] {
+  if (turnId === null) {
     return [];
   }
   const items: SubagentRailItem[] = [];
   for (const entry of entries) {
     if (entry.itemType !== "collab_agent_tool_call") continue;
-    if (entry.turnId !== activeTurnId) continue;
+    if (entry.turnId !== turnId) continue;
     const status: SubagentRailStatus =
       entry.toolLifecycleStatus === "failed" || entry.toolLifecycleStatus === "declined"
         ? "failed"

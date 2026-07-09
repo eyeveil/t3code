@@ -81,11 +81,14 @@ import {
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveSubagentRailItems,
+  deriveSubagentPanelItems,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
   isLatestTurnSettled,
+  type WorkLogEntry,
 } from "../session-logic";
 import { SubagentRail } from "./chat/SubagentRail";
+import { SubagentsPanel } from "./chat/SubagentsPanel";
 import { type LegendListRef } from "@legendapp/list/react";
 import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
 import {
@@ -1361,6 +1364,7 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activePreviewState.sessions, activeThreadRef]);
 
   const planSidebarOpen = activeRightPanelKind === "plan";
+  const subagentsPanelOpen = activeRightPanelKind === "subagents";
 
   const existingOpenTerminalThreadKeys = useMemo(() => {
     const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
@@ -1766,6 +1770,23 @@ function ChatViewContent(props: ChatViewProps) {
       ),
     [workLogEntries, activeThread?.session?.status, activeThread?.session?.activeTurnId],
   );
+  // Panel keeps the latest turn's subagents reviewable even after it settles —
+  // the rail vanishes when running stops, but the panel should not.
+  const subagentPanelTurnId =
+    activeThread?.session?.status === "running"
+      ? (activeThread?.session?.activeTurnId ?? null)
+      : (activeLatestTurn?.turnId ?? null);
+  const subagentPanelItems = useMemo(
+    () => deriveSubagentPanelItems(workLogEntries, subagentPanelTurnId),
+    [workLogEntries, subagentPanelTurnId],
+  );
+  const subagentEntriesById = useMemo(() => {
+    const map = new Map<string, WorkLogEntry>();
+    for (const entry of workLogEntries) {
+      map.set(entry.id, entry);
+    }
+    return map;
+  }, [workLogEntries]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -3103,6 +3124,10 @@ function ChatViewContent(props: ChatViewProps) {
     }
     useRightPanelStore.getState().toggleVisibility(activeThreadRef);
   }, [activeThreadRef, closePlanSidebar, closePreviewPanel, planSidebarOpen, rightPanelOpen]);
+  const toggleSubagentsPanel = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().toggle(activeThreadRef, "subagents");
+  }, [activeThreadRef]);
   const toggleRightPanelMaximized = useCallback(() => {
     if (!canMaximizeRightPanel) return;
     setMaximizedRightPanelThreadKey((threadKey) =>
@@ -5179,8 +5204,11 @@ function ChatViewContent(props: ChatViewProps) {
       rightPanelAvailable={activeProject !== null}
       rightPanelOpen={rightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
+      subagentsPanelAvailable={verboseWorkLog}
+      subagentsPanelOpen={subagentsPanelOpen}
       onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
+      onToggleSubagents={toggleSubagentsPanel}
     />
   );
   const panelLayoutControls = (
@@ -5227,6 +5255,12 @@ function ChatViewContent(props: ChatViewProps) {
       <Suspense fallback={null}>
         <DiffPanel mode="embedded" composerDraftTarget={composerDraftTarget} />
       </Suspense>
+    ) : activeRightPanelSurface?.kind === "subagents" ? (
+      <SubagentsPanel
+        items={subagentPanelItems}
+        entriesById={subagentEntriesById}
+        workspaceRoot={activeWorkspaceRoot}
+      />
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar
         activePlan={activePlan}
