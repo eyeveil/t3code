@@ -24,6 +24,7 @@
     "electron": "41.5.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.6.2",
+    "fast-check": "4.8.0",
     "playwright-core": "1.60.0",
     "react-grab": "^0.1.32"
   },
