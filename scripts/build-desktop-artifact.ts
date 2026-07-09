@@ -578,7 +578,12 @@ interface StagePackageJson {
   };
 }
 
-export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
+// --config.nodeLinker=hoisted forces a flat node_modules for the packaged app.
+// The default isolated pnpm layout leaves transitive/deduped leaves (ms,
+// pure-rand, …) unreachable inside the asar, crashing the app at launch. The
+// flag on the install command is honored even when workspace.yaml/.npmrc
+// nodeLinker is ignored by the install wrapper.
+export const STAGE_INSTALL_ARGS = ["install", "--prod", "--config.nodeLinker=hoisted"] as const;
 export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
 
 export interface MacPasskeySigningConfiguration {
