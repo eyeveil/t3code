@@ -148,6 +148,9 @@ importers:
       playwright-core:
         specifier: 1.60.0
         version: 1.60.0
+      pure-rand:
+        specifier: 8.4.0
+        version: 8.4.0
       react-grab:
         specifier: ^0.1.32
         version: 0.1.44(react@19.2.6)

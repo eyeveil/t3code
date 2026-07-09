@@ -204,12 +204,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("installs optional native dependencies for the target desktop architecture", () => {
     assert.deepStrictEqual(STAGE_INSTALL_ARGS, ["install", "--prod"]);
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "mac", arch: "x64" }), {
+      nodeLinker: "hoisted",
       supportedArchitectures: {
         os: ["darwin"],
         cpu: ["x64"],
       },
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "linux", arch: "x64" }), {
+      nodeLinker: "hoisted",
       supportedArchitectures: {
         os: ["linux"],
         cpu: ["x64"],
@@ -219,6 +221,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     // Windows artifacts also bundle the same-architecture WSL (Linux, glibc) backend, so the
     // staged install must fetch its native optional deps (e.g. ffi-rs) too.
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "win", arch: "x64" }), {
+      nodeLinker: "hoisted",
       supportedArchitectures: {
         os: ["win32", "linux"],
         cpu: ["x64"],
@@ -226,6 +229,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       },
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "win", arch: "arm64" }), {
+      nodeLinker: "hoisted",
       supportedArchitectures: {
         os: ["win32", "linux"],
         cpu: ["arm64"],
@@ -233,6 +237,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       },
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "mac", arch: "universal" }), {
+      nodeLinker: "hoisted",
       supportedArchitectures: {
         os: ["darwin"],
         cpu: ["arm64", "x64"],
@@ -258,6 +263,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         },
       }),
       {
+        nodeLinker: "hoisted",
         supportedArchitectures: {
           os: ["linux"],
           cpu: ["x64"],
@@ -289,6 +295,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         overrides: {},
       }),
       {
+        nodeLinker: "hoisted",
         supportedArchitectures: {
           os: ["darwin"],
           cpu: ["arm64"],
