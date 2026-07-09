@@ -54,6 +54,7 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import { useThemeColor } from "../../lib/useThemeColor";
+import { useFontFamily } from "../../lib/useFontFamily";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import {
   hasNativeSelectableMarkdownText,
@@ -193,10 +194,6 @@ const markdownLinkStyles = StyleSheet.create({
   favicon: {
     borderRadius: 3,
   },
-  file: {
-    fontFamily: "DMSans_700Bold",
-    fontWeight: "700",
-  },
 });
 
 const MARKDOWN_MONO_FONT = Platform.select({
@@ -215,12 +212,12 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
 
   return (
     <NativeText
+      className="font-sans"
       onPress={() => {
         void Linking.openURL(props.href);
       }}
       style={{
         color: props.color,
-        fontFamily: "DMSans_400Regular",
         textDecorationLine: "none",
       }}
     >
@@ -438,6 +435,8 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
   const markdownUserFenceText = String(useThemeColor("--color-md-user-fence-text"));
   const inlineSkillForeground = String(useThemeColor("--color-inline-skill-foreground"));
   const iconSubtleColor = String(useThemeColor("--color-icon-subtle"));
+  const regularFontFamily = useFontFamily("regular");
+  const boldFontFamily = useFontFamily("bold");
 
   return useMemo(() => {
     const markdownInlineCodeText = markdownBodyColor;
@@ -476,8 +475,8 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
         h6: markdownFontSizes.h6,
       },
       fontFamilies: {
-        regular: "DMSans_400Regular",
-        heading: "DMSans_700Bold",
+        regular: regularFontFamily,
+        heading: boldFontFamily,
         mono: MARKDOWN_MONO_FONT,
       },
       headingWeight: "700",
@@ -499,7 +498,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
       bold: {
         fontWeight: "700",
         color: markdownStrongColor,
-        fontFamily: "DMSans_700Bold",
+        fontFamily: boldFontFamily,
       },
       italic: { fontStyle: "italic" },
       link: {
@@ -515,7 +514,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
         marginVertical: 10,
       },
       heading: {
-        fontFamily: "DMSans_700Bold",
+        fontFamily: boldFontFamily,
         color: markdownStrongColor,
         marginTop: 18,
         marginBottom: 8,
@@ -541,8 +540,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
         if (presentation.kind === "file") {
           return (
             <NativeText
+              className="font-t3-bold"
               onPress={() => onLinkPress(href)}
-              style={[markdownLinkStyles.file, { color: inlineTextColor }]}
+              style={{ color: inlineTextColor }}
             >
               <Image
                 source={markdownFileIconSource(presentation.icon)}
@@ -566,6 +566,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
         const linkHref = presentation.href;
         return (
           <NativeText
+            className="underline"
             onPress={
               linkHref
                 ? () => {
@@ -573,17 +574,14 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
                   }
                 : undefined
             }
-            style={{
-              color: markdownLinkColor,
-              textDecorationLine: "underline",
-            }}
+            style={{ color: markdownLinkColor }}
           >
             {children}
           </NativeText>
         );
       },
       list: ({ node, Renderer, ordered = false, start = 1 }) => (
-        <View style={{ marginTop: 2, marginBottom: 8 }}>
+        <View className="mt-0.5 mb-2">
           {node.children?.map((child, index) => {
             const childKey = `${child.type}:${child.beg ?? "unknown"}:${child.end ?? "unknown"}`;
             if (child.type === "task_list_item") {
@@ -592,20 +590,13 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
               );
             }
             return (
-              <View
-                key={childKey}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "flex-start",
-                  marginBottom: 3,
-                }}
-              >
+              <View className="mb-[3px] flex-row items-start" key={childKey}>
                 <NativeText
+                  className="font-sans"
                   style={{
                     width: ordered ? 22 : 12,
                     marginRight: 5,
                     color: inlineTextColor,
-                    fontFamily: "DMSans_400Regular",
                     fontSize: markdownFontSizes.m,
                     lineHeight: markdownFontSizes.bodyLineHeight,
                     textAlign: ordered ? "right" : "center",
@@ -613,7 +604,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
                 >
                   {ordered ? `${start + index}.` : "•"}
                 </NativeText>
-                <View style={{ flex: 1, minWidth: 0 }}>
+                <View className="min-w-0 flex-1">
                   <Renderer node={child} depth={1} inListItem parentIsText={false} />
                 </View>
               </View>
@@ -625,6 +616,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
         const value = content ?? "";
         return (
           <NativeText
+            className="font-mono"
             style={{
               color: inlineCodeTextColor,
               fontFamily: MARKDOWN_MONO_FONT,
@@ -677,7 +669,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
       bold: {
         fontWeight: "700",
         color: markdownUserBodyColor,
-        fontFamily: "DMSans_700Bold",
+        fontFamily: boldFontFamily,
       },
       heading: {
         ...baseStyles.heading,
@@ -733,9 +725,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           fontSize: nativeMarkdownTypography.fontSize,
           lineHeight: nativeMarkdownTypography.lineHeight,
           headingFontSizes: nativeMarkdownTypography.headingFontSizes,
-          fontFamily: "DMSans_400Regular",
-          headingFontFamily: "DMSans_700Bold",
-          boldFontFamily: "DMSans_700Bold",
+          fontFamily: regularFontFamily,
+          headingFontFamily: boldFontFamily,
+          boldFontFamily,
         },
       },
       assistant: {
@@ -766,13 +758,14 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           fontSize: nativeMarkdownTypography.fontSize,
           lineHeight: nativeMarkdownTypography.lineHeight,
           headingFontSizes: nativeMarkdownTypography.headingFontSizes,
-          fontFamily: "DMSans_400Regular",
-          headingFontFamily: "DMSans_700Bold",
-          boldFontFamily: "DMSans_700Bold",
+          fontFamily: regularFontFamily,
+          headingFontFamily: boldFontFamily,
+          boldFontFamily,
         },
       },
     };
   }, [
+    boldFontFamily,
     iconSubtleColor,
     inlineSkillForeground,
     markdownBlockquoteBg,
@@ -792,6 +785,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
     markdownUserFenceText,
     nativeMarkdownTypography,
     onLinkPress,
+    regularFontFamily,
     themeMode,
   ]);
 }
@@ -1122,11 +1116,10 @@ const ReviewCommentCard = memo(function ReviewCommentCard(props: {
 
   return (
     <View
-      className="w-full overflow-hidden rounded-[16px] border"
+      className="w-full overflow-hidden rounded-[16px] border border-continuous"
       style={{
         backgroundColor: props.colors.background,
         borderColor: props.colors.border,
-        borderCurve: "continuous",
       }}
     >
       <View
@@ -1134,8 +1127,8 @@ const ReviewCommentCard = memo(function ReviewCommentCard(props: {
         style={{ borderColor: props.colors.border }}
       >
         <View
-          className="size-6 items-center justify-center rounded-[7px]"
-          style={{ backgroundColor: props.colors.mutedBackground, borderCurve: "continuous" }}
+          className="size-6 items-center justify-center rounded-[7px] border-continuous"
+          style={{ backgroundColor: props.colors.mutedBackground }}
         >
           <SymbolView
             name="doc.text"
@@ -1188,9 +1181,9 @@ const ReviewCommentCard = memo(function ReviewCommentCard(props: {
         >
           <NativeText
             selectable
+            className="font-mono"
             style={{
               color: props.colors.text,
-              fontFamily: "ui-monospace",
               fontSize: codeSurface.fontSize,
               lineHeight: codeSurface.rowHeight,
             }}
@@ -1702,8 +1695,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
 
   return (
     <>
-      <View style={{ flex: 1 }} onLayout={handleViewportLayout}>
-        <View style={{ flex: 1 }}>
+      <View className="flex-1" onLayout={handleViewportLayout}>
+        <View className="flex-1">
           <KeyboardAwareLegendList
             ref={props.listRef}
             // The empty↔filled key remounts the list when messages first
