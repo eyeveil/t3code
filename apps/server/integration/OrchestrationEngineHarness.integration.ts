@@ -32,6 +32,8 @@ import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import { ProjectionCheckpointRepository } from "../src/persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
+import { AutoFallbackCoordinatorLive } from "../src/orchestration/autoFallback/AutoFallbackCoordinator.ts";
+import { AutoFallbackCooldownTrackerLive } from "../src/orchestration/autoFallback/CooldownTracker.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
 import { makeProviderRegistryLayer } from "../src/provider/testUtils/providerRegistryMock.ts";
@@ -307,7 +309,17 @@ export const makeOrchestrationIntegrationHarness = (
       RuntimeReceiptBusTest,
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
+    // Runtime ingestion consumes the auto-fallback coordinator (usage-limit
+    // failover). Build it from the SAME memoized layer instances used below so
+    // the harness shares one engine/snapshot/registry/settings construction.
+    const autoFallbackLayer = AutoFallbackCoordinatorLive.pipe(
+      Layer.provideMerge(AutoFallbackCooldownTrackerLive),
+      Layer.provide(runtimeServicesLayer),
+      Layer.provide(providerRegistryLayer),
+      Layer.provide(serverSettingsLayer),
+    );
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provideMerge(autoFallbackLayer),
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(serverSettingsLayer),
     );

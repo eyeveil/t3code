@@ -100,7 +100,89 @@ export const deriveProviderInstanceConfigMap = (
     };
   }
 
-  return merged as ProviderInstanceConfigMap;
+  return withMirroredPrimaryCustomModels(merged as ProviderInstanceConfigMap);
+};
+
+/**
+ * Read the `customModels` array off an opaque instance `config` payload.
+ *
+ * The envelope's `config` is `Schema.Unknown` (each driver decodes its own
+ * shape), so we probe defensively: a well-formed value is a `string[]`, and
+ * anything else — missing key, `undefined`, wrong type — reads as empty.
+ */
+const readConfigCustomModels = (config: unknown): ReadonlyArray<string> => {
+  const models = (config as { customModels?: unknown } | undefined)?.customModels;
+  return Array.isArray(models) ? (models as ReadonlyArray<string>) : [];
+};
+
+/**
+ * Mirror each primary instance's `customModels` onto its non-primary
+ * same-driver siblings.
+ *
+ * "Primary" is the instance whose id equals `defaultInstanceIdForDriver(driver)`
+ * — literally the driver kind as a slug — matching how the rest of the server
+ * routes the legacy single-instance-per-driver slot. Additional accounts of the
+ * same driver (`codex-2`, `claude-3`, …) are non-primary siblings.
+ *
+ * For every non-primary sibling that hasn't opted out
+ * (`mirrorPrimaryCustomModels === false`), we union the primary's custom
+ * models onto the sibling's own list — the sibling's own entries keep their
+ * order, and the primary's models are appended in order, skipping duplicates.
+ * The primary's own config is never touched, and mirroring never crosses
+ * driver kinds (each sibling only inherits from its own driver's primary).
+ *
+ * Purity contract: the same map reference is returned when nothing needs
+ * mirroring (no siblings, no primary customs, opted out, or every primary
+ * model already present), so downstream reference-equality checks stay stable.
+ */
+export const withMirroredPrimaryCustomModels = (
+  map: ProviderInstanceConfigMap,
+): ProviderInstanceConfigMap => {
+  let next: Record<string, ProviderInstanceConfig> | undefined;
+
+  for (const [id, instance] of Object.entries(map)) {
+    const primaryId = defaultInstanceIdForDriver(instance.driver);
+    // The primary slot itself never inherits — it is the source of truth.
+    if (id === primaryId) {
+      continue;
+    }
+    // Explicit opt-out; absent ⇒ mirror (the non-primary default).
+    if (instance.mirrorPrimaryCustomModels === false) {
+      continue;
+    }
+
+    const primary = map[primaryId];
+    if (primary === undefined) {
+      continue;
+    }
+    const primaryCustoms = readConfigCustomModels(primary.config);
+    if (primaryCustoms.length === 0) {
+      continue;
+    }
+
+    const ownCustoms = readConfigCustomModels(instance.config);
+    const merged = ownCustoms.slice();
+    let added = false;
+    for (const model of primaryCustoms) {
+      if (!merged.includes(model)) {
+        merged.push(model);
+        added = true;
+      }
+    }
+    if (!added) {
+      // Every primary model already present ⇒ no observable change.
+      continue;
+    }
+
+    const config = {
+      ...(instance.config as Record<string, unknown> | undefined),
+      customModels: merged,
+    };
+    next ??= { ...map };
+    next[id] = { ...instance, config };
+  }
+
+  return (next ?? map) as ProviderInstanceConfigMap;
 };
 
 /**
