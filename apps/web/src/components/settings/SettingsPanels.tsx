@@ -1239,6 +1239,15 @@ function ProviderEnvironmentSection({
     }
   }
 
+  // The auto-fallback master switch only matters once a driver has a second
+  // account to fall back to; hide it otherwise to keep the panel quiet.
+  const instanceCountByDriver = new Map<string, number>();
+  for (const row of rows) {
+    const key = String(row.driver);
+    instanceCountByDriver.set(key, (instanceCountByDriver.get(key) ?? 0) + 1);
+  }
+  const hasSameDriverSiblings = [...instanceCountByDriver.values()].some((count) => count > 1);
+
   const updateProviderInstance = (
     row: InstanceRow,
     next: ProviderInstanceConfig,
@@ -1386,6 +1395,35 @@ function ProviderEnvironmentSection({
           </div>
         }
       >
+        {hasSameDriverSiblings ? (
+          <SettingsRow
+            title="Auto-fallback between accounts"
+            description="When an account hits its usage limit, continue the thread on another authenticated account of the same provider — always on the exact same model."
+            resetAction={
+              settings.autoFallbackBetweenAccounts !==
+              DEFAULT_UNIFIED_SETTINGS.autoFallbackBetweenAccounts ? (
+                <SettingResetButton
+                  label="auto-fallback between accounts"
+                  onClick={() =>
+                    updateSettings({
+                      autoFallbackBetweenAccounts:
+                        DEFAULT_UNIFIED_SETTINGS.autoFallbackBetweenAccounts,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.autoFallbackBetweenAccounts}
+                onCheckedChange={(checked) =>
+                  updateSettings({ autoFallbackBetweenAccounts: Boolean(checked) })
+                }
+                aria-label="Auto-fallback between accounts"
+              />
+            }
+          />
+        ) : null}
         {rows.map((row) => {
           const driverOption = getDriverOption(row.driver);
           const liveProvider = serverProviders.find(

@@ -48,6 +48,8 @@ import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationRe
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
+import { AutoFallbackCoordinatorLive } from "./orchestration/autoFallback/AutoFallbackCoordinator.ts";
+import { AutoFallbackCooldownTrackerLive } from "./orchestration/autoFallback/CooldownTracker.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
@@ -291,8 +293,17 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
 );
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+  // Auto-fallback between same-driver provider accounts on usage limits.
+  // The coordinator is consumed by `ProviderRuntimeIngestionLive` (inside
+  // ReactorLayerLive); the cooldown tracker is additionally read by the ws
+  // snapshot path to decorate providers with `recentlyLimited`/`limitedUntil`.
   // Core Services
-  Layer.provideMerge(CheckpointingLayerLive),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      AutoFallbackCoordinatorLive.pipe(Layer.provideMerge(AutoFallbackCooldownTrackerLive)),
+      CheckpointingLayerLive,
+    ),
+  ),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),

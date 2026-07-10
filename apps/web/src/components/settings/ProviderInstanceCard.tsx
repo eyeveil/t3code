@@ -60,6 +60,23 @@ import { ProviderLoginDialog } from "./ProviderLoginDialog";
  */
 const DRIVERS_WITH_IN_APP_LOGIN = new Set<string>(["codex", "claudeAgent"]);
 
+/**
+ * Drivers that participate in usage-limit auto-fallback between same-driver
+ * instances (see the server's auto-fallback coordinator). Kept in sync with
+ * the server's limit classifier.
+ */
+const DRIVERS_WITH_AUTO_FALLBACK = new Set<string>(["codex", "claudeAgent"]);
+
+function formatLimitedUntilLabel(limitedUntil: string | undefined): string {
+  if (limitedUntil) {
+    const parsed = new Date(limitedUntil);
+    if (!Number.isNaN(parsed.getTime())) {
+      return `Limited until ~${parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    }
+  }
+  return "Recently limited";
+}
+
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 let environmentVariableDraftId = 0;
@@ -491,6 +508,32 @@ export function ProviderInstanceCard({
     onUpdate({ ...instance, enabled: value });
   };
 
+  const isDefaultInstance = String(instanceId) === String(instance.driver);
+  const supportsAutoFallback = DRIVERS_WITH_AUTO_FALLBACK.has(String(instance.driver));
+  const participateInFallback = instance.participateInFallback ?? true;
+  const mirrorPrimaryCustomModels = instance.mirrorPrimaryCustomModels ?? !isDefaultInstance;
+
+  const updateParticipateInFallback = (value: boolean) => {
+    const { participateInFallback: _omit, ...rest } = instance;
+    // Absent means opted in; only persist the flag when opting out.
+    onUpdate(
+      value
+        ? (rest as ProviderInstanceConfig)
+        : ({ ...rest, participateInFallback: false } as ProviderInstanceConfig),
+    );
+  };
+
+  const updateMirrorPrimaryCustomModels = (value: boolean) => {
+    const { mirrorPrimaryCustomModels: _omit, ...rest } = instance;
+    // Absent means "mirror" for non-primary instances; keep the envelope
+    // clean by only persisting the flag when it differs from that default.
+    onUpdate(
+      value === !isDefaultInstance
+        ? (rest as ProviderInstanceConfig)
+        : ({ ...rest, mirrorPrimaryCustomModels: value } as ProviderInstanceConfig),
+    );
+  };
+
   const updateAccentColor = (value: string) => {
     const normalized = normalizeProviderAccentColor(value);
     const { accentColor: _omit, ...rest } = instance;
@@ -567,6 +610,11 @@ export function ProviderInstanceCard({
       {driverOption?.badgeLabel ? (
         <Badge variant="warning" size="sm" className="shrink-0">
           {driverOption.badgeLabel}
+        </Badge>
+      ) : null}
+      {liveProvider?.recentlyLimited ? (
+        <Badge variant="warning" size="sm" className="shrink-0">
+          {formatLimitedUntilLabel(liveProvider.limitedUntil)}
         </Badge>
       ) : null}
     </>
@@ -808,6 +856,47 @@ export function ProviderInstanceCard({
                 onChange={updateEnvironment}
               />
             </div>
+
+            {supportsAutoFallback ? (
+              <div className="space-y-3 border-t border-border/60 px-4 py-3 sm:px-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-xs font-medium text-foreground">
+                      Participate in fallback
+                    </span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Let threads continue on this account when another account of the same provider
+                      hits its usage limit.
+                    </span>
+                  </div>
+                  <Switch
+                    checked={participateInFallback}
+                    onCheckedChange={(checked) => updateParticipateInFallback(Boolean(checked))}
+                    aria-label={`Participate in fallback for ${displayName}`}
+                  />
+                </div>
+                {!isDefaultInstance ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className="text-xs font-medium text-foreground">
+                        Mirror primary custom models
+                      </span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        Inherit the primary account&apos;s custom model list so fallback can
+                        continue threads on the exact same model.
+                      </span>
+                    </div>
+                    <Switch
+                      checked={mirrorPrimaryCustomModels}
+                      onCheckedChange={(checked) =>
+                        updateMirrorPrimaryCustomModels(Boolean(checked))
+                      }
+                      aria-label={`Mirror primary custom models for ${displayName}`}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {driverOption ? (
               <ProviderSettingsForm

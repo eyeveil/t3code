@@ -79,6 +79,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import { AutoFallbackCooldownTracker } from "./orchestration/autoFallback/CooldownTracker.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -447,6 +448,7 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const autoFallbackCooldownTracker = yield* AutoFallbackCooldownTracker;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -947,7 +949,9 @@ const makeWsRpcLayer = (
 
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
-        const providers = yield* providerRegistry.getProviders;
+        const providers = yield* providerRegistry.getProviders.pipe(
+          Effect.flatMap(autoFallbackCooldownTracker.decorateProviders),
+        );
         const settings = ServerSettings.redactServerSettingsForClient(
           yield* serverSettings.getSettings,
         );
@@ -1346,7 +1350,10 @@ const makeWsRpcLayer = (
             (input.instanceId !== undefined
               ? providerRegistry.refreshInstance(input.instanceId)
               : providerRegistry.refresh()
-            ).pipe(Effect.map((providers) => ({ providers }))),
+            ).pipe(
+              Effect.flatMap(autoFallbackCooldownTracker.decorateProviders),
+              Effect.map((providers) => ({ providers })),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
@@ -1893,6 +1900,7 @@ const makeWsRpcLayer = (
                 })),
               );
               const providerStatuses = providerRegistry.streamChanges.pipe(
+                Stream.mapEffect(autoFallbackCooldownTracker.decorateProviders),
                 Stream.map((providers) => ({
                   version: 1 as const,
                   type: "providerStatuses" as const,

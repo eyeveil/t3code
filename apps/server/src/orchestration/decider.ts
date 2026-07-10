@@ -475,6 +475,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [userMessageEvent, turnStartRequestedEvent];
     }
 
+    case "thread.turn.redispatch": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Re-run the existing user message on (potentially) a different provider
+      // instance. No new user message is emitted — we reference the persisted
+      // messageId and re-raise only the turn-start intent, so the failed
+      // turn's input is dispatched exactly once on the fallback instance.
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.turn-start-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          ...(command.modelSelection !== undefined
+            ? { modelSelection: command.modelSelection }
+            : {}),
+          runtimeMode: targetThread.runtimeMode,
+          interactionMode: targetThread.interactionMode,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.turn.interrupt": {
       yield* requireThread({
         readModel,

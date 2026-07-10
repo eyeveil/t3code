@@ -38,6 +38,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { AutoFallbackCoordinator } from "../autoFallback/AutoFallbackCoordinator.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 
@@ -634,6 +635,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const autoFallbackCoordinator = yield* AutoFallbackCoordinator;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
@@ -1355,6 +1357,29 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+
+          // Terminal turn/session death: hand the error to the auto-fallback
+          // coordinator. It classifies (usage/rate limit only), and when
+          // eligible re-routes the thread onto a sibling instance of the same
+          // driver with the identical model. Non-limit errors are ignored and
+          // surface exactly as before via the session set above.
+          const failureSurface =
+            event.type === "turn.completed" &&
+            normalizeRuntimeTurnState(event.payload.state) === "failed"
+              ? { message: event.payload.errorMessage, detail: event.raw?.payload }
+              : event.type === "session.state.changed" && event.payload.state === "error"
+                ? { message: event.payload.reason, detail: event.payload.detail }
+                : null;
+          if (failureSurface !== null) {
+            yield* autoFallbackCoordinator.onProviderTurnFailure({
+              threadId: thread.id,
+              driver: event.provider,
+              providerInstanceId: event.providerInstanceId ?? thread.session?.providerInstanceId,
+              message: failureSurface.message ?? lastError ?? undefined,
+              detail: failureSurface.detail,
+              createdAt: now,
+            });
+          }
         }
       }
 
@@ -1605,6 +1630,20 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+
+          // runtime.error is the surface that carries the raw provider error
+          // detail (e.g. codex `codexErrorInfo: "usageLimitExceeded"`), so
+          // hand it to the auto-fallback coordinator too. The coordinator
+          // dedupes per turn dispatch, so a death that surfaces as both
+          // runtime.error and turn.completed(failed) redispatches only once.
+          yield* autoFallbackCoordinator.onProviderTurnFailure({
+            threadId: thread.id,
+            driver: event.provider,
+            providerInstanceId: event.providerInstanceId ?? thread.session?.providerInstanceId,
+            message: runtimeErrorMessage,
+            detail: event.payload.detail,
+            createdAt: now,
+          });
         }
       }
 
@@ -1670,7 +1709,10 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid);
     });
 
-  const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
+  // Track turn dispatches so the auto-fallback coordinator can re-run a
+  // limit-killed turn's user message exactly once per instance.
+  const processDomainEvent = (event: TurnStartRequestedDomainEvent) =>
+    autoFallbackCoordinator.noteTurnStartRequested(event);
 
   const processInput = (input: RuntimeIngestionInput) =>
     input.source === "runtime" ? processRuntimeEvent(input.event) : processDomainEvent(input.event);

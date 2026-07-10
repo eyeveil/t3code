@@ -804,6 +804,20 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+// Server-internal command emitted by the auto-fallback coordinator to re-run
+// an already-persisted user message's turn on a different provider instance,
+// WITHOUT appending a duplicate user message. It decides into a single
+// `thread.turn-start-requested` event referencing the existing `messageId`,
+// reusing the exact dispatch path the model-picker switch uses.
+const ThreadTurnRedispatchCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.redispatch"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  modelSelection: Schema.optional(ModelSelection),
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -812,6 +826,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadTurnRedispatchCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 

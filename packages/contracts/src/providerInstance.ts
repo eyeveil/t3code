@@ -127,6 +127,18 @@ export const ProviderInstanceConfig = Schema.Struct({
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
+  // Whether this instance may be picked as an auto-fallback target when
+  // another same-driver account hits a usage limit. Absent ⇒ opted in for
+  // non-primary instances (the common case); read as
+  // `participateInFallback ?? true`. The global master switch is
+  // `ServerSettings.autoFallbackBetweenAccounts`.
+  participateInFallback: Schema.optionalKey(Schema.Boolean),
+  // Whether this non-primary instance inherits the primary same-driver
+  // instance's `customModels` at model-resolution time, so custom-model pools
+  // stay equivalent across accounts without duplicate maintenance. Absent ⇒
+  // true for non-primary instances; read via
+  // `mirrorPrimaryCustomModels ?? !isPrimary`.
+  mirrorPrimaryCustomModels: Schema.optionalKey(Schema.Boolean),
   config: Schema.optionalKey(Schema.Unknown),
 });
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;

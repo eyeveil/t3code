@@ -454,9 +454,18 @@ const make = Effect.gen(function* () {
           detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
         });
       }
+      // Incompatible resume state only blocks switching away from a LIVE
+      // provider session — there the in-memory resume cursor would be carried
+      // to an instance that cannot use it. Once the session is stopped (or
+      // gone), a switch starts a fresh session and `ProviderService.startSession`
+      // only reuses a persisted cursor when the binding's instance matches the
+      // target, so nothing account-bound can leak. Usage-limit auto-fallback
+      // relies on this: it stops the dead session, then redispatches the turn
+      // on a sibling instance with an isolated home (different continuation key).
       if (
+        activeSession !== undefined &&
         currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
+          desiredInfo.continuationIdentity.continuationKey
       ) {
         return yield* new ProviderAdapterRequestError({
           provider: preferredProvider,
