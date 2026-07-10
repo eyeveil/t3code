@@ -95,6 +95,11 @@ import {
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { ThreadWorkGroupToggle, ThreadWorkLog } from "./thread-work-log";
 import { shouldPlayEntrance } from "./threadEntranceAnimation";
+import {
+  resolveEndScrollMaintenance,
+  shouldArmSendAnchorAnimation,
+  SEND_ANCHOR_ANIMATION_WINDOW_MS,
+} from "./threadScrollMaintenance";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
@@ -1278,6 +1283,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const disclosureAnchorKeyRef = useRef<string | null>(null);
   const headerMaterialVisibleRef = useRef(false);
   const previousLatestTurnRef = useRef(props.latestTurn);
+  // Tracks the last send anchor so a fresh one can briefly animate the end scroll
+  // (smooth glide to the just-sent message) while streaming stays instant.
+  const previousAnchorMessageIdRef = useRef<MessageId | null>(props.anchorMessageId);
+  const sendAnchorAnimationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // When this thread was opened. Rows created before this never replay an
   // entrance animation, so a freshly hydrated history (even one active moments
   // ago) paints without a burst of simultaneous FadeIns. Reset on thread change
@@ -1293,6 +1302,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
   const [viewportHeight, setViewportHeight] = useState(0);
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
+  const [sendAnchorAnimating, setSendAnchorAnimating] = useState(false);
   const [interactionState, setInteractionState] = useState<{
     readonly copiedRowId: string | null;
     readonly expandedWorkGroups: Record<string, boolean>;
@@ -1523,10 +1533,34 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     });
   }, [props.latestTurn]);
 
+  // A just-sent message (new send anchor) glides to its anchor: animate the end
+  // scroll for a short beat, then fall back to instant. Instant is what keeps a
+  // live stream from oscillating — an animated scrollToEnd re-fired on every
+  // streamed dataChange fights maintainVisibleContentPosition's restore, yanking
+  // the feed up and down (the library only reconciles the two on web).
+  useEffect(() => {
+    const previous = previousAnchorMessageIdRef.current;
+    previousAnchorMessageIdRef.current = props.anchorMessageId;
+    if (!shouldArmSendAnchorAnimation(previous, props.anchorMessageId)) {
+      return;
+    }
+    setSendAnchorAnimating(true);
+    if (sendAnchorAnimationTimeoutRef.current) {
+      clearTimeout(sendAnchorAnimationTimeoutRef.current);
+    }
+    sendAnchorAnimationTimeoutRef.current = setTimeout(() => {
+      setSendAnchorAnimating(false);
+      sendAnchorAnimationTimeoutRef.current = null;
+    }, SEND_ANCHOR_ANIMATION_WINDOW_MS);
+  }, [props.anchorMessageId]);
+
   useEffect(() => {
     return () => {
       if (copyFeedbackTimeoutRef.current) {
         clearTimeout(copyFeedbackTimeoutRef.current);
+      }
+      if (sendAnchorAnimationTimeoutRef.current) {
+        clearTimeout(sendAnchorAnimationTimeoutRef.current);
       }
       if (foldSettleFrameRef.current !== null) {
         cancelAnimationFrame(foldSettleFrameRef.current);
@@ -1568,6 +1602,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       shouldRestorePosition: shouldRestoreVisibleContentPosition,
     }),
     [shouldRestoreVisibleContentPosition],
+  );
+
+  const maintainScrollAtEnd = useMemo(
+    () => resolveEndScrollMaintenance({ disclosureToggleSettling, sendAnchorAnimating }),
+    [disclosureToggleSettling, sendAnchorAnimating],
   );
 
   const onCopyWorkRow = useCallback((rowId: string, value: string) => {
@@ -1744,24 +1783,16 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // targets land one safe-area short of the true resting offset.
             adjustedInsetCompensation={usesNativeAutomaticInsets ? insets.bottom : 0}
             freeze={props.freeze}
-            // Animated: on send, the optimistic message's dataChange fires
-            // maintainScrollAtEnd before any render-cycle suppression could
-            // engage — an instant snap there teleports the feed to the anchor
-            // instead of scrolling to it. Keeping it enabled (animated) during
-            // anchor scrolls also lets it correct a scroll that landed on a
-            // stale end target once the anchor row finishes measuring.
-            maintainScrollAtEnd={
-              disclosureToggleSettling
-                ? false
-                : {
-                    animated: true,
-                    on: {
-                      dataChange: true,
-                      itemLayout: true,
-                      layout: true,
-                    },
-                  }
-            }
+            // Animated end pinning is scoped to the post-send window only (see
+            // threadScrollMaintenance): on send, the optimistic message's
+            // dataChange fires maintainScrollAtEnd before the explicit anchor
+            // scroll runs, and an instant snap teleports the feed to the anchor
+            // instead of gliding to it. During streaming it stays instant —
+            // an animated scrollToEnd re-fired on every streamed dataChange
+            // fights maintainVisibleContentPosition's restore (uncoordinated on
+            // native; the library only reconciles the two on web) and yanks the
+            // feed up and down on a loop.
+            maintainScrollAtEnd={maintainScrollAtEnd}
             maintainVisibleContentPosition={maintainVisibleContentPosition}
             data={presentedFeed}
             extraData={listAppearanceData}
