@@ -45,12 +45,16 @@ import {
 } from "react-native";
 import { TouchableOpacity } from "react-native-gesture-handler";
 import ImageViewing from "react-native-image-viewing";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
   FadeIn,
   FadeInUp,
   FadeOut,
   LinearTransition,
+  useAnimatedStyle,
+  ZoomIn,
+  ZoomOut,
   type SharedValue,
 } from "react-native-reanimated";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -96,8 +100,10 @@ import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { ThreadWorkGroupToggle, ThreadWorkLog } from "./thread-work-log";
 import { shouldPlayEntrance } from "./threadEntranceAnimation";
 import {
+  deriveJumpToBottomState,
   distanceFromEndForScrollEvent,
   nextFollowStream,
+  nextNewActivityWhileAway,
   resolveEndScrollMaintenance,
   shouldArmSendAnchorAnimation,
   SEND_ANCHOR_ANIMATION_WINDOW_MS,
@@ -1277,6 +1283,11 @@ function ThreadFeedPlaceholder(props: {
 const TURN_FOLD_ROW_HEIGHT = 56;
 const WORK_TOGGLE_ROW_HEIGHT = 36;
 
+// Gap between the floating jump-to-bottom arrow and the composer/keyboard it
+// rests above.
+const JUMP_TO_BOTTOM_GAP = 12;
+const JUMP_TO_BOTTOM_SIZE = 44;
+
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1315,6 +1326,16 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // programmatic end-pin, send glide, keyboard shift, or remeasure. Only user
   // scrolls may break follow; anything else can only ever re-arm it at the bottom.
   const userInteractingRef = useRef(false);
+  // Set while the jump-to-bottom button's animated scrollToEnd is in flight so the
+  // momentum handlers don't flag that programmatic glide as a user scroll (which
+  // would be read as scrolling away from the bottom at the start of the animation
+  // and immediately re-break the follow we just re-armed).
+  const jumpToBottomRef = useRef(false);
+  // Latches true when the feed grows while the reader is scrolled away, so the
+  // jump button can carry a "new activity" dot. Purely derived from props.feed
+  // already on hand — no new runtime state is plumbed for it.
+  const [hasNewActivityWhileAway, setHasNewActivityWhileAway] = useState(false);
+  const feedLengthRef = useRef(props.feed.length);
   const [interactionState, setInteractionState] = useState<{
     readonly copiedRowId: string | null;
     readonly expandedWorkGroups: Record<string, boolean>;
@@ -1437,10 +1458,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [reportHeaderMaterialVisibility, anchorTopInset],
   );
   const handleScrollBeginDrag = useCallback(() => {
+    // A real touch always cancels any in-flight jump glide and counts as a user
+    // scroll from here on.
+    jumpToBottomRef.current = false;
     userInteractingRef.current = true;
   }, []);
   const handleMomentumScrollEnd = useCallback(() => {
     userInteractingRef.current = false;
+    jumpToBottomRef.current = false;
   }, []);
   // A drag with no fling never emits momentum events; clear the flag on drag end
   // (a fling re-sets it via onMomentumScrollBegin before this frame matters).
@@ -1448,8 +1473,25 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     userInteractingRef.current = false;
   }, []);
   const handleMomentumScrollBegin = useCallback(() => {
+    // A programmatic scrollToEnd can surface momentum events on some platforms;
+    // don't let the jump glide masquerade as a user scroll.
+    if (jumpToBottomRef.current) {
+      return;
+    }
     userInteractingRef.current = true;
   }, []);
+  const handleJumpToBottom = useCallback(() => {
+    void Haptics.selectionAsync();
+    // Programmatic glide: keep the momentum/scroll handlers from reading it as a
+    // user scroll, and re-arm follow up front so streamed frames re-pin to the end.
+    jumpToBottomRef.current = true;
+    userInteractingRef.current = false;
+    setFollowStream(true);
+    setHasNewActivityWhileAway(false);
+    void props.listRef.current?.scrollToEnd({ animated: true }).catch(() => {
+      jumpToBottomRef.current = false;
+    });
+  }, [props.listRef]);
   const handleViewportLayout = useCallback((event: LayoutChangeEvent) => {
     const nextWidth = Math.round(event.nativeEvent.layout.width);
     const nextHeight = Math.round(event.nativeEvent.layout.height);
@@ -1481,8 +1523,28 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     // A freshly opened thread starts pinned to the newest message; drop any
     // scrolled-up follow state carried over from the previous thread.
     setFollowStream(true);
+    setHasNewActivityWhileAway(false);
     userInteractingRef.current = false;
+    jumpToBottomRef.current = false;
+    // Re-baseline the feed-length watermark to the new thread's feed so the
+    // first post-switch growth doesn't spuriously latch new-activity. Read, not
+    // depended on: this effect only re-runs on a thread switch.
+    feedLengthRef.current = props.feed.length;
   }, [props.threadId, reportHeaderMaterialVisibility]);
+
+  // Track feed growth so the jump button can flag unseen activity. Latch on when
+  // new entries arrive while the reader is away; clear the instant follow resumes.
+  useEffect(() => {
+    const previousLength = feedLengthRef.current;
+    feedLengthRef.current = props.feed.length;
+    setHasNewActivityWhileAway((current) =>
+      nextNewActivityWhileAway({
+        current,
+        followingStream: followStream,
+        feedGrew: props.feed.length > previousLength,
+      }),
+    );
+  }, [props.feed.length, followStream]);
 
   const expandedWorkGroupIds = useMemo(() => {
     const ids = new Set<string>();
@@ -1653,6 +1715,25 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       }),
     [followStream, disclosureToggleSettling, sendAnchorAnimating],
   );
+
+  const jumpToBottomState = deriveJumpToBottomState({
+    followingStream: followStream,
+    hasNewActivityWhileAway,
+  });
+  const isDarkMode = useColorScheme() === "dark";
+  const jumpSurfaceColor = useThemeColor("--color-menu-surface");
+  const jumpBorderColor = useThemeColor("--color-border");
+  const jumpIconColor = useThemeColor("--color-icon");
+  const jumpShadowColor = useThemeColor("--color-drawer-shadow");
+  const jumpAccentColor = useThemeColor("--color-primary");
+  // On iOS the keyboard composer inset is reported net of the safe-area bottom
+  // (UIKit adds it back). Fold it back in here so the arrow rests above the whole
+  // visual composer rather than sinking a home-indicator's worth into it.
+  const jumpBottomInsetCompensation = usesNativeAutomaticInsets ? insets.bottom : 0;
+  const jumpButtonPositionStyle = useAnimatedStyle(() => ({
+    bottom:
+      props.contentInsetEndAdjustment.value + jumpBottomInsetCompensation + JUMP_TO_BOTTOM_GAP,
+  }));
 
   const onCopyWorkRow = useCallback((rowId: string, value: string) => {
     copyTextWithHaptic(value, {
@@ -1895,6 +1976,78 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             />
           </View>
         ) : null}
+        {/* Floating "jump to latest" arrow. Rides the same KeyboardStickyView
+            mechanism as the composer so it stays a fixed gap above it and lifts
+            with the keyboard; box-none lets every other touch reach the list.
+            Only shown once the reader has scrolled away (followStream === false). */}
+        <KeyboardStickyView
+          style={StyleSheet.absoluteFill}
+          offset={{ closed: 0, opened: 0 }}
+          pointerEvents="box-none"
+        >
+          {jumpToBottomState.visible ? (
+            <Animated.View
+              pointerEvents="box-none"
+              entering={ZoomIn.duration(180)}
+              exiting={ZoomOut.duration(140)}
+              style={[
+                {
+                  position: "absolute",
+                  right: horizontalPadding,
+                },
+                jumpButtonPositionStyle,
+              ]}
+            >
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Scroll to latest"
+                hitSlop={8}
+                onPress={handleJumpToBottom}
+                style={({ pressed }) => ({
+                  width: JUMP_TO_BOTTOM_SIZE,
+                  height: JUMP_TO_BOTTOM_SIZE,
+                  borderRadius: JUMP_TO_BOTTOM_SIZE / 2,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: jumpSurfaceColor,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: jumpBorderColor,
+                  // M3 level-2/3 floating chrome: tonal surface + restrained
+                  // elevation on Android, a soft ambient shadow on iOS.
+                  shadowColor: jumpShadowColor,
+                  shadowOpacity: isDarkMode ? 0.35 : 0.14,
+                  shadowRadius: 8,
+                  shadowOffset: { width: 0, height: 3 },
+                  elevation: 3,
+                  opacity: pressed ? 0.85 : 1,
+                  transform: [{ scale: pressed ? 0.96 : 1 }],
+                })}
+              >
+                <SymbolView
+                  name={{ ios: "chevron.down", android: "arrow_downward" }}
+                  size={20}
+                  tintColor={jumpIconColor}
+                  type="monochrome"
+                />
+                {jumpToBottomState.showNewActivityDot ? (
+                  <View
+                    style={{
+                      position: "absolute",
+                      top: 8,
+                      right: 8,
+                      width: 10,
+                      height: 10,
+                      borderRadius: 5,
+                      backgroundColor: jumpAccentColor,
+                      borderWidth: 2,
+                      borderColor: jumpSurfaceColor,
+                    }}
+                  />
+                ) : null}
+              </Pressable>
+            </Animated.View>
+          ) : null}
+        </KeyboardStickyView>
       </View>
 
       <ImageViewing

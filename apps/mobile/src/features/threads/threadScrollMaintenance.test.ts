@@ -1,10 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  deriveJumpToBottomState,
   distanceFromEndForScrollEvent,
   FOLLOW_RELEASE_THRESHOLD_PX,
   FOLLOW_RESUME_THRESHOLD_PX,
   nextFollowStream,
+  nextNewActivityWhileAway,
   resolveEndScrollMaintenance,
   shouldArmSendAnchorAnimation,
 } from "./threadScrollMaintenance";
@@ -170,6 +172,65 @@ describe("thread scroll maintenance", () => {
       const mid = (FOLLOW_RESUME_THRESHOLD_PX + FOLLOW_RELEASE_THRESHOLD_PX) / 2;
       expect(nextFollowStream(true, { distanceFromEnd: mid, isUserScroll: true })).toBe(true);
       expect(nextFollowStream(false, { distanceFromEnd: mid, isUserScroll: true })).toBe(false);
+    });
+  });
+
+  describe("deriveJumpToBottomState", () => {
+    it("hides the arrow while following the stream", () => {
+      expect(
+        deriveJumpToBottomState({ followingStream: true, hasNewActivityWhileAway: false }),
+      ).toEqual({ visible: false, showNewActivityDot: false });
+    });
+
+    it("shows the arrow once the reader has scrolled away", () => {
+      expect(
+        deriveJumpToBottomState({ followingStream: false, hasNewActivityWhileAway: false }),
+      ).toEqual({ visible: true, showNewActivityDot: false });
+    });
+
+    it("rides the new-activity dot on the arrow while away", () => {
+      expect(
+        deriveJumpToBottomState({ followingStream: false, hasNewActivityWhileAway: true }),
+      ).toEqual({ visible: true, showNewActivityDot: true });
+    });
+
+    it("never shows the dot when the arrow itself is hidden", () => {
+      // A stale latch can't leak a dot onto a hidden arrow.
+      expect(
+        deriveJumpToBottomState({ followingStream: true, hasNewActivityWhileAway: true }),
+      ).toEqual({ visible: false, showNewActivityDot: false });
+    });
+  });
+
+  describe("nextNewActivityWhileAway", () => {
+    it("latches on when the feed grows while the reader is away", () => {
+      expect(
+        nextNewActivityWhileAway({ current: false, followingStream: false, feedGrew: true }),
+      ).toBe(true);
+    });
+
+    it("holds the latch across quiet frames while still away", () => {
+      expect(
+        nextNewActivityWhileAway({ current: true, followingStream: false, feedGrew: false }),
+      ).toBe(true);
+    });
+
+    it("clears the latch the moment following resumes", () => {
+      expect(
+        nextNewActivityWhileAway({ current: true, followingStream: true, feedGrew: false }),
+      ).toBe(false);
+    });
+
+    it("lets resuming follow win over a same-frame growth", () => {
+      expect(
+        nextNewActivityWhileAway({ current: false, followingStream: true, feedGrew: true }),
+      ).toBe(false);
+    });
+
+    it("stays clear when nothing has grown and the reader is away", () => {
+      expect(
+        nextNewActivityWhileAway({ current: false, followingStream: false, feedGrew: false }),
+      ).toBe(false);
     });
   });
 });

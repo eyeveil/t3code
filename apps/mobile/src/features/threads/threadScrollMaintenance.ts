@@ -86,6 +86,47 @@ export function nextFollowStream(current: boolean, sample: FollowStreamSample): 
   return current;
 }
 
+// Sticky-scroll "jump to bottom" affordance.
+//
+// The floating arrow is the visible counterpart to followStream: it appears
+// exactly when the reader has scrolled away (follow broken) so a single tap can
+// return to the live end and re-arm following. A small "new activity" dot rides
+// it when the feed grows while the reader is away, so a paused reader can tell
+// fresh output arrived without being yanked down to see it.
+
+export interface JumpToBottomState {
+  // Whether the floating arrow should be shown at all.
+  readonly visible: boolean;
+  // Whether the "new activity while away" dot should ride the arrow.
+  readonly showNewActivityDot: boolean;
+}
+
+export function deriveJumpToBottomState(params: {
+  readonly followingStream: boolean;
+  readonly hasNewActivityWhileAway: boolean;
+}): JumpToBottomState {
+  const visible = !params.followingStream;
+  return {
+    visible,
+    // The dot is meaningless once the arrow is hidden (the reader is at the end).
+    showNewActivityDot: visible && params.hasNewActivityWhileAway,
+  };
+}
+
+// New-activity latch: set once the feed grows while the reader is away from the
+// bottom, cleared the moment following resumes (back at the live end, nothing is
+// unseen). Resuming follow always wins over a concurrent growth in the same frame.
+export function nextNewActivityWhileAway(params: {
+  readonly current: boolean;
+  readonly followingStream: boolean;
+  readonly feedGrew: boolean;
+}): boolean {
+  if (params.followingStream) {
+    return false;
+  }
+  return params.feedGrew ? true : params.current;
+}
+
 interface EndScrollMaintenanceTriggers {
   readonly dataChange: boolean;
   readonly itemLayout: boolean;
