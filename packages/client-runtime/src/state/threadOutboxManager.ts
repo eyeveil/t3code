@@ -59,6 +59,16 @@ export interface ThreadOutboxManagerOptions {
   readonly atomLabel?: string;
   /** Non-fatal failure reporting (e.g. console.warn); owned by the platform caller. */
   readonly warn: (message: string, error: unknown) => void;
+  /**
+   * When true, a `storage.write`/`storage.remove` failure is reported via
+   * `warn()` and swallowed instead of rejecting: the in-memory queue is updated
+   * first and stays the source of truth for delivery, so persistence is purely
+   * a survive-reload nicety. Web opts in because localStorage's ~5MB origin
+   * quota is easily blown by a queued message's base64 image `dataUrl`s — a
+   * quota `setItem` throw must never hard-fail a send/steer. Mobile leaves this
+   * off so its durable Expo file storage keeps strict write/remove consistency.
+   */
+  readonly bestEffortPersistence?: boolean;
 }
 
 export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
@@ -66,6 +76,7 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
     Record<string, ReadonlyArray<QueuedThreadMessage>>
   >({}).pipe(Atom.keepAlive, Atom.withLabel(options.atomLabel ?? "thread-outbox:queued-messages"));
   const warn = options.warn;
+  const bestEffortPersistence = options.bestEffortPersistence ?? false;
   let loadPromise: Promise<void> | null = null;
   let mutationQueue: Promise<void> = Promise.resolve();
 
@@ -83,6 +94,33 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
 
   const setMessages = (messages: ReadonlyArray<QueuedThreadMessage>): void => {
     options.registry.set(queuedMessagesByThreadKeyAtom, groupQueuedThreadMessages(messages));
+  };
+
+  // Runs a persistence side effect (write/remove). In best-effort mode a
+  // failure is warned and swallowed so the in-memory queue — already updated by
+  // the caller — still drives delivery; in strict mode it rejects with the
+  // structured manager error, preserving durable-storage consistency.
+  const persist = async (
+    operation: "enqueue" | "update" | "remove",
+    message: QueuedThreadMessage,
+    run: () => Promise<void>,
+  ): Promise<void> => {
+    try {
+      await run();
+    } catch (cause) {
+      const error = new ThreadOutboxManagerError({
+        operation,
+        environmentId: message.environmentId,
+        threadId: message.threadId,
+        messageId: message.messageId,
+        cause,
+      });
+      if (bestEffortPersistence) {
+        warn(`[thread-outbox] failed to persist ${operation}; keeping message in memory`, error);
+        return;
+      }
+      throw error;
+    }
   };
 
   const load = (): Promise<void> => {
@@ -110,18 +148,16 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
 
   const enqueue = (message: QueuedThreadMessage): Promise<void> =>
     serialize(async () => {
-      try {
-        await options.storage.write(message);
-      } catch (cause) {
-        throw new ThreadOutboxManagerError({
-          operation: "enqueue",
-          environmentId: message.environmentId,
-          threadId: message.threadId,
-          messageId: message.messageId,
-          cause,
-        });
+      const applyToMemory = (): void => setMessages([...currentMessages(), message]);
+      // Best-effort: enqueue in memory first so a persistence hiccup can never
+      // lose the send. Strict: only enqueue once the durable write succeeds.
+      if (bestEffortPersistence) {
+        applyToMemory();
       }
-      setMessages([...currentMessages(), message]);
+      await persist("enqueue", message, () => options.storage.write(message));
+      if (!bestEffortPersistence) {
+        applyToMemory();
+      }
     });
 
   // Rewrites an already-queued message. A no-op when the message has been
@@ -135,40 +171,34 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
       if (!exists) {
         return false;
       }
-      try {
-        await options.storage.write(message);
-      } catch (cause) {
-        throw new ThreadOutboxManagerError({
-          operation: "update",
-          environmentId: message.environmentId,
-          threadId: message.threadId,
-          messageId: message.messageId,
-          cause,
-        });
+      const applyToMemory = (): void =>
+        setMessages([
+          ...currentMessages().filter((candidate) => candidate.messageId !== message.messageId),
+          message,
+        ]);
+      if (bestEffortPersistence) {
+        applyToMemory();
       }
-      setMessages([
-        ...currentMessages().filter((candidate) => candidate.messageId !== message.messageId),
-        message,
-      ]);
+      await persist("update", message, () => options.storage.write(message));
+      if (!bestEffortPersistence) {
+        applyToMemory();
+      }
       return true;
     });
 
   const remove = (message: QueuedThreadMessage): Promise<void> =>
     serialize(async () => {
-      try {
-        await options.storage.remove(message);
-      } catch (cause) {
-        throw new ThreadOutboxManagerError({
-          operation: "remove",
-          environmentId: message.environmentId,
-          threadId: message.threadId,
-          messageId: message.messageId,
-          cause,
-        });
+      const applyToMemory = (): void =>
+        setMessages(
+          currentMessages().filter((candidate) => candidate.messageId !== message.messageId),
+        );
+      if (bestEffortPersistence) {
+        applyToMemory();
       }
-      setMessages(
-        currentMessages().filter((candidate) => candidate.messageId !== message.messageId),
-      );
+      await persist("remove", message, () => options.storage.remove(message));
+      if (!bestEffortPersistence) {
+        applyToMemory();
+      }
     });
 
   const clearEnvironment = (environmentId: EnvironmentId): Promise<void> =>

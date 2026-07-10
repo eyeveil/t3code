@@ -22,6 +22,17 @@ import { environmentShell } from "./shell";
  */
 const THREAD_OUTBOX_STORAGE_PREFIX = "t3code:thread-outbox:v1:";
 
+/**
+ * Above this serialized size we skip persisting a queued message to
+ * localStorage entirely and keep it in memory only. A single queued message
+ * with base64 image attachments can approach or exceed the ~5MB per-origin
+ * localStorage quota; attempting the write would throw `QuotaExceededError`
+ * (and could pollute storage), so we don't try. The message is still delivered
+ * from the in-memory queue — the only tradeoff is that a very large queued
+ * attachment does not survive a full page reload before it is dispatched.
+ */
+const MAX_PERSISTED_MESSAGE_BYTES = 1_500_000;
+
 function messageStorageKey(messageId: MessageId): string {
   return `${THREAD_OUTBOX_STORAGE_PREFIX}${encodeURIComponent(messageId)}`;
 }
@@ -30,7 +41,7 @@ function browserLocalStorage(): Storage | null {
   return typeof window === "undefined" ? null : window.localStorage;
 }
 
-const webThreadOutboxStorage: ThreadOutboxStorage = {
+export const webThreadOutboxStorage: ThreadOutboxStorage = {
   load: async () => {
     const storage = browserLocalStorage();
     const messages: QueuedThreadMessage[] = [];
@@ -82,11 +93,17 @@ const webThreadOutboxStorage: ThreadOutboxStorage = {
     if (storage === null) {
       return;
     }
-    try {
-      storage.setItem(
-        messageStorageKey(message.messageId),
-        JSON.stringify(encodeQueuedThreadMessage(message)),
+    const serialized = JSON.stringify(encodeQueuedThreadMessage(message));
+    // Don't even attempt an oversized write: it would throw QuotaExceededError.
+    // The in-memory queue remains the source of truth for delivery.
+    if (serialized.length > MAX_PERSISTED_MESSAGE_BYTES) {
+      console.warn(
+        `[thread-outbox] not persisting oversized queued message (${serialized.length} bytes); keeping it in memory only`,
       );
+      return;
+    }
+    try {
+      storage.setItem(messageStorageKey(message.messageId), serialized);
     } catch (cause) {
       throw new ThreadOutboxStorageError({
         operation: "write",
@@ -122,6 +139,10 @@ export const threadOutboxManager = createThreadOutboxManager({
   registry: appAtomRegistry,
   storage: webThreadOutboxStorage,
   atomLabel: "web:thread-outbox:queued-messages",
+  // localStorage persistence is best-effort: the in-memory queue delivers a
+  // steered message even when a write fails (e.g. quota from image attachments),
+  // so a persistence hiccup never surfaces as a "failed to enqueue" send error.
+  bestEffortPersistence: true,
   warn: (message, error) => {
     console.warn(message, error);
   },

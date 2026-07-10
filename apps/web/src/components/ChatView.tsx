@@ -4242,10 +4242,11 @@ function ChatViewContent(props: ChatViewProps) {
           createdAt: messageCreatedAt,
         });
       } catch (error) {
-        setThreadError(
-          threadIdForSend,
-          error instanceof Error ? error.message : "Failed to queue the message.",
-        );
+        // Persistence is best-effort, so an enqueue rejection here is a genuine,
+        // unexpected failure — surface a friendly, actionable message rather than
+        // the raw internal "Thread outbox operation ... failed" string.
+        console.warn("[thread-outbox] failed to queue message", error);
+        setThreadError(threadIdForSend, "Couldn't queue your message. Please try again.");
         return;
       }
       if (expiredTerminalContextCount > 0) {
