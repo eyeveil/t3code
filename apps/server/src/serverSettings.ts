@@ -47,7 +47,10 @@ import { writeFileStringAtomically } from "./atomicWrite.ts";
 import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
-import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
+import {
+  applyServerSettingsPatch,
+  withDefaultProviderInstanceHomes,
+} from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
@@ -256,7 +259,7 @@ function stripDefaultServerSettings(current: unknown, defaults: unknown): unknow
 }
 
 const make = Effect.gen(function* () {
-  const { settingsPath } = yield* ServerConfig.ServerConfig;
+  const { settingsPath, providerHomesDir } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
@@ -567,10 +570,21 @@ const make = Effect.gen(function* () {
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
-          const nextPersisted = yield* persistProviderEnvironmentSecrets(
-            current,
-            applyServerSettingsPatch(current, patch),
-          );
+          const patched = applyServerSettingsPatch(current, patch);
+          // Give newly-created (non-default) provider instances of home-aware
+          // drivers an isolated home under `<baseDir>/provider-homes/<id>`, so
+          // they don't silently share the default CLI account. Persisted here
+          // so it is visible + editable in settings. Existing instances and
+          // bare driver ids are left untouched (see helper docs).
+          const withHomes = {
+            ...patched,
+            providerInstances: withDefaultProviderInstanceHomes(
+              current.providerInstances,
+              patched.providerInstances,
+              (instanceId) => pathService.join(providerHomesDir, instanceId),
+            ),
+          };
+          const nextPersisted = yield* persistProviderEnvironmentSecrets(current, withHomes);
           const next = yield* normalizeServerSettings(nextPersisted);
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);

@@ -163,6 +163,10 @@
       "types": "./src/preview.ts",
       "import": "./src/preview.ts"
     },
+    "./providerLogin": {
+      "types": "./src/providerLogin.ts",
+      "import": "./src/providerLogin.ts"
+    },
     "./previewViewport": {
       "types": "./src/previewViewport.ts",
       "import": "./src/previewViewport.ts"

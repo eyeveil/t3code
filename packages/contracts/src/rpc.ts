@@ -93,6 +93,14 @@ import {
   TerminalWriteInput,
 } from "./terminal.ts";
 import {
+  ProviderLoginCancelInput,
+  ProviderLoginError,
+  ProviderLoginResizeInput,
+  ProviderLoginStartInput,
+  ProviderLoginStreamEvent,
+  ProviderLoginWriteInput,
+} from "./providerLogin.ts";
+import {
   DiscoveredLocalServerList,
   PreviewCloseInput,
   PreviewError,
@@ -187,6 +195,12 @@ export const WS_METHODS = {
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+
+  // Provider login methods
+  providerLoginStart: "providerLogin.start",
+  providerLoginWrite: "providerLogin.write",
+  providerLoginResize: "providerLogin.resize",
+  providerLoginCancel: "providerLogin.cancel",
 
   // Preview methods
   previewOpen: "preview.open",
@@ -517,6 +531,28 @@ export const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
   error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
 });
 
+export const WsProviderLoginStartRpc = Rpc.make(WS_METHODS.providerLoginStart, {
+  payload: ProviderLoginStartInput,
+  success: ProviderLoginStreamEvent,
+  error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsProviderLoginWriteRpc = Rpc.make(WS_METHODS.providerLoginWrite, {
+  payload: ProviderLoginWriteInput,
+  error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderLoginResizeRpc = Rpc.make(WS_METHODS.providerLoginResize, {
+  payload: ProviderLoginResizeInput,
+  error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderLoginCancelRpc = Rpc.make(WS_METHODS.providerLoginCancel, {
+  payload: ProviderLoginCancelInput,
+  error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
+});
+
 export const WsPreviewOpenRpc = Rpc.make(WS_METHODS.previewOpen, {
   payload: PreviewOpenInput,
   success: PreviewSessionSnapshot,
@@ -728,6 +764,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalCloseRpc,
   WsSubscribeTerminalEventsRpc,
   WsSubscribeTerminalMetadataRpc,
+  WsProviderLoginStartRpc,
+  WsProviderLoginWriteRpc,
+  WsProviderLoginResizeRpc,
+  WsProviderLoginCancelRpc,
   WsPreviewOpenRpc,
   WsPreviewNavigateRpc,
   WsPreviewResizeRpc,

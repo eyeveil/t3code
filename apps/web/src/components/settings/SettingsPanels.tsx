@@ -1430,6 +1430,7 @@ function ProviderEnvironmentSection({
               instance={row.instance}
               driverOption={driverOption}
               liveProvider={liveProvider}
+              environmentId={environmentId}
               isExpanded={openInstanceDetails[row.instanceId] ?? false}
               onExpandedChange={(open) =>
                 setOpenInstanceDetails((existing) => ({

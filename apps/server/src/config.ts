@@ -43,6 +43,8 @@ export interface ServerDerivedPaths {
   readonly environmentIdPath: string;
   readonly serverRuntimeStatePath: string;
   readonly secretsDir: string;
+  /** Root for auto-generated per-instance provider homes (CODEX_HOME / HOME). */
+  readonly providerHomesDir: string;
 }
 
 /**
@@ -118,6 +120,7 @@ export const deriveServerPaths = Effect.fn(function* (
     environmentIdPath: join(stateDir, "environment-id"),
     serverRuntimeStatePath: join(stateDir, "server-runtime.json"),
     secretsDir: join(stateDir, "secrets"),
+    providerHomesDir: join(baseDir, "provider-homes"),
   };
 });
 

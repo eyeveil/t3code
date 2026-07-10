@@ -1,0 +1,265 @@
+"use client";
+
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal, type ITheme } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
+import {
+  CheckCircle2Icon,
+  CopyIcon,
+  ExternalLinkIcon,
+  LoaderIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
+import { useEffect, useMemo, useRef } from "react";
+import { type EnvironmentId, type ProviderInstanceId } from "@t3tools/contracts";
+import { EMPTY_PROVIDER_LOGIN_STATE } from "@t3tools/client-runtime/state/provider-login";
+
+import { providerLoginEnvironment } from "../../state/providerLogin";
+import { useEnvironmentQuery } from "../../state/query";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+} from "../ui/dialog";
+
+interface ProviderLoginDialogProps {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+  readonly providerName: string;
+  readonly isAuthenticated: boolean;
+}
+
+function themeFromElement(element: HTMLElement): ITheme {
+  const styles = window.getComputedStyle(element);
+  const background = styles.backgroundColor;
+  const foreground = styles.color;
+  return {
+    background: background && background !== "rgba(0, 0, 0, 0)" ? background : "#0b0b0c",
+    foreground: foreground || "#e5e5e5",
+    cursor: foreground || "#e5e5e5",
+  };
+}
+
+/**
+ * A real interactive login terminal: the login CLI (codex device-auth /
+ * claude setup-token) needs stdin (press a key, paste a token), so the dialog
+ * hosts a full xterm surface wired to the additive `providerLogin.*` WS
+ * methods. The first verification URL and device code parsed from the stream
+ * are surfaced prominently above the raw output.
+ */
+export function ProviderLoginDialog({
+  open,
+  onOpenChange,
+  environmentId,
+  instanceId,
+  providerName,
+  isAuthenticated,
+}: ProviderLoginDialogProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const writtenLengthRef = useRef(0);
+
+  const login = useEnvironmentQuery(
+    open ? providerLoginEnvironment.attach({ environmentId, input: { instanceId } }) : null,
+  );
+  const state = login.data ?? EMPTY_PROVIDER_LOGIN_STATE;
+
+  const write = useAtomCommand(providerLoginEnvironment.write, { reportFailure: false });
+  const resize = useAtomCommand(providerLoginEnvironment.resize, { reportFailure: false });
+  const cancel = useAtomCommand(providerLoginEnvironment.cancel, { reportFailure: false });
+
+  const { copyToClipboard } = useCopyToClipboard();
+
+  const succeeded =
+    isAuthenticated ||
+    (state.status === "exited" && (state.exitCode === 0 || state.exitCode === null));
+  const failed = state.status === "error" || (state.status === "exited" && !succeeded);
+
+  const closeAndCancel = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      void cancel({ environmentId, input: { instanceId } });
+    }
+    onOpenChange(nextOpen);
+  };
+
+  // Create the xterm surface when the dialog opens; tear it down on close.
+  useEffect(() => {
+    if (!open) return;
+    const mount = containerRef.current;
+    if (!mount) return;
+
+    const fitAddon = new FitAddon();
+    const terminal = new Terminal({
+      cursorBlink: true,
+      fontSize: 12,
+      scrollback: 5_000,
+      convertEol: true,
+      fontFamily:
+        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      theme: themeFromElement(mount),
+    });
+    terminal.loadAddon(fitAddon);
+    terminal.open(mount);
+    try {
+      fitAddon.fit();
+    } catch {
+      // ignore transient fit failures before layout settles
+    }
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+    writtenLengthRef.current = 0;
+
+    const inputDisposable = terminal.onData((data) => {
+      void write({ environmentId, input: { instanceId, data } });
+    });
+
+    void resize({ environmentId, input: { instanceId, cols: terminal.cols, rows: terminal.rows } });
+
+    const resizeObserver = new ResizeObserver(() => {
+      const activeTerminal = terminalRef.current;
+      const activeFit = fitAddonRef.current;
+      if (!activeTerminal || !activeFit) return;
+      try {
+        activeFit.fit();
+      } catch {
+        return;
+      }
+      void resize({
+        environmentId,
+        input: { instanceId, cols: activeTerminal.cols, rows: activeTerminal.rows },
+      });
+    });
+    resizeObserver.observe(mount);
+
+    return () => {
+      resizeObserver.disconnect();
+      inputDisposable.dispose();
+      terminalRef.current = null;
+      fitAddonRef.current = null;
+      terminal.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, environmentId, instanceId]);
+
+  // Write output deltas to the terminal as they stream in.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const output = state.output;
+    const previousLength = writtenLengthRef.current;
+    if (output.length >= previousLength) {
+      terminal.write(output.slice(previousLength));
+    } else {
+      // Buffer diverged (e.g. re-attach): reset and rewrite.
+      terminal.reset();
+      terminal.write(output);
+    }
+    writtenLengthRef.current = output.length;
+  }, [state.output]);
+
+  const statusLabel = useMemo(() => {
+    if (succeeded) return "Authenticated";
+    if (failed) return "Login did not complete";
+    if (state.status === "running") return "Waiting for you to authorize…";
+    return "Starting login…";
+  }, [failed, state.status, succeeded]);
+
+  return (
+    <Dialog open={open} onOpenChange={closeAndCancel}>
+      <DialogPopup className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Log in to {providerName}</DialogTitle>
+          <DialogDescription>
+            Complete the sign-in below. Open the verification link in your browser, then follow the
+            prompts here.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div
+            className={
+              "flex items-center gap-2 rounded-md border px-3 py-2 text-xs " +
+              (succeeded
+                ? "border-success/40 text-success"
+                : failed
+                  ? "border-destructive/40 text-destructive"
+                  : "border-border/60 text-muted-foreground")
+            }
+          >
+            {succeeded ? (
+              <CheckCircle2Icon className="size-4 shrink-0" />
+            ) : failed ? (
+              <TriangleAlertIcon className="size-4 shrink-0" />
+            ) : (
+              <LoaderIcon className="size-4 shrink-0 animate-spin" />
+            )}
+            <span>{statusLabel}</span>
+          </div>
+
+          {state.url && !succeeded ? (
+            <div className="flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/40 px-2 py-1.5">
+              <a
+                href={state.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="flex min-w-0 flex-1 items-center gap-1.5 truncate font-mono text-xs text-primary hover:underline"
+              >
+                <ExternalLinkIcon className="size-3.5 shrink-0" />
+                <span className="truncate">{state.url}</span>
+              </a>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                className="size-6 shrink-0"
+                aria-label="Copy verification URL"
+                onClick={() => copyToClipboard(state.url ?? "", undefined)}
+              >
+                <CopyIcon className="size-3" />
+              </Button>
+            </div>
+          ) : null}
+
+          {state.code && !succeeded ? (
+            <div className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/40 px-3 py-1.5">
+              <span className="text-xs text-muted-foreground">Enter this code:</span>
+              <code className="font-mono text-sm font-semibold tracking-widest text-foreground">
+                {state.code}
+              </code>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                className="size-6 shrink-0"
+                aria-label="Copy device code"
+                onClick={() => copyToClipboard(state.code ?? "", undefined)}
+              >
+                <CopyIcon className="size-3" />
+              </Button>
+            </div>
+          ) : null}
+
+          <div
+            ref={containerRef}
+            className="h-64 w-full overflow-hidden rounded-md border border-border/60 bg-[#0b0b0c] p-2"
+          />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => closeAndCancel(false)}>
+            {succeeded ? "Close" : "Cancel"}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}

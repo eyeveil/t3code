@@ -10,7 +10,60 @@ import {
   extractPersistedServerObservabilitySettings,
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
+  withDefaultProviderInstanceHomes,
 } from "./serverSettings.ts";
+
+const codexDriver = ProviderDriverKind.make("codex");
+const claudeDriver = ProviderDriverKind.make("claudeAgent");
+const grokDriver = ProviderDriverKind.make("grok");
+const instance = (id: string) => ProviderInstanceId.make(id);
+const computeHome = (id: string) => `/home/user/.t3/provider-homes/${id}`;
+
+describe("withDefaultProviderInstanceHomes", () => {
+  it("injects an isolated home for a newly-created codex instance", () => {
+    const next = { [instance("codex_work")]: { driver: codexDriver } };
+    const result = withDefaultProviderInstanceHomes({}, next, computeHome);
+    expect((result[instance("codex_work")]!.config as { homePath?: string }).homePath).toBe(
+      "/home/user/.t3/provider-homes/codex_work",
+    );
+  });
+
+  it("leaves bare driver-default ids untouched", () => {
+    const next = { [instance("codex")]: { driver: codexDriver } };
+    const result = withDefaultProviderInstanceHomes({}, next, computeHome);
+    expect(result).toBe(next);
+    expect(result[instance("codex")]!.config).toBeUndefined();
+  });
+
+  it("does not touch pre-existing instances", () => {
+    const current = { [instance("codex_work")]: { driver: codexDriver } };
+    const next = { [instance("codex_work")]: { driver: codexDriver } };
+    const result = withDefaultProviderInstanceHomes(current, next, computeHome);
+    expect(result).toBe(next);
+  });
+
+  it("respects a user-provided homePath", () => {
+    const next = {
+      [instance("codex_work")]: { driver: codexDriver, config: { homePath: "~/mine" } },
+    };
+    const result = withDefaultProviderInstanceHomes({}, next, computeHome);
+    expect(result).toBe(next);
+  });
+
+  it("injects for a new claude instance", () => {
+    const next = { [instance("claude_alt")]: { driver: claudeDriver } };
+    const result = withDefaultProviderInstanceHomes({}, next, computeHome);
+    expect((result[instance("claude_alt")]!.config as { homePath?: string }).homePath).toBe(
+      "/home/user/.t3/provider-homes/claude_alt",
+    );
+  });
+
+  it("ignores drivers that do not support an isolated home", () => {
+    const next = { [instance("grok_x")]: { driver: grokDriver } };
+    const result = withDefaultProviderInstanceHomes({}, next, computeHome);
+    expect(result).toBe(next);
+  });
+});
 
 describe("serverSettings helpers", () => {
   it("normalizes optional persisted strings", () => {

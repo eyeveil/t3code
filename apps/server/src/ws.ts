@@ -57,6 +57,8 @@ import {
   type TerminalError,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
+  type ProviderLoginError,
+  type ProviderLoginStreamEvent,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -82,6 +84,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import { ProviderLoginManager } from "./provider/ProviderLoginManager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -361,6 +364,10 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.terminalClose, AuthTerminalOperateScope],
   [WS_METHODS.subscribeTerminalEvents, AuthTerminalOperateScope],
   [WS_METHODS.subscribeTerminalMetadata, AuthTerminalOperateScope],
+  [WS_METHODS.providerLoginStart, AuthOrchestrationOperateScope],
+  [WS_METHODS.providerLoginWrite, AuthOrchestrationOperateScope],
+  [WS_METHODS.providerLoginResize, AuthOrchestrationOperateScope],
+  [WS_METHODS.providerLoginCancel, AuthOrchestrationOperateScope],
   [WS_METHODS.previewOpen, AuthOrchestrationOperateScope],
   [WS_METHODS.previewNavigate, AuthOrchestrationOperateScope],
   [WS_METHODS.previewResize, AuthOrchestrationOperateScope],
@@ -436,6 +443,7 @@ const makeWsRpcLayer = (
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
+      const providerLoginManager = yield* ProviderLoginManager;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -966,6 +974,7 @@ const makeWsRpcLayer = (
             otlpMetricsEnabled: config.otlpMetricsUrl !== undefined,
           },
           settings,
+          providerHomesDir: config.providerHomesDir,
         };
       });
 
@@ -1774,6 +1783,29 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "terminal" },
           ),
+        [WS_METHODS.providerLoginStart]: (input) =>
+          observeRpcStream(
+            WS_METHODS.providerLoginStart,
+            Stream.callback<ProviderLoginStreamEvent, ProviderLoginError>((queue) =>
+              Effect.acquireRelease(
+                providerLoginManager.attachStream(input, (event) => Queue.offer(queue, event)),
+                (unsubscribe) => Effect.sync(unsubscribe),
+              ),
+            ),
+            { "rpc.aggregate": "provider-login" },
+          ),
+        [WS_METHODS.providerLoginWrite]: (input) =>
+          observeRpcEffect(WS_METHODS.providerLoginWrite, providerLoginManager.write(input), {
+            "rpc.aggregate": "provider-login",
+          }),
+        [WS_METHODS.providerLoginResize]: (input) =>
+          observeRpcEffect(WS_METHODS.providerLoginResize, providerLoginManager.resize(input), {
+            "rpc.aggregate": "provider-login",
+          }),
+        [WS_METHODS.providerLoginCancel]: (input) =>
+          observeRpcEffect(WS_METHODS.providerLoginCancel, providerLoginManager.cancel(input), {
+            "rpc.aggregate": "provider-login",
+          }),
         [WS_METHODS.previewOpen]: (input) =>
           observeRpcEffect(WS_METHODS.previewOpen, previewManager.open(input), {
             "rpc.aggregate": "preview",

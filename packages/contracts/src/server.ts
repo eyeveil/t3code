@@ -417,6 +417,12 @@ export const ServerConfig = Schema.Struct({
   availableEditors: Schema.Array(EditorId),
   observability: ServerObservability,
   settings: ServerSettings,
+  /**
+   * Absolute root under which newly-created provider instances get an isolated
+   * home (`<providerHomesDir>/<instanceId>`). Optional so older servers that
+   * omit it still decode; the web dialog uses it to pre-fill the home field.
+   */
+  providerHomesDir: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

@@ -15,6 +15,7 @@ import * as Result from "effect/Result";
 import { useState, type ReactNode } from "react";
 import {
   isProviderDriverKind,
+  type EnvironmentId,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
@@ -22,6 +23,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
+import { KeyRoundIcon } from "lucide-react";
 
 import { cn } from "../../lib/utils";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -50,6 +52,13 @@ import {
   getProviderVersionLabel,
   type ProviderStatusKey,
 } from "./providerStatus";
+import { ProviderLoginDialog } from "./ProviderLoginDialog";
+
+/**
+ * Drivers whose CLI supports an in-app login flow (see server
+ * `ProviderLoginManager`). Kept in sync with the server's supported set.
+ */
+const DRIVERS_WITH_IN_APP_LOGIN = new Set<string>(["codex", "claudeAgent"]);
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -349,6 +358,12 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  /**
+   * Environment the instance belongs to. Required to host the in-app login
+   * terminal; when omitted (e.g. surfaces without a live connection) the
+   * login affordance is hidden.
+   */
+  readonly environmentId?: EnvironmentId | undefined;
 }
 
 /**
@@ -393,7 +408,9 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  environmentId,
 }: ProviderInstanceCardProps) {
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
   // "disabled"/"warning" based on the local `enabled` flag so the dot
@@ -416,6 +433,14 @@ export function ProviderInstanceCard({
   const displayName =
     instance.displayName?.trim() || driverOption?.label || String(instance.driver);
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
+  const rawHomePath = (instance.config as { readonly homePath?: unknown } | undefined)?.homePath;
+  const homePathLine =
+    typeof rawHomePath === "string" && rawHomePath.trim().length > 0 ? rawHomePath.trim() : null;
+  const isAuthenticated = liveProvider?.auth.status === "authenticated";
+  const canLogin =
+    DRIVERS_WITH_IN_APP_LOGIN.has(String(instance.driver)) &&
+    environmentId !== undefined &&
+    enabled;
   const { copyToClipboard } = useCopyToClipboard<{ providerName: string }>({
     onCopy: ({ providerName }) => {
       toastManager.add({
@@ -705,8 +730,28 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+            {homePathLine ? (
+              <p
+                className="truncate font-mono text-[11px] text-muted-foreground/70"
+                title={homePathLine}
+              >
+                {homePathLine}
+              </p>
+            ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+            {canLogin ? (
+              <Button
+                size="sm"
+                variant={isAuthenticated ? "ghost" : "outline"}
+                className="h-7 px-2.5 text-xs"
+                onClick={() => setIsLoginOpen(true)}
+                aria-label={`${isAuthenticated ? "Re-authenticate" : "Log in to"} ${displayName}`}
+              >
+                <KeyRoundIcon className="size-3.5" />
+                {isAuthenticated ? "Re-authenticate" : "Log in"}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"
@@ -801,6 +846,16 @@ export function ProviderInstanceCard({
           </div>
         </CollapsibleContent>
       </Collapsible>
+      {canLogin && environmentId !== undefined ? (
+        <ProviderLoginDialog
+          open={isLoginOpen}
+          onOpenChange={setIsLoginOpen}
+          environmentId={environmentId}
+          instanceId={instanceId}
+          providerName={displayName}
+          isAuthenticated={isAuthenticated}
+        />
+      ) : null}
     </div>
   );
 }

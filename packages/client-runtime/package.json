@@ -123,6 +123,10 @@
       "types": "./src/state/terminal.ts",
       "default": "./src/state/terminal.ts"
     },
+    "./state/provider-login": {
+      "types": "./src/state/providerLogin.ts",
+      "default": "./src/state/providerLogin.ts"
+    },
     "./state/threads": {
       "types": "./src/state/threads.ts",
       "default": "./src/state/threads.ts"
