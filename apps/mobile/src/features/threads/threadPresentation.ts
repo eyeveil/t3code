@@ -73,7 +73,12 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "running") {
+  // A running turn is the authoritative "actively working" signal and is always
+  // present on the shell's latestTurn, whereas the shell's `session` snapshot can
+  // lag or arrive null (e.g. a resumed/cached shell that has not yet replayed the
+  // session update). Keying off either keeps the row's live indicator in lockstep
+  // with the thread detail's own "Working" pill, which derives from latestTurn.
+  if (thread.session?.status === "running" || thread.latestTurn?.state === "running") {
     return {
       kind: "working",
       label: "Working",
