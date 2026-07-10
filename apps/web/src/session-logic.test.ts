@@ -841,6 +841,53 @@ describe("deriveWorkLogEntries", () => {
     }
   });
 
+  it("drops anonymous collab lifecycle shells for every tool status", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "anonymous-agent-start",
+        kind: "tool.started",
+        summary: "Tool started",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: { toolCallId: "agent-shell", input: {} },
+        },
+      }),
+      makeActivity({
+        id: "anonymous-agent-done",
+        kind: "tool.completed",
+        summary: "Tool",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: { toolCallId: "agent-shell", input: {} },
+        },
+      }),
+    ]);
+
+    expect(entries).toEqual([]);
+  });
+
+  it("keeps a collab lifecycle item once dispatch input arrives", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "identified-agent",
+        kind: "tool.updated",
+        summary: "Tool",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: {
+            toolCallId: "identified-agent",
+            input: { task_name: "reviewer", prompt: "Review the database migration." },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["identified-agent"]);
+  });
+
   it("keeps a tool.started whose args already streamed (real detail, no toolCallId)", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
@@ -1996,15 +2043,7 @@ describe("deriveSubagentRailItems", () => {
       }),
     ];
 
-    expect(deriveSubagentRailItems(entries, turnId)).toEqual([
-      {
-        id: "empty-agent",
-        name: "Task",
-        detail: null,
-        status: "running",
-        createdAt: "2026-02-23T00:00:01.000Z",
-      },
-    ]);
+    expect(deriveSubagentRailItems(entries, turnId)).toEqual([]);
   });
 });
 
@@ -2149,5 +2188,18 @@ describe("deriveSubagentPanelItems", () => {
 
   it("returns nothing when there are no subagents", () => {
     expect(deriveSubagentPanelItems([], [])).toEqual([]);
+  });
+
+  it("does not list anonymous collab lifecycle shells", () => {
+    const entries = [
+      makePanelEntry({
+        id: "anonymous-agent",
+        label: "Tool",
+        toolLifecycleStatus: "completed",
+        toolData: {},
+      }),
+    ];
+
+    expect(deriveSubagentPanelItems(entries, [])).toEqual([]);
   });
 });

@@ -645,6 +645,14 @@ export function deriveWorkLogEntries(
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     const entry = toDerivedWorkLogEntry(activity);
+    // A few provider streams announce collab-agent lifecycle items before they
+    // include any dispatch input, task text, or agent id. Those anonymous rows
+    // are not actionable and otherwise render as the alarming-looking pair
+    // "Tool started" / "Tool — No task recorded". A later lifecycle event with
+    // real input is still retained and becomes the visible subagent row.
+    if (entry.itemType === "collab_agent_tool_call" && !hasMeaningfulSubagentIdentity(entry)) {
+      continue;
+    }
     if (activity.kind === "tool.started") {
       // Some providers (e.g. codex) emit tool.started with an empty payload — no
       // toolCallId, title, command, or detail — which derives a collapseKey of
@@ -758,6 +766,7 @@ function collectTurnSubagents(
   for (const entry of entries) {
     if (entry.itemType !== "collab_agent_tool_call") continue;
     if (entry.turnId !== turnId) continue;
+    if (!hasMeaningfulSubagentIdentity(entry)) continue;
     const status = subagentStatusFromLifecycle(entry.toolLifecycleStatus);
     const { name, detail } = parseSubagentName(entry);
     items.push({ id: entry.id, name, detail, status, createdAt: entry.createdAt });
@@ -832,6 +841,7 @@ function collectSessionSubagents(
   const items: SubagentRailItem[] = [];
   for (const entry of entries) {
     if (entry.itemType !== "collab_agent_tool_call") continue;
+    if (!hasMeaningfulSubagentIdentity(entry)) continue;
     const { name, detail } = parseSubagentName(entry);
     const live = entry.subagentTaskId ? taskLiveness.get(entry.subagentTaskId) : undefined;
     let status: SubagentRailStatus;
@@ -866,9 +876,31 @@ function collectSessionSubagents(
     .slice(0, MAX_PANEL_SUBAGENTS);
 }
 
-/** Braces-only / empty payloads (e.g. an unstarted `{}`) carry no task text. */
+/** Braces-only / empty payloads (e.g. an unstarted `Agent: {}`) carry no task text. */
 function isEmptySubagentDetail(raw: string): boolean {
-  return raw.length === 0 || /^\{\s*\}$/.test(raw);
+  return raw.length === 0 || BRACES_ONLY_ARGS_DETAIL.test(raw);
+}
+
+/** Whether an agent dispatch input contains any usable textual identity/task field. */
+function hasMeaningfulSubagentToolData(value: unknown, depth = 0): boolean {
+  if (depth > 3) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) {
+    return value.some((item) => hasMeaningfulSubagentToolData(item, depth + 1));
+  }
+  const record = asRecord(value);
+  if (!record) return false;
+  return Object.values(record).some((item) => hasMeaningfulSubagentToolData(item, depth + 1));
+}
+
+/** Anonymous lifecycle shells are not subagents until task/identity data arrives. */
+function hasMeaningfulSubagentIdentity(entry: WorkLogEntry): boolean {
+  const detail = entry.detail?.trim() ?? "";
+  return (
+    !isEmptySubagentDetail(detail) ||
+    hasMeaningfulSubagentToolData(entry.toolData) ||
+    entry.subagentTaskId !== undefined
+  );
 }
 
 function parseSubagentName(entry: WorkLogEntry): { name: string; detail: string | null } {
