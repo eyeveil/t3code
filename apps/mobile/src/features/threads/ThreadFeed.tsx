@@ -96,6 +96,8 @@ import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { ThreadWorkGroupToggle, ThreadWorkLog } from "./thread-work-log";
 import { shouldPlayEntrance } from "./threadEntranceAnimation";
 import {
+  distanceFromEndForScrollEvent,
+  nextFollowStream,
   resolveEndScrollMaintenance,
   shouldArmSendAnchorAnimation,
   SEND_ANCHOR_ANIMATION_WINDOW_MS,
@@ -1303,6 +1305,16 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const [viewportHeight, setViewportHeight] = useState(0);
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
   const [sendAnchorAnimating, setSendAnchorAnimating] = useState(false);
+  // Sticky-scroll follow state: true while the feed should track the live stream,
+  // false once the reader has deliberately scrolled up. Derived from real scroll
+  // geometry in handleScroll because LegendList's own at-end gate keeps reporting
+  // "at end" mid-stream (see threadScrollMaintenance). A ref mirrors it so the
+  // scroll handler reads the latest value without re-subscribing.
+  const [followStream, setFollowStream] = useState(true);
+  // Whether the in-flight scroll is user-driven (drag/fling) rather than a
+  // programmatic end-pin, send glide, keyboard shift, or remeasure. Only user
+  // scrolls may break follow; anything else can only ever re-arm it at the bottom.
+  const userInteractingRef = useRef(false);
   const [interactionState, setInteractionState] = useState<{
     readonly copiedRowId: string | null;
     readonly expandedWorkGroups: Record<string, boolean>;
@@ -1414,9 +1426,30 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       // UIKit's adjustedContentInset, so topContentInset is 0 here). Add the
       // header height back or the material toggles a full header too late.
       reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
+      const distanceFromEnd = distanceFromEndForScrollEvent(event.nativeEvent);
+      setFollowStream((current) =>
+        nextFollowStream(current, {
+          distanceFromEnd,
+          isUserScroll: userInteractingRef.current,
+        }),
+      );
     },
     [reportHeaderMaterialVisibility, anchorTopInset],
   );
+  const handleScrollBeginDrag = useCallback(() => {
+    userInteractingRef.current = true;
+  }, []);
+  const handleMomentumScrollEnd = useCallback(() => {
+    userInteractingRef.current = false;
+  }, []);
+  // A drag with no fling never emits momentum events; clear the flag on drag end
+  // (a fling re-sets it via onMomentumScrollBegin before this frame matters).
+  const handleScrollEndDrag = useCallback(() => {
+    userInteractingRef.current = false;
+  }, []);
+  const handleMomentumScrollBegin = useCallback(() => {
+    userInteractingRef.current = true;
+  }, []);
   const handleViewportLayout = useCallback((event: LayoutChangeEvent) => {
     const nextWidth = Math.round(event.nativeEvent.layout.width);
     const nextHeight = Math.round(event.nativeEvent.layout.height);
@@ -1445,6 +1478,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
 
   useEffect(() => {
     reportHeaderMaterialVisibility(false);
+    // A freshly opened thread starts pinned to the newest message; drop any
+    // scrolled-up follow state carried over from the previous thread.
+    setFollowStream(true);
+    userInteractingRef.current = false;
   }, [props.threadId, reportHeaderMaterialVisibility]);
 
   const expandedWorkGroupIds = useMemo(() => {
@@ -1544,6 +1581,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     if (!shouldArmSendAnchorAnimation(previous, props.anchorMessageId)) {
       return;
     }
+    // Sending your own message always re-arms follow: the feed glides to the new
+    // anchor and tracks the reply, even if you had scrolled up before sending.
+    setFollowStream(true);
     setSendAnchorAnimating(true);
     if (sendAnchorAnimationTimeoutRef.current) {
       clearTimeout(sendAnchorAnimationTimeoutRef.current);
@@ -1605,8 +1645,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
 
   const maintainScrollAtEnd = useMemo(
-    () => resolveEndScrollMaintenance({ disclosureToggleSettling, sendAnchorAnimating }),
-    [disclosureToggleSettling, sendAnchorAnimating],
+    () =>
+      resolveEndScrollMaintenance({
+        followingStream: followStream,
+        disclosureToggleSettling,
+        sendAnchorAnimating,
+      }),
+    [followStream, disclosureToggleSettling, sendAnchorAnimating],
   );
 
   const onCopyWorkRow = useCallback((rowId: string, value: string) => {
@@ -1825,6 +1870,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onRefresh={() => void pullRefresh.onRefresh()}
             refreshing={pullRefresh.isRefreshing}
             onScroll={handleScroll}
+            onScrollBeginDrag={handleScrollBeginDrag}
+            onScrollEndDrag={handleScrollEndDrag}
+            onMomentumScrollBegin={handleMomentumScrollBegin}
+            onMomentumScrollEnd={handleMomentumScrollEnd}
             scrollEventThrottle={16}
             ListHeaderComponent={
               usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />

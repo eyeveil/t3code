@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  distanceFromEndForScrollEvent,
+  FOLLOW_RELEASE_THRESHOLD_PX,
+  FOLLOW_RESUME_THRESHOLD_PX,
+  nextFollowStream,
   resolveEndScrollMaintenance,
   shouldArmSendAnchorAnimation,
 } from "./threadScrollMaintenance";
@@ -29,9 +33,30 @@ describe("thread scroll maintenance", () => {
   });
 
   describe("resolveEndScrollMaintenance", () => {
+    it("hands the list no end-pin while the reader has scrolled up", () => {
+      expect(
+        resolveEndScrollMaintenance({
+          followingStream: false,
+          disclosureToggleSettling: false,
+          sendAnchorAnimating: false,
+        }),
+      ).toBe(false);
+    });
+
+    it("stays unpinned when scrolled up even inside the post-send window", () => {
+      expect(
+        resolveEndScrollMaintenance({
+          followingStream: false,
+          disclosureToggleSettling: false,
+          sendAnchorAnimating: true,
+        }),
+      ).toBe(false);
+    });
+
     it("suspends end pinning while a disclosure toggle settles", () => {
       expect(
         resolveEndScrollMaintenance({
+          followingStream: true,
           disclosureToggleSettling: true,
           sendAnchorAnimating: false,
         }),
@@ -41,6 +66,7 @@ describe("thread scroll maintenance", () => {
     it("suspends end pinning during a disclosure settle even mid send window", () => {
       expect(
         resolveEndScrollMaintenance({
+          followingStream: true,
           disclosureToggleSettling: true,
           sendAnchorAnimating: true,
         }),
@@ -50,6 +76,7 @@ describe("thread scroll maintenance", () => {
     it("pins instantly during streaming so the feed cannot oscillate", () => {
       expect(
         resolveEndScrollMaintenance({
+          followingStream: true,
           disclosureToggleSettling: false,
           sendAnchorAnimating: false,
         }),
@@ -62,6 +89,7 @@ describe("thread scroll maintenance", () => {
     it("pins with animation only inside the post-send window", () => {
       expect(
         resolveEndScrollMaintenance({
+          followingStream: true,
           disclosureToggleSettling: false,
           sendAnchorAnimating: true,
         }),
@@ -69,6 +97,79 @@ describe("thread scroll maintenance", () => {
         animated: true,
         on: { dataChange: true, itemLayout: true, layout: true },
       });
+    });
+  });
+
+  describe("distanceFromEndForScrollEvent", () => {
+    it("reads ~0 at the resting bottom on Android (no bottom inset)", () => {
+      expect(
+        distanceFromEndForScrollEvent({
+          contentSize: { height: 2000 },
+          contentOffset: { y: 1200 },
+          layoutMeasurement: { height: 800 },
+        }),
+      ).toBe(0);
+    });
+
+    it("folds the iOS bottom composer inset back in so the bottom reads ~0", () => {
+      // At rest at the bottom on iOS the offset overshoots content by the inset.
+      expect(
+        distanceFromEndForScrollEvent({
+          contentSize: { height: 2000 },
+          contentOffset: { y: 1320 },
+          layoutMeasurement: { height: 800 },
+          contentInset: { bottom: 120 },
+        }),
+      ).toBe(0);
+    });
+
+    it("grows positive as the user scrolls up", () => {
+      expect(
+        distanceFromEndForScrollEvent({
+          contentSize: { height: 2000 },
+          contentOffset: { y: 900 },
+          layoutMeasurement: { height: 800 },
+        }),
+      ).toBe(300);
+    });
+  });
+
+  describe("nextFollowStream", () => {
+    it("resumes following once back within the resume threshold", () => {
+      expect(
+        nextFollowStream(false, {
+          distanceFromEnd: FOLLOW_RESUME_THRESHOLD_PX,
+          isUserScroll: true,
+        }),
+      ).toBe(true);
+    });
+
+    it("resumes when scrolled to the bottom programmatically (not a user scroll)", () => {
+      expect(nextFollowStream(false, { distanceFromEnd: 0, isUserScroll: false })).toBe(true);
+    });
+
+    it("breaks follow when the user scrolls past the release threshold", () => {
+      expect(
+        nextFollowStream(true, {
+          distanceFromEnd: FOLLOW_RELEASE_THRESHOLD_PX + 1,
+          isUserScroll: true,
+        }),
+      ).toBe(false);
+    });
+
+    it("a programmatic scroll away from the bottom never breaks follow", () => {
+      expect(
+        nextFollowStream(true, {
+          distanceFromEnd: FOLLOW_RELEASE_THRESHOLD_PX + 500,
+          isUserScroll: false,
+        }),
+      ).toBe(true);
+    });
+
+    it("holds state inside the hysteresis band", () => {
+      const mid = (FOLLOW_RESUME_THRESHOLD_PX + FOLLOW_RELEASE_THRESHOLD_PX) / 2;
+      expect(nextFollowStream(true, { distanceFromEnd: mid, isUserScroll: true })).toBe(true);
+      expect(nextFollowStream(false, { distanceFromEnd: mid, isUserScroll: true })).toBe(false);
     });
   });
 });
