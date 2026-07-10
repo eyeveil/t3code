@@ -91,6 +91,7 @@ import { SubagentRail } from "./chat/SubagentRail";
 import { SubagentsPanel } from "./chat/SubagentsPanel";
 import { type LegendListRef } from "@legendapp/list/react";
 import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
+import { resolveFollowScrollAction } from "./chat/timelineFollowState";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -285,6 +286,10 @@ const DiffPanel = lazy(() => import("./DiffPanel"));
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 const EMPTY_QUEUED_MESSAGES: ReadonlyArray<QueuedThreadMessage> = [];
+// How long after a programmatic scroll its resulting scroll events are ignored
+// by the follow-state detector. Covers the instant scroll plus a few frames of
+// settle; animated anchor positioning is covered separately by its own flag.
+const PROGRAMMATIC_TIMELINE_SCROLL_WINDOW_MS = 250;
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
   "textarea",
@@ -1178,6 +1183,11 @@ function ChatViewContent(props: ChatViewProps) {
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const isAtEndRef = useRef(true);
+  // Last scrollTop we observed, for detecting user-driven scroll-up, and the
+  // deadline until which scroll events are attributed to our own programmatic
+  // scrolls (so they never look like a user scrolling away from the bottom).
+  const lastObservedTimelineScrollRef = useRef<number | null>(null);
+  const programmaticTimelineScrollUntilRef = useRef(0);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
@@ -3371,13 +3381,6 @@ function ChatViewContent(props: ChatViewProps) {
       anchorScrollRestoreFrameRef.current = null;
     }
   }, []);
-  const cancelTimelineLiveFollowForUserNavigationRef = useRef(
-    cancelTimelineLiveFollowForUserNavigation,
-  );
-  useEffect(() => {
-    cancelTimelineLiveFollowForUserNavigationRef.current =
-      cancelTimelineLiveFollowForUserNavigation;
-  }, [cancelTimelineLiveFollowForUserNavigation]);
   const getActiveTimelineTurnMetrics = useCallback(
     (list?: LegendListRef | null) => {
       const resolvedList = list ?? legendListRef.current;
@@ -3426,164 +3429,185 @@ function ChatViewContent(props: ChatViewProps) {
     [composerOverlayHeight],
   );
 
+  // Flags the next window of scroll events as self-induced so the follow-state
+  // detector doesn't mistake our own scrolls for the user scrolling away.
+  const markTimelineProgrammaticScroll = useCallback(() => {
+    programmaticTimelineScrollUntilRef.current =
+      performance.now() + PROGRAMMATIC_TIMELINE_SCROLL_WINDOW_MS;
+  }, []);
+
   // Live-follow stays active after send/thread-open until an actual list scroll
   // gesture opts out.
-  const scrollToEnd = useCallback((animated = false) => {
-    isAtEndRef.current = true;
-    timelineScrollModeRef.current = "following-end";
-    liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
-    pendingTimelineAnchorRef.current = null;
-    activeTimelineAnchorIndexRef.current = null;
-    showScrollDebouncer.current.cancel();
-    setShowScrollToBottom(false);
-    void legendListRef.current?.scrollToEnd?.({ animated });
-  }, []);
-  useEffect(() => {
-    let removeListeners: (() => void) | null = null;
-    const frame = requestAnimationFrame(() => {
-      const scrollNode = legendListRef.current?.getScrollableNode();
-      if (!scrollNode) {
+  const scrollToEnd = useCallback(
+    (animated = false) => {
+      isAtEndRef.current = true;
+      timelineScrollModeRef.current = "following-end";
+      liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
+      pendingTimelineAnchorRef.current = null;
+      activeTimelineAnchorIndexRef.current = null;
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
+      markTimelineProgrammaticScroll();
+      void legendListRef.current?.scrollToEnd?.({ animated });
+    },
+    [markTimelineProgrammaticScroll],
+  );
+  const onTimelineAnchorReady = useCallback(
+    (messageId: MessageId, anchorIndex: number) => {
+      if (pendingTimelineAnchorRef.current === messageId) {
+        pendingTimelineAnchorRef.current = null;
+      }
+      activeTimelineAnchorIndexRef.current = anchorIndex;
+      if (positionedTimelineAnchorRef.current === messageId) {
         return;
       }
-      const handleManualNavigation = () => {
-        cancelTimelineLiveFollowForUserNavigationRef.current();
-      };
-      scrollNode.addEventListener("wheel", handleManualNavigation, {
-        passive: true,
-      });
-      scrollNode.addEventListener("touchmove", handleManualNavigation, {
-        passive: true,
-      });
-      scrollNode.addEventListener("pointerdown", handleManualNavigation, {
-        passive: true,
-      });
-      removeListeners = () => {
-        scrollNode.removeEventListener("wheel", handleManualNavigation);
-        scrollNode.removeEventListener("touchmove", handleManualNavigation);
-        scrollNode.removeEventListener("pointerdown", handleManualNavigation);
-      };
-    });
-
-    return () => {
-      cancelAnimationFrame(frame);
-      removeListeners?.();
-    };
-  }, [activeThread?.id]);
-
-  const onTimelineAnchorReady = useCallback((messageId: MessageId, anchorIndex: number) => {
-    if (pendingTimelineAnchorRef.current === messageId) {
-      pendingTimelineAnchorRef.current = null;
-    }
-    activeTimelineAnchorIndexRef.current = anchorIndex;
-    if (positionedTimelineAnchorRef.current === messageId) {
-      return;
-    }
-    positionedTimelineAnchorRef.current = messageId;
-    settledTimelineAnchorRef.current = null;
-    const positionAnchor = (remainingAttempts: number) => {
-      requestAnimationFrame(() => {
-        if (positionedTimelineAnchorRef.current !== messageId) {
-          return;
-        }
-        const list = legendListRef.current;
-        if (!list) {
-          if (remainingAttempts > 0) {
-            positionAnchor(remainingAttempts - 1);
-          }
-          return;
-        }
-        const scrollNode = list.getScrollableNode();
-        let finished = false;
-        const finishAnimatedPositioning = () => {
-          if (finished) {
-            return;
-          }
-          finished = true;
-          window.clearTimeout(fallbackTimer);
-          scrollNode.removeEventListener("scrollend", finishAnimatedPositioning);
+      positionedTimelineAnchorRef.current = messageId;
+      settledTimelineAnchorRef.current = null;
+      const positionAnchor = (remainingAttempts: number) => {
+        requestAnimationFrame(() => {
           if (positionedTimelineAnchorRef.current !== messageId) {
             return;
           }
-          const scrollOffset = list.getState().scroll;
-          void list.scrollToOffset({ offset: scrollOffset, animated: false });
-          settledTimelineAnchorRef.current = messageId;
-        };
-        const fallbackTimer = window.setTimeout(finishAnimatedPositioning, 750);
-        scrollNode.addEventListener("scrollend", finishAnimatedPositioning, { once: true });
-        void list.scrollToIndex({
-          index: anchorIndex,
-          animated: true,
-          viewPosition: 0,
-          viewOffset: CHAT_LIST_ANCHOR_OFFSET,
+          const list = legendListRef.current;
+          if (!list) {
+            if (remainingAttempts > 0) {
+              positionAnchor(remainingAttempts - 1);
+            }
+            return;
+          }
+          const scrollNode = list.getScrollableNode();
+          let finished = false;
+          const finishAnimatedPositioning = () => {
+            if (finished) {
+              return;
+            }
+            finished = true;
+            window.clearTimeout(fallbackTimer);
+            scrollNode.removeEventListener("scrollend", finishAnimatedPositioning);
+            if (positionedTimelineAnchorRef.current !== messageId) {
+              return;
+            }
+            const scrollOffset = list.getState().scroll;
+            markTimelineProgrammaticScroll();
+            void list.scrollToOffset({ offset: scrollOffset, animated: false });
+            settledTimelineAnchorRef.current = messageId;
+          };
+          const fallbackTimer = window.setTimeout(finishAnimatedPositioning, 750);
+          scrollNode.addEventListener("scrollend", finishAnimatedPositioning, { once: true });
+          markTimelineProgrammaticScroll();
+          void list.scrollToIndex({
+            index: anchorIndex,
+            animated: true,
+            viewPosition: 0,
+            viewOffset: CHAT_LIST_ANCHOR_OFFSET,
+          });
         });
-      });
-    };
-    requestAnimationFrame(() => positionAnchor(12));
-  }, []);
-  const onTimelineAnchorSizeChanged = useCallback((messageId: MessageId) => {
-    if (settledTimelineAnchorRef.current !== messageId) {
-      return;
-    }
-    if (liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current) {
-      return;
-    }
-    const scrollOffset = legendListRef.current?.getState().scroll;
-    if (scrollOffset === undefined) {
-      return;
-    }
-    if (pendingAnchorScrollRestoreRef.current === null) {
-      pendingAnchorScrollRestoreRef.current = {
-        messageId,
-        offset: scrollOffset,
-        userScrollGeneration: anchorUserScrollGenerationRef.current,
       };
-    }
-    if (anchorScrollRestoreFrameRef.current !== null) {
-      return;
-    }
-    anchorScrollRestoreFrameRef.current = requestAnimationFrame(() => {
-      anchorScrollRestoreFrameRef.current = null;
-      const pending = pendingAnchorScrollRestoreRef.current;
-      pendingAnchorScrollRestoreRef.current = null;
-      if (
-        pending &&
-        settledTimelineAnchorRef.current === pending.messageId &&
-        pending.userScrollGeneration === anchorUserScrollGenerationRef.current
-      ) {
-        const list = legendListRef.current;
-        const currentScrollOffset = list?.getState().scroll;
-        if (
-          typeof currentScrollOffset === "number" &&
-          Math.abs(currentScrollOffset - pending.offset) <= 2
-        ) {
-          void list?.scrollToOffset({ offset: pending.offset, animated: false });
-        }
+      requestAnimationFrame(() => positionAnchor(12));
+    },
+    [markTimelineProgrammaticScroll],
+  );
+  const onTimelineAnchorSizeChanged = useCallback(
+    (messageId: MessageId) => {
+      if (settledTimelineAnchorRef.current !== messageId) {
+        return;
       }
-    });
-  }, []);
+      if (liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current) {
+        return;
+      }
+      const scrollOffset = legendListRef.current?.getState().scroll;
+      if (scrollOffset === undefined) {
+        return;
+      }
+      if (pendingAnchorScrollRestoreRef.current === null) {
+        pendingAnchorScrollRestoreRef.current = {
+          messageId,
+          offset: scrollOffset,
+          userScrollGeneration: anchorUserScrollGenerationRef.current,
+        };
+      }
+      if (anchorScrollRestoreFrameRef.current !== null) {
+        return;
+      }
+      anchorScrollRestoreFrameRef.current = requestAnimationFrame(() => {
+        anchorScrollRestoreFrameRef.current = null;
+        const pending = pendingAnchorScrollRestoreRef.current;
+        pendingAnchorScrollRestoreRef.current = null;
+        if (
+          pending &&
+          settledTimelineAnchorRef.current === pending.messageId &&
+          pending.userScrollGeneration === anchorUserScrollGenerationRef.current
+        ) {
+          const list = legendListRef.current;
+          const currentScrollOffset = list?.getState().scroll;
+          if (
+            typeof currentScrollOffset === "number" &&
+            Math.abs(currentScrollOffset - pending.offset) <= 2
+          ) {
+            markTimelineProgrammaticScroll();
+            void list?.scrollToOffset({ offset: pending.offset, animated: false });
+          }
+        }
+      });
+    },
+    [markTimelineProgrammaticScroll],
+  );
 
-  const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
-    if (
-      !isAtEnd &&
-      liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current
-    ) {
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
+  // Single source of truth for follow-state. Fires on every list scroll event.
+  // We read scrollTop straight off the list so we can tell a user scroll-up
+  // (scrollTop drops) apart from content streaming in below (scrollTop holds).
+  const onIsAtEndChange = useCallback(() => {
+    const state = legendListRef.current?.getState();
+    if (!state) {
       return;
     }
-    if (isAtEndRef.current === isAtEnd) return;
-    isAtEndRef.current = isAtEnd;
-    if (isAtEnd) {
+    const scroll = state.scroll ?? 0;
+    const previousScroll = lastObservedTimelineScrollRef.current;
+    lastObservedTimelineScrollRef.current = scroll;
+
+    const isAtBottom = Boolean(state.isAtEnd);
+    isAtEndRef.current = isAtBottom;
+
+    // The animated anchor scroll runs a long time; treat the whole "positioning
+    // an anchor" phase as programmatic on top of the short post-scroll window.
+    const positioningAnchor =
+      positionedTimelineAnchorRef.current !== null &&
+      settledTimelineAnchorRef.current !== positionedTimelineAnchorRef.current;
+    const isProgrammatic =
+      positioningAnchor || performance.now() < programmaticTimelineScrollUntilRef.current;
+
+    const following =
+      liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current;
+
+    const action = resolveFollowScrollAction({
+      scroll,
+      previousScroll,
+      isAtBottom,
+      isProgrammatic,
+      following,
+    });
+
+    if (action === "break") {
+      cancelTimelineLiveFollowForUserNavigation();
+      showScrollDebouncer.current.maybeExecute();
+      return;
+    }
+    if (action === "resume") {
       timelineScrollModeRef.current = "following-end";
       liveFollowUserScrollGenerationRef.current = anchorUserScrollGenerationRef.current;
       showScrollDebouncer.current.cancel();
       setShowScrollToBottom(false);
+      return;
+    }
+
+    // No follow change: keep the "scroll to end" pill in sync with position.
+    if (following || isAtBottom) {
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
     } else {
-      timelineScrollModeRef.current = "free-scrolling";
-      liveFollowUserScrollGenerationRef.current = null;
       showScrollDebouncer.current.maybeExecute();
     }
-  }, []);
+  }, [cancelTimelineLiveFollowForUserNavigation]);
 
   useEffect(() => {
     if (!activeThread?.id) {
@@ -3622,6 +3646,10 @@ function ChatViewContent(props: ChatViewProps) {
             return;
           }
 
+          // Reveal scrolls only ever move toward the end (downward), so the
+          // scroll-up detector ignores them without a programmatic flag — and
+          // flagging every streamed chunk would hold the guard permanently open
+          // and swallow a real user scroll-up mid-stream.
           const nextOffset = list.getState().scroll + metrics.scrollDeltaToRevealEnd;
           void list.scrollToOffset({ offset: nextOffset, animated: false });
           return;
@@ -3660,6 +3688,8 @@ function ChatViewContent(props: ChatViewProps) {
     positionedTimelineAnchorRef.current = null;
     settledTimelineAnchorRef.current = null;
     activeTimelineAnchorIndexRef.current = null;
+    lastObservedTimelineScrollRef.current = null;
+    programmaticTimelineScrollUntilRef.current = 0;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
     if (planSidebarOpenOnNextThreadRef.current) {
@@ -5392,6 +5422,7 @@ function ChatViewContent(props: ChatViewProps) {
                 contentInsetEndAdjustment={composerOverlayHeight}
                 onIsAtEndChange={onIsAtEndChange}
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                onProgrammaticScroll={markTimelineProgrammaticScroll}
               />
 
               {verboseWorkLog ? <SubagentRail items={subagentRailItems} /> : null}

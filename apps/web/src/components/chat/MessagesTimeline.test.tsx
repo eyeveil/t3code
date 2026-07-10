@@ -193,6 +193,7 @@ function buildProps() {
     contentInsetEndAdjustment: 0,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
+    onProgrammaticScroll: () => {},
   };
 }
 

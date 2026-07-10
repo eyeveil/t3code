@@ -181,6 +181,8 @@ interface MessagesTimelineProps {
   contentInsetEndAdjustment: number;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: () => void;
+  /** Marks the next scroll events as self-induced so follow-state ignores them. */
+  onProgrammaticScroll: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +217,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   contentInsetEndAdjustment,
   onIsAtEndChange,
   onManualNavigation,
+  onProgrammaticScroll,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -259,10 +262,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const list = listRef.current;
       const currentScroll = list?.getState?.().scroll;
       if (list && typeof currentScroll === "number") {
+        onProgrammaticScroll();
         list.scrollToOffset({ offset: currentScroll + delta, animated: false });
       }
     },
-    [listRef],
+    [listRef, onProgrammaticScroll],
   );
 
   // An in-session interrupt leaves its turn expanded so the user keeps their
@@ -514,6 +518,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             stripMap={minimapStripMap}
             onSelect={(item) => {
               onManualNavigation();
+              onProgrammaticScroll();
               void listRef.current?.scrollToIndex({
                 index: item.rowIndex,
                 animated: true,
