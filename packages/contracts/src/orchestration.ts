@@ -480,6 +480,18 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    * sequence on the client).
    */
   afterSequence: Schema.optionalKey(NonNegativeInt),
+  /**
+   * Opt-in signal: when `true`, the server emits an explicit
+   * `{ kind: "caught-up" }` control frame after the historical replay tail (or
+   * the initial snapshot) and before the live feed, so the client knows exactly
+   * when the catch-up window ends and can batch replayed events into a single
+   * publish. Gated because older clients decode the stream against a union that
+   * does not include the `caught-up` variant and would hard-fail on it; only
+   * new clients that understand the frame request it. Servers that predate this
+   * field ignore it (excess input properties are dropped on decode), so a new
+   * client falls back to per-event replay against an old server.
+   */
+  signalCaughtUp: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
@@ -1150,6 +1162,18 @@ export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("event"),
     event: OrchestrationEvent,
+  }),
+  // Control frame delimiting the end of the catch-up replay (see
+  // `OrchestrationSubscribeThreadInput.signalCaughtUp`). Emitted only when the
+  // client opts in, so older clients — whose decode union lacks this variant —
+  // never receive it. `sequence` is the newest replayed sequence (or the resume
+  // cursor when nothing was replayed) and is informational: the client uses the
+  // frame purely as a signal to flush its batched replay and switch to
+  // per-event live publishing.
+  Schema.Struct({
+    kind: Schema.Literal("caught-up"),
+    threadId: ThreadId,
+    sequence: NonNegativeInt,
   }),
 ]);
 export type OrchestrationThreadStreamItem = typeof OrchestrationThreadStreamItem.Type;

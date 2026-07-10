@@ -1235,6 +1235,12 @@ const makeWsRpcLayer = (
               // page-bounded limit): the range is normally tiny (a fresh HTTP
               // snapshot sequence) and the per-thread filter runs after reading,
               // so a global cap could otherwise omit this thread's events.
+              // Opt-in `caught-up` control frame (see
+              // `OrchestrationSubscribeThreadInput.signalCaughtUp`). Only new
+              // clients that decode the frame request it; old clients never set
+              // the flag and so never receive an item their union can't decode.
+              const signalCaughtUp = input.signalCaughtUp === true;
+
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 return Stream.unwrap(
@@ -1243,10 +1249,15 @@ const makeWsRpcLayer = (
                     yield* Effect.forkScoped(
                       liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
                     );
+                    // Track the newest replayed sequence so the sentinel carries
+                    // an accurate final cursor (falls back to the resume point
+                    // when nothing was replayed).
+                    const lastReplayedSequence = yield* Ref.make(afterSequence);
                     const catchUpStream = orchestrationEngine
                       .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
                       .pipe(
                         Stream.filter(isThisThreadDetailEvent),
+                        Stream.tap((event) => Ref.set(lastReplayedSequence, event.sequence)),
                         Stream.map((event) => ({ kind: "event" as const, event })),
                         Stream.mapError(
                           (cause) =>
@@ -1256,7 +1267,22 @@ const makeWsRpcLayer = (
                             }),
                         ),
                       );
-                    return Stream.concat(catchUpStream, Stream.fromQueue(liveBuffer));
+                    if (!signalCaughtUp) {
+                      return Stream.concat(catchUpStream, Stream.fromQueue(liveBuffer));
+                    }
+                    const sentinel = Stream.fromEffect(
+                      Ref.get(lastReplayedSequence).pipe(
+                        Effect.map((sequence) => ({
+                          kind: "caught-up" as const,
+                          threadId: input.threadId,
+                          sequence,
+                        })),
+                      ),
+                    );
+                    return Stream.concat(
+                      Stream.concat(catchUpStream, sentinel),
+                      Stream.fromQueue(liveBuffer),
+                    );
                   }),
                 );
               }
@@ -1280,13 +1306,24 @@ const makeWsRpcLayer = (
                 });
               }
 
-              return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: snapshot.value,
-                }),
-                liveStream,
-              );
+              const snapshotHead: Stream.Stream<OrchestrationThreadStreamItem> = signalCaughtUp
+                ? Stream.make(
+                    {
+                      kind: "snapshot" as const,
+                      snapshot: snapshot.value,
+                    },
+                    {
+                      kind: "caught-up" as const,
+                      threadId: input.threadId,
+                      sequence: snapshot.value.snapshotSequence,
+                    },
+                  )
+                : Stream.make({
+                    kind: "snapshot" as const,
+                    snapshot: snapshot.value,
+                  });
+
+              return Stream.concat(snapshotHead, liveStream);
             }),
             { "rpc.aggregate": "orchestration" },
           ),

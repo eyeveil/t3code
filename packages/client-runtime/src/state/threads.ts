@@ -7,9 +7,12 @@ import {
   type ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
@@ -29,6 +32,23 @@ import {
   type EnvironmentThreadState,
   type EnvironmentThreadStatus,
 } from "./threadState.ts";
+
+// Opening a thread replays the tail of events missed while disconnected. The
+// server streams them one-by-one and each publish rebuilds the whole thread
+// feed downstream (mobile LegendList reconcile, web timeline), so a long tail
+// used to trigger dozens/hundreds of rebuilds before the UI settled. While
+// catching up we instead reduce events into a working copy and publish at most
+// once per CATCHUP_BATCH_MAX_EVENTS or per CATCHUP_BATCH_INTERVAL, then publish
+// once more when the server's `caught-up` sentinel arrives and switch to
+// per-event live publishing.
+const CATCHUP_BATCH_MAX_EVENTS = 25;
+const CATCHUP_BATCH_INTERVAL = "100 millis";
+// Fallback when the sentinel never arrives (an older server that does not
+// understand `signalCaughtUp`): once the replay has been idle this long we
+// assume catch-up is done, flush, and switch to per-event live publishing so we
+// never wedge in batching mode. Measured from the last received item, or from
+// subscription start when nothing has arrived yet.
+const CATCHUP_IDLE_FALLBACK_MS = 250;
 
 function statusWithoutLiveData(data: Option.Option<OrchestrationThread>): EnvironmentThreadStatus {
   return Option.isSome(data) ? "cached" : "empty";
@@ -160,35 +180,134 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
-  const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
-    item: OrchestrationThreadStreamItem,
+  // Working (unpublished) copy of the thread, reduced during catch-up. Mirrors
+  // `state.data` but lets us fold many replayed events before a single publish.
+  const working = yield* Ref.make<Option.Option<OrchestrationThread>>(cachedThread);
+  // true while replaying the catch-up tail; false once the `caught-up` sentinel
+  // arrives (or the idle fallback fires) and we publish per live event.
+  const catchingUp = yield* Ref.make(true);
+  // Events reduced into `working` but not yet published.
+  const pendingEvents = yield* Ref.make(0);
+  // Timestamp (ms) of the most recent received item (or drain start); drives the
+  // idle fallback that ends catch-up when no sentinel ever arrives.
+  const lastItemAt = yield* Ref.make<Option.Option<number>>(Option.none());
+  // Serializes the reduce path against the batch-interval maintenance fiber so
+  // they never race on `working`/`state`.
+  const drainLock = yield* Semaphore.make(1);
+
+  // Publish the working copy as the live state. Callers must hold `drainLock`.
+  const publishWorking = Effect.fn("EnvironmentThreadState.publishWorking")(function* () {
+    yield* Ref.set(pendingEvents, 0);
+    const data = yield* Ref.get(working);
+    if (Option.isSome(data)) {
+      yield* setThread(data.value);
+    }
+  });
+
+  // Reduce one stream item into `working`/`lastSequence` without publishing.
+  // Returns whether the reduction produced a publishable change; deletion is
+  // terminal. Dedupes replayed events by sequence, exactly as before.
+  const reduceItem = Effect.fn("EnvironmentThreadState.reduceItem")(function* (
+    item: Exclude<OrchestrationThreadStreamItem, { readonly kind: "caught-up" }>,
   ) {
     if (item.kind === "snapshot") {
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
-      yield* setThread(item.snapshot.thread);
-      return;
+      yield* Ref.set(working, Option.some(item.snapshot.thread));
+      return "updated" as const;
     }
-
     const sequence = yield* SubscriptionRef.get(lastSequence);
     if (item.event.sequence <= sequence) {
-      return;
+      return "none" as const;
     }
     yield* SubscriptionRef.set(lastSequence, item.event.sequence);
-
-    const current = yield* SubscriptionRef.get(state);
-    if (Option.isNone(current.data)) {
-      if (item.event.type === "thread.deleted") {
-        yield* setDeleted();
-      }
-      return;
+    const data = yield* Ref.get(working);
+    if (Option.isNone(data)) {
+      return item.event.type === "thread.deleted" ? ("deleted" as const) : ("none" as const);
     }
-    const result = applyThreadDetailEvent(current.data.value, item.event);
+    const result = applyThreadDetailEvent(data.value, item.event);
     if (result.kind === "updated") {
-      yield* setThread(result.thread);
-    } else if (result.kind === "deleted") {
-      yield* setDeleted();
+      yield* Ref.set(working, Option.some(result.thread));
+      return "updated" as const;
     }
+    if (result.kind === "deleted") {
+      yield* Ref.set(working, Option.none());
+      return "deleted" as const;
+    }
+    return "none" as const;
   });
+
+  // Consume one stream item: batch during catch-up, publish per event once live.
+  // Serialized via `drainLock`.
+  const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
+    item: OrchestrationThreadStreamItem,
+  ) {
+    yield* drainLock.withPermits(1)(
+      Effect.gen(function* () {
+        yield* Ref.set(lastItemAt, Option.some(yield* Clock.currentTimeMillis));
+
+        if (item.kind === "caught-up") {
+          // End of the replay window: flush the batch and switch to live.
+          yield* publishWorking();
+          yield* Ref.set(catchingUp, false);
+          return;
+        }
+
+        if (item.kind === "snapshot") {
+          // A snapshot is the initial full state (or a resubscribe reset);
+          // publish immediately so first paint is not delayed by batching.
+          yield* reduceItem(item);
+          yield* publishWorking();
+          return;
+        }
+
+        const outcome = yield* reduceItem(item);
+        if (outcome === "deleted") {
+          yield* setDeleted();
+          yield* Ref.set(catchingUp, false);
+          return;
+        }
+        if (outcome === "none") {
+          return;
+        }
+        if (!(yield* Ref.get(catchingUp))) {
+          yield* publishWorking();
+          return;
+        }
+        const count = yield* Ref.updateAndGet(pendingEvents, (value) => value + 1);
+        if (count >= CATCHUP_BATCH_MAX_EVENTS) {
+          yield* publishWorking();
+        }
+      }),
+    );
+  });
+
+  // While catching up, flush the batch on the interval and detect an idle tail
+  // as a fallback for servers that never send the sentinel. Stops once live.
+  const catchUpMaintenance: Effect.Effect<void> = Effect.suspend(() =>
+    Effect.gen(function* () {
+      yield* Effect.sleep(CATCHUP_BATCH_INTERVAL);
+      const done = yield* drainLock.withPermits(1)(
+        Effect.gen(function* () {
+          if (!(yield* Ref.get(catchingUp))) {
+            return true;
+          }
+          if ((yield* Ref.get(pendingEvents)) > 0) {
+            yield* publishWorking();
+          }
+          const now = yield* Clock.currentTimeMillis;
+          const reference = Option.getOrElse(yield* Ref.get(lastItemAt), () => now);
+          if (now - reference >= CATCHUP_IDLE_FALLBACK_MS) {
+            yield* Ref.set(catchingUp, false);
+            return true;
+          }
+          return false;
+        }),
+      );
+      if (!done) {
+        yield* catchUpMaintenance;
+      }
+    }),
+  );
 
   yield* SubscriptionRef.changes(supervisor.state).pipe(
     Stream.runForEach((connectionState) => {
@@ -236,10 +355,23 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* applyItem({ kind: "snapshot", snapshot: base.value });
       }
 
+      // Opt into the `caught-up` sentinel so the server tells us when the replay
+      // tail ends; older servers ignore the flag and we fall back to the idle
+      // heuristic in `catchUpMaintenance`.
       const subscribeInput = Option.match(base, {
-        onNone: () => ({ threadId }),
-        onSome: (snapshot) => ({ threadId, afterSequence: snapshot.snapshotSequence }),
+        onNone: () => ({ threadId, signalCaughtUp: true }),
+        onSome: (snapshot) => ({
+          threadId,
+          afterSequence: snapshot.snapshotSequence,
+          signalCaughtUp: true,
+        }),
       });
+
+      // Seed the idle clock from drain start so the fallback can fire even if no
+      // item ever arrives (old server, empty replay), then run the batch flusher
+      // alongside the subscription.
+      yield* Ref.set(lastItemAt, Option.some(yield* Clock.currentTimeMillis));
+      yield* Effect.forkScoped(catchUpMaintenance);
 
       yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeThread, subscribeInput, {
         onExpectedFailure: setStreamError,
@@ -248,10 +380,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }),
   );
 
+  // Persist from `working`, not the published `state`: during catch-up we
+  // advance `lastSequence` as events are reduced but only publish `state` on a
+  // batch boundary, so `working` (plus `lastSequence`) is the consistent latest.
+  // Reading `state` here could pair a stale thread with a newer sequence and
+  // make the next warm resume skip the batched-but-unpublished events.
   yield* Effect.addFinalizer(() =>
-    Effect.all([SubscriptionRef.get(state), SubscriptionRef.get(lastSequence)]).pipe(
-      Effect.flatMap(([current, snapshotSequence]) =>
-        Option.match(current.data, {
+    Effect.all([Ref.get(working), SubscriptionRef.get(lastSequence)]).pipe(
+      Effect.flatMap(([data, snapshotSequence]) =>
+        Option.match(data, {
           onNone: () => Effect.void,
           onSome: (thread) => persist({ snapshotSequence, thread }),
         }),

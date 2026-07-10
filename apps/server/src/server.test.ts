@@ -16,6 +16,7 @@ import {
   KeybindingRule,
   MessageId,
   ExternalLauncherCommandNotFoundError,
+  type OrchestrationThread,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
@@ -172,6 +173,30 @@ const makeDefaultOrchestrationReadModel = () => {
         deletedAt: null,
       },
     ],
+  };
+};
+
+const makeDefaultOrchestrationThreadDetail = (): OrchestrationThread => {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    id: defaultThreadId,
+    projectId: defaultProjectId,
+    title: "Default Thread",
+    modelSelection: defaultModelSelection,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    latestTurn: null,
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    deletedAt: null,
+    messages: [],
+    proposedPlans: [],
+    activities: [],
+    checkpoints: [],
+    session: null,
   };
 };
 
@@ -5607,6 +5632,125 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result.failure._tag === "OrchestrationGetSnapshotError");
       assertTrue(result.failure.cause instanceof Error);
       assert.include(result.failure.cause.message, projectionError.message);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("emits a caught-up sentinel after the thread snapshot when the client opts in", () =>
+    Effect.gen(function* () {
+      const detailThread = makeDefaultOrchestrationThreadDetail();
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(Option.some({ snapshotSequence: 3, thread: detailThread })),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            signalCaughtUp: true,
+          }).pipe(Stream.runCollect),
+        ),
+      );
+
+      // Snapshot, then the caught-up control frame, before the (empty) live feed
+      // completes the stream.
+      const [first, second, ...rest] = Array.from(items);
+      assert.equal(rest.length, 0);
+      assert.equal(first?.kind, "snapshot");
+      assertTrue(second?.kind === "caught-up");
+      assert.equal(second.threadId, defaultThreadId);
+      assert.equal(second.sequence, 3);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("omits the caught-up sentinel for clients that do not opt in", () =>
+    Effect.gen(function* () {
+      const detailThread = makeDefaultOrchestrationThreadDetail();
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(Option.some({ snapshotSequence: 3, thread: detailThread })),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+          }).pipe(Stream.runCollect),
+        ),
+      );
+
+      // Old-client behavior: only the snapshot, no unknown control frame that an
+      // older decode union could not handle.
+      const collected = Array.from(items);
+      assert.equal(collected.length, 1);
+      assert.equal(collected[0]?.kind, "snapshot");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("carries the final replayed sequence on the resumed catch-up sentinel", () =>
+    Effect.gen(function* () {
+      const now = "2026-04-05T00:00:00.000Z";
+      const replayedEvent = {
+        eventId: EventId.make("event-thread-session"),
+        sequence: 5,
+        aggregateKind: "thread" as const,
+        aggregateId: defaultThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.session-set" as const,
+        payload: {
+          threadId: defaultThreadId,
+          session: {
+            threadId: defaultThreadId,
+            status: "ready" as const,
+            providerName: "claudeAgent",
+            runtimeMode: "full-access" as const,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.session-set" }>;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            readEvents: () => Stream.make(replayedEvent),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      // The live feed after the sentinel never completes, so bound the take to
+      // the replayed event plus the sentinel.
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 0,
+            signalCaughtUp: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      const [first, second] = Array.from(items);
+      assert.equal(first?.kind, "event");
+      assertTrue(second?.kind === "caught-up");
+      // Final sequence is the newest replayed event, not the resume cursor.
+      assert.equal(second.sequence, 5);
+      assert.equal(second.threadId, defaultThreadId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
