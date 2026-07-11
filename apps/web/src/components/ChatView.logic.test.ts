@@ -14,6 +14,7 @@ import {
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
   resolveSendEnvMode,
+  resolveThreadBannerError,
   shouldQueueMessageWhileBusy,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
@@ -380,6 +381,92 @@ describe("shouldWriteThreadErrorToCurrentServerThread", () => {
         targetThreadId: threadId,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveThreadBannerError", () => {
+  it("shows the server-persisted lastError when nothing is dismissed", () => {
+    expect(
+      resolveThreadBannerError({
+        localError: null,
+        sessionLastError: "[ede_diagnostic] result_type=user",
+        dismissedLastError: null,
+      }),
+    ).toBe("[ede_diagnostic] result_type=user");
+  });
+
+  it("suppresses the exact dismissed lastError", () => {
+    expect(
+      resolveThreadBannerError({
+        localError: null,
+        sessionLastError: "[ede_diagnostic] result_type=user",
+        dismissedLastError: "[ede_diagnostic] result_type=user",
+      }),
+    ).toBeNull();
+  });
+
+  it("re-shows when a different lastError arrives after a dismissal", () => {
+    expect(
+      resolveThreadBannerError({
+        localError: null,
+        sessionLastError: "a brand new error",
+        dismissedLastError: "[ede_diagnostic] result_type=user",
+      }),
+    ).toBe("a brand new error");
+  });
+
+  it("keeps local overlay errors working and unaffected by dismissed lastError", () => {
+    // A local error always wins over the session error.
+    expect(
+      resolveThreadBannerError({
+        localError: "Select a base branch before sending.",
+        sessionLastError: "[ede_diagnostic] result_type=user",
+        dismissedLastError: null,
+      }),
+    ).toBe("Select a base branch before sending.");
+    // Even when the dismissed value matches the session error, a live local
+    // error is still shown.
+    expect(
+      resolveThreadBannerError({
+        localError: "Select a base branch before sending.",
+        sessionLastError: "[ede_diagnostic] result_type=user",
+        dismissedLastError: "[ede_diagnostic] result_type=user",
+      }),
+    ).toBe("Select a base branch before sending.");
+  });
+
+  it("returns null when there is no error at all", () => {
+    expect(
+      resolveThreadBannerError({
+        localError: null,
+        sessionLastError: null,
+        dismissedLastError: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not suppress a null session error when the dismissal record is also null", () => {
+    // Guards against a null===null false-positive suppression.
+    expect(
+      resolveThreadBannerError({
+        localError: null,
+        sessionLastError: null,
+        dismissedLastError: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("re-shows on thread switch when the new thread's dismissal record is empty", () => {
+    // Thread switch reads a fresh (empty) dismissal entry for the new key, so
+    // that thread's persisted error is not suppressed by another thread's
+    // dismissal.
+    expect(
+      resolveThreadBannerError({
+        localError: null,
+        sessionLastError: "[ede_diagnostic] result_type=user",
+        dismissedLastError: null,
+      }),
+    ).toBe("[ede_diagnostic] result_type=user");
   });
 });
 

@@ -75,6 +75,41 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
+export interface ResolveThreadBannerErrorInput {
+  /**
+   * The thread's local overlay error (e.g. "Select a base branch..."), or
+   * `null` when there is no local override. A dismissed local error is cleared
+   * to `null` by the caller, so a non-null value here is always a live error.
+   */
+  localError: string | null;
+  /** The server-persisted `session.lastError`, or `null`. */
+  sessionLastError: string | null;
+  /**
+   * The exact `session.lastError` value the user last dismissed for this
+   * thread, or `null` if nothing was dismissed. Only this exact value stays
+   * suppressed; a different (new) lastError re-shows the banner.
+   */
+  dismissedLastError: string | null;
+}
+
+/**
+ * Decide which error the thread banner should display.
+ *
+ * A local overlay error always wins and is shown as-is. Otherwise we fall back
+ * to the server-persisted session error — but suppress it when it exactly
+ * matches the value the user dismissed, so dismissing a persisted error sticks
+ * until a genuinely different error arrives.
+ */
+export function resolveThreadBannerError(input: ResolveThreadBannerErrorInput): string | null {
+  if (input.localError !== null) {
+    return input.localError;
+  }
+  if (input.sessionLastError !== null && input.sessionLastError === input.dismissedLastError) {
+    return null;
+  }
+  return input.sessionLastError;
+}
+
 export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
   threadId: ThreadId;
   turnId?: TurnId;

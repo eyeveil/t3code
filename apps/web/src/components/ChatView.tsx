@@ -253,6 +253,7 @@ import {
   readFileAsDataUrl,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
+  resolveThreadBannerError,
   shouldQueueMessageWhileBusy,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
@@ -1139,6 +1140,12 @@ function ChatViewContent(props: ChatViewProps) {
   const [localServerErrorsByThreadKey, setLocalServerErrorsByThreadKey] = useState<
     Record<string, string | null>
   >({});
+  // Per-thread-key record of the exact `session.lastError` value the user
+  // dismissed. Keyed the same way as `localServerErrorsByThreadKey`, so it is
+  // naturally scoped per thread and a thread switch reads a fresh entry.
+  const [dismissedLastErrorByThreadKey, setDismissedLastErrorByThreadKey] = useState<
+    Record<string, string>
+  >({});
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
@@ -1276,7 +1283,11 @@ function ChatViewContent(props: ChatViewProps) {
   const isServerThread = routeKind === "server" && serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const threadError = isServerThread
-    ? (localServerError ?? serverThread?.session?.lastError ?? null)
+    ? resolveThreadBannerError({
+        localError: localServerError,
+        sessionLastError: serverThread?.session?.lastError ?? null,
+        dismissedLastError: dismissedLastErrorByThreadKey[routeThreadKey] ?? null,
+      })
     : localDraftError;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
@@ -2324,6 +2335,23 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [draftId, routeThreadKey, routeThreadRef, serverThread],
   );
+
+  // Dismissing the banner clears any local overlay error AND records the
+  // current server-persisted `session.lastError` so the derivation suppresses
+  // that exact value. A later, different lastError won't match and re-shows.
+  const dismissThreadError = useCallback(() => {
+    if (!activeThread) return;
+    if (isServerThread) {
+      const sessionLastError = serverThread?.session?.lastError ?? null;
+      if (sessionLastError !== null) {
+        setDismissedLastErrorByThreadKey((existing) => {
+          if (existing[routeThreadKey] === sessionLastError) return existing;
+          return { ...existing, [routeThreadKey]: sessionLastError };
+        });
+      }
+    }
+    setThreadError(activeThread.id, null);
+  }, [activeThread, isServerThread, routeThreadKey, serverThread, setThreadError]);
 
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
@@ -5378,10 +5406,7 @@ function ChatViewContent(props: ChatViewProps) {
 
         {/* Error banner */}
         <ProviderStatusBanner status={activeProviderStatus} />
-        <ThreadErrorBanner
-          error={threadError}
-          onDismiss={() => setThreadError(activeThread.id, null)}
-        />
+        <ThreadErrorBanner error={threadError} onDismiss={dismissThreadError} />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
