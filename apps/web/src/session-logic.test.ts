@@ -16,6 +16,8 @@ import {
   deriveSubagentRailItems,
   deriveTimelineEntries,
   deriveWorkLogEntries,
+  detectExternalAgentInvocation,
+  externalAgentMonitorCommand,
   type WorkLogEntry,
   findLatestProposedPlan,
   findSidebarProposedPlan,
@@ -2201,5 +2203,220 @@ describe("deriveSubagentPanelItems", () => {
     ];
 
     expect(deriveSubagentPanelItems(entries, [])).toEqual([]);
+  });
+
+  // Mirrors the real pipeline: `externalAgent` is populated at entry-build time
+  // from the command, so tests derive it the same way from `rawCommand`.
+  function makeExternalEntry(overrides: Partial<WorkLogEntry> & { id: string }): WorkLogEntry {
+    const rawCommand = overrides.rawCommand ?? overrides.command;
+    const detected = rawCommand ? detectExternalAgentInvocation(rawCommand) : null;
+    return {
+      createdAt: "2026-02-23T00:00:01.000Z",
+      turnId,
+      label: "Bash",
+      tone: "tool",
+      itemType: "command_execution",
+      ...(detected ? { externalAgent: detected } : {}),
+      ...overrides,
+    };
+  }
+
+  it("surfaces a foreground codex exec as a running external row", () => {
+    const entries = [
+      makeExternalEntry({
+        id: "codex-fg",
+        rawCommand: 'codex exec "refactor the auth module"',
+        toolLifecycleStatus: "inProgress",
+      }),
+    ];
+    const [item] = deriveSubagentPanelItems(entries, []);
+    expect(item?.name).toBe("codex (exec)");
+    expect(item?.status).toBe("running");
+    expect(item?.detail).toBe("refactor the auth module");
+    expect(item?.external?.tool).toBe("codex");
+    expect(item?.external?.detached).toBe(false);
+  });
+
+  it("marks a completed detached launch as detached, never running or completed", () => {
+    const entries = [
+      makeExternalEntry({
+        id: "omp-detached",
+        rawCommand: "nohup omp -p --model fable @prompt.md > /tmp/run.log 2>&1 &",
+        // The launch shell returned immediately…
+        toolLifecycleStatus: "completed",
+      }),
+    ];
+    const [item] = deriveSubagentPanelItems(entries, []);
+    expect(item?.name).toBe("omp (-p)");
+    // …but the worker outlives it, so the row stays honest.
+    expect(item?.status).toBe("detached");
+    expect(item?.external?.detached).toBe(true);
+    expect(item?.external?.monitorCommand).toBe("tail -f -n 200 /tmp/run.log");
+  });
+
+  it("maps a finished foreground exec straight from its lifecycle", () => {
+    const entries = [
+      makeExternalEntry({
+        id: "claude-fg-done",
+        rawCommand: 'claude -p "summarize the diff"',
+        toolLifecycleStatus: "completed",
+      }),
+    ];
+    expect(deriveSubagentPanelItems(entries, [])[0]?.status).toBe("completed");
+  });
+
+  it("orders running, then detached, then done", () => {
+    const entries = [
+      makeExternalEntry({
+        id: "done",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        rawCommand: 'claude -p "x"',
+        toolLifecycleStatus: "completed",
+      }),
+      makeExternalEntry({
+        id: "detached",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        rawCommand: "nohup pi -p @plan.md &",
+        toolLifecycleStatus: "completed",
+      }),
+      makeExternalEntry({
+        id: "running",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        rawCommand: "codex exec go",
+        toolLifecycleStatus: "inProgress",
+      }),
+    ];
+    expect(deriveSubagentPanelItems(entries, []).map((i) => i.id)).toEqual([
+      "running",
+      "detached",
+      "done",
+    ]);
+  });
+
+  it("provides a tmux attach monitor command when a target was launched", () => {
+    const entries = [
+      makeExternalEntry({
+        id: "tmux-launch",
+        rawCommand: "tmux new-window -n build -t work 'codex exec build the app'",
+        toolLifecycleStatus: "completed",
+      }),
+    ];
+    const [item] = deriveSubagentPanelItems(entries, []);
+    expect(item?.status).toBe("detached");
+    expect(item?.external?.monitorCommand).toBe("tmux attach -t work");
+  });
+
+  it("ignores command_execution rows that are not agent launches", () => {
+    const entries = [
+      makeExternalEntry({ id: "plain-ls", rawCommand: "ls -la", toolLifecycleStatus: "completed" }),
+      makeExternalEntry({
+        id: "codex-login",
+        rawCommand: "codex login",
+        toolLifecycleStatus: "completed",
+      }),
+    ];
+    expect(deriveSubagentPanelItems(entries, [])).toEqual([]);
+  });
+});
+
+describe("detectExternalAgentInvocation", () => {
+  it("recognizes each supported CLI's non-interactive form", () => {
+    expect(detectExternalAgentInvocation("codex exec do stuff")?.tool).toBe("codex");
+    expect(detectExternalAgentInvocation("codex e do stuff")?.tool).toBe("codex");
+    expect(detectExternalAgentInvocation("omp -p @plan.md")?.tool).toBe("omp");
+    expect(detectExternalAgentInvocation("omp --print hi")?.tool).toBe("omp");
+    expect(detectExternalAgentInvocation('claude -p "go"')?.tool).toBe("claude");
+    expect(detectExternalAgentInvocation("pi -p @x.md")?.tool).toBe("pi");
+  });
+
+  it("sees through nohup / tmux / shell -c / env / pipe / & wrapping", () => {
+    expect(
+      detectExternalAgentInvocation("nohup codex exec 'build' > /tmp/a.log 2>&1 &")?.tool,
+    ).toBe("codex");
+    expect(
+      detectExternalAgentInvocation("tmux send-keys -t s:1 'omp -p @plan.md' Enter")?.tool,
+    ).toBe("omp");
+    expect(detectExternalAgentInvocation('bash -c "claude -p \\"hey\\""')?.tool).toBe("claude");
+    expect(detectExternalAgentInvocation("FOO=bar codex exec go")?.tool).toBe("codex");
+    expect(detectExternalAgentInvocation("cat notes | omp -p")?.tool).toBe("omp");
+  });
+
+  it("does NOT match non-agent or interactive invocations", () => {
+    expect(detectExternalAgentInvocation("codex login")).toBeNull();
+    // `-p` on codex is --profile, not a prompt — not a non-interactive run.
+    expect(detectExternalAgentInvocation("codex -p work")).toBeNull();
+    expect(detectExternalAgentInvocation("codex exec-server start")).toBeNull();
+    expect(detectExternalAgentInvocation("codex")).toBeNull();
+    // Bare interactive assistants (no -p/--print).
+    expect(detectExternalAgentInvocation("omp")).toBeNull();
+    expect(detectExternalAgentInvocation("claude")).toBeNull();
+    expect(detectExternalAgentInvocation("pip install requests")).toBeNull();
+    expect(detectExternalAgentInvocation("ls -la")).toBeNull();
+    expect(detectExternalAgentInvocation("")).toBeNull();
+  });
+
+  it("does not let a -p in a separate command segment count as print mode", () => {
+    // The `-p` belongs to mkdir, in a segment after the `;` — omp here is bare.
+    expect(detectExternalAgentInvocation("omp; mkdir -p out")).toBeNull();
+  });
+
+  it("extracts a @promptfile basename as the label", () => {
+    expect(detectExternalAgentInvocation("omp -p @prompts/deep/plan.md")?.label).toBe("plan.md");
+  });
+
+  it("falls back to the inline quoted prompt, then --model", () => {
+    expect(detectExternalAgentInvocation('codex exec "fix the flaky test"')?.label).toBe(
+      "fix the flaky test",
+    );
+    expect(detectExternalAgentInvocation("codex exec --model gpt-5.5 go")?.label).toBe("gpt-5.5");
+  });
+
+  it("extracts a log path from a redirect, preferring it over /dev/null", () => {
+    const inv = detectExternalAgentInvocation("nohup codex exec go 2>/dev/null > /tmp/run.log &");
+    expect(inv?.logPath).toBe("/tmp/run.log");
+    expect(inv?.detached).toBe(true);
+  });
+
+  it("extracts a log path from codex --output-last-message", () => {
+    expect(
+      detectExternalAgentInvocation("codex exec go --output-last-message /tmp/last.txt")?.logPath,
+    ).toBe("/tmp/last.txt");
+  });
+
+  it("extracts a tmux target and window name", () => {
+    const inv = detectExternalAgentInvocation("tmux new-window -n worker -t main 'codex exec go'");
+    expect(inv?.tmuxTarget).toBe("main");
+    expect(inv?.detached).toBe(true);
+  });
+
+  it("builds a monitor command preferring a log path over a tmux target", () => {
+    const withLog = detectExternalAgentInvocation("codex exec go > /tmp/a.log");
+    expect(withLog && externalAgentMonitorCommand(withLog)).toBe("tail -f -n 200 /tmp/a.log");
+    const withTmux = detectExternalAgentInvocation("tmux send-keys -t s:0 'omp -p @x.md' Enter");
+    expect(withTmux && externalAgentMonitorCommand(withTmux)).toBe("tmux attach -t s:0");
+    const bare = detectExternalAgentInvocation("codex exec go");
+    expect(bare && externalAgentMonitorCommand(bare)).toBeNull();
+  });
+
+  it("populates externalAgent end-to-end from a command_execution activity", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "ext-cmd",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          data: { item: { command: "codex exec 'ship the feature'" } },
+        },
+      }),
+    ];
+    const [entry] = deriveWorkLogEntries(activities);
+    expect(entry?.externalAgent?.tool).toBe("codex");
+    const [row] = deriveSubagentPanelItems(entry ? [entry] : [], []);
+    expect(row?.name).toBe("codex (exec)");
+    expect(row?.status).toBe("running");
+    expect(row?.detail).toBe("ship the feature");
   });
 });

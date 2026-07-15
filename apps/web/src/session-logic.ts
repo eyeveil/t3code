@@ -87,6 +87,13 @@ export interface WorkLogEntry {
    * keyed by this id rather than the (instantly "completed") tool lifecycle.
    */
   subagentTaskId?: string;
+  /**
+   * For `command_execution` rows that shell out to an agent CLI (`codex exec`,
+   * `omp -p`, `claude -p`, `pi -p`, incl. nohup/tmux/shell-wrapped forms): the
+   * parsed invocation, so the Subagents panel can surface the worker even though
+   * t3 only recorded an ordinary command. Detected once at entry-build time.
+   */
+  externalAgent?: ExternalAgentInvocation;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -692,7 +699,13 @@ function hasBracesOnlyStartedArgs(payload: OrchestrationThreadActivity["payload"
   return trimmed.length > 0 && BRACES_ONLY_ARGS_DETAIL.test(trimmed);
 }
 
-export type SubagentRailStatus = "running" | "completed" | "failed";
+/**
+ * `detached` is a status unique to externally-spawned agents: the launching
+ * `command_execution` completed (nohup/tmux/`&` returns immediately) while the
+ * worker keeps running out-of-band, so its true state is unknowable — we refuse
+ * to fake "running".
+ */
+export type SubagentRailStatus = "running" | "completed" | "failed" | "detached";
 
 export interface SubagentRailItem {
   id: string;
@@ -700,6 +713,195 @@ export interface SubagentRailItem {
   detail: string | null;
   status: SubagentRailStatus;
   createdAt: string;
+  /**
+   * Present only for rows derived from a shelled-out agent CLI (not a provider
+   * collab agent). Carries what the row needs to badge itself and offer a
+   * "monitor in terminal" action.
+   */
+  external?: ExternalAgentRowInfo;
+}
+
+export interface ExternalAgentRowInfo {
+  tool: ExternalAgentTool;
+  detached: boolean;
+  /** Full launching command, for the expanded mono view. */
+  command: string;
+  /** `tail -f`/`tmux attach` command a terminal can run to watch the worker, or
+   * null when neither a log path nor a tmux target was extracted. */
+  monitorCommand: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// External agent-CLI detection
+//
+// Sessions frequently spawn workers by SHELLING OUT — `codex exec` in a tmux
+// window, `omp -p --model … @prompt.md`, `claude -p`, `pi -p` — which t3 records
+// as ordinary `command_execution` tool calls, invisible in the Subagents panel.
+// These pure helpers recognise such invocations from a command string (through
+// nohup / tmux / `bash -c` / env-prefix / pipe / `&` wrapping) and extract a
+// best-effort label plus monitor artifacts.
+// ---------------------------------------------------------------------------
+
+export type ExternalAgentTool = "codex" | "omp" | "claude" | "pi";
+
+export interface ExternalAgentInvocation {
+  tool: ExternalAgentTool;
+  /** Row display name, e.g. `codex (exec)` / `omp (-p)`. */
+  displayName: string;
+  /** Best-effort task label, or null when nothing usable was found. */
+  label: string | null;
+  /** Launched to run in the background (nohup / tmux / trailing `&` / disown / setsid). */
+  detached: boolean;
+  /** Log file to tail, from a `>`/`>>` redirect or `--output`/`-o` flag. */
+  logPath: string | null;
+  /** tmux attach target (`-t sess:win`), when present. */
+  tmuxTarget: string | null;
+}
+
+interface ExternalAgentSignature {
+  tool: ExternalAgentTool;
+  /** Row-name suffix describing the non-interactive mode (`exec` / `-p`). */
+  mode: string;
+  /**
+   * Matches the CLI's non-interactive invocation ANYWHERE in the command.
+   * Whole-string scanning (rather than argv parsing) is deliberate: it sees
+   * through nesting like `tmux send-keys 'codex exec …'` or `bash -c "omp -p …"`
+   * since the wrappers only add surrounding characters. The tradeoff is that an
+   * agent-CLI signature buried inside an unrelated quoted string (e.g. a commit
+   * message literally containing "codex exec") can false-positive — an
+   * acceptable, low-harm miss for a realistic command corpus.
+   */
+  match: RegExp;
+}
+
+const EXTERNAL_AGENT_SIGNATURES: ReadonlyArray<ExternalAgentSignature> = [
+  // `codex exec` (alias `codex e`) is Codex's non-interactive form. NOT matched:
+  // `codex -p` (that flag is --profile, not a prompt), `codex login`,
+  // `codex exec-server`, or bare interactive `codex`.
+  { tool: "codex", mode: "exec", match: /\bcodex\s+(?:exec|e)(?![\w-])/ },
+  // Print/non-interactive mode for the assistant CLIs: require a `-p`/`--print`
+  // flag within the same command segment (no `|`/`;`/`&` separator crossed), so
+  // bare interactive `omp`/`claude`/`pi` do not match.
+  { tool: "omp", mode: "-p", match: /\bomp\b(?=[^\n|;&]*?\s(?:-p|--print)(?![\w-]))/ },
+  { tool: "claude", mode: "-p", match: /\bclaude\b(?=[^\n|;&]*?\s(?:-p|--print)(?![\w-]))/ },
+  { tool: "pi", mode: "-p", match: /\bpi\b(?=[^\n|;&]*?\s(?:-p|--print)(?![\w-]))/ },
+];
+
+/** Background-launch markers: the command returns while the worker keeps going. */
+function isDetachedLaunch(command: string): boolean {
+  if (/\bnohup\b/.test(command)) return true;
+  if (/\b(?:disown|setsid)\b/.test(command)) return true;
+  if (/\btmux\s+(?:new-window|neww|new-session|new|send-keys)\b/.test(command)) return true;
+  // A trailing single `&` (job control) — not `&&`.
+  if (/(?:^|[^&])&\s*$/.test(command)) return true;
+  return false;
+}
+
+/** First `@promptfile` argument's basename (e.g. `@prompts/plan.md` → `plan.md`). */
+function extractPromptFileLabel(command: string): string | null {
+  const match = /(?:^|[\s"'=(])@([^\s"'&|;]+)/.exec(command);
+  const path = match?.[1];
+  if (!path) return null;
+  const base = path.split("/").pop();
+  return base && base.length > 0 ? base : path;
+}
+
+/** `--model <v>` / `-m <v>` value. */
+function extractModelLabel(command: string): string | null {
+  const match = /(?:--model|(?:^|\s)-m)[=\s]\s*["']?([^\s"']+)/.exec(command);
+  return match?.[1] ?? null;
+}
+
+/** tmux window name from `-n <name>`. */
+function extractTmuxWindowName(command: string): string | null {
+  const match = /(?:^|\s)-n\s+["']?([^\s"']+)/.exec(command);
+  return match?.[1] ?? null;
+}
+
+/** Longest quoted sentence-like argument — the inline prompt in the common case. */
+function extractInlinePromptLabel(command: string): string | null {
+  const re = /"([^"]{6,})"|'([^']{6,})'/g;
+  let best: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(command)) !== null) {
+    const value = (match[1] ?? match[2] ?? "").trim();
+    // Skip flag values, paths and @files — they identify config, not the task.
+    if (value.length === 0 || /^[-/@]/.test(value)) continue;
+    if (!/[A-Za-z]/.test(value)) continue;
+    if (best === null || value.length > best.length) best = value;
+  }
+  if (best === null) return null;
+  const words = best.split(/\s+/).slice(0, 10).join(" ");
+  return words.length > 80 ? `${words.slice(0, 79)}…` : words;
+}
+
+/** `tmux ... -t <sess[:win]>` attach/send target. */
+function extractTmuxTarget(command: string): string | null {
+  const match = /(?:^|\s)-t\s+["']?([^\s"']+)/.exec(command);
+  return match?.[1] ?? null;
+}
+
+/** Output-log path from a redirect (`>`/`>>`/`&>`) or `--output`/`-o` flag. */
+function extractLogPath(command: string): string | null {
+  const flag = /(?:--output(?:-last-message)?|(?:^|\s)-o)[=\s]\s*["']?([^\s"'&|;]+)/.exec(command);
+  if (flag?.[1]) return flag[1];
+  // Redirects: take the last one so a trailing `> run.log` wins over `2>/dev/null`.
+  const redirect = /(?:^|\s)(?:[12]?>>?|&>)\s*["']?([^\s"'&|;]+)/g;
+  let path: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = redirect.exec(command)) !== null) {
+    const value = match[1];
+    if (value && value !== "/dev/null") path = value;
+  }
+  return path;
+}
+
+/**
+ * Recognise an externally-spawned agent-CLI invocation inside a command string
+ * (typically a `command_execution` entry's `rawCommand ?? command`). Returns the
+ * matched tool, a best-effort task label and optional monitor artifacts, or null
+ * when the command is not an agent launch.
+ *
+ * Label priority: `@promptfile` basename, then the longest quoted inline prompt,
+ * then `--model`, then the tmux `-n` window name. (Unquoted inline prompts are
+ * not mined — quoted prompts cover the common `claude -p "…"` shape.)
+ */
+export function detectExternalAgentInvocation(command: string): ExternalAgentInvocation | null {
+  if (typeof command !== "string" || command.trim().length === 0) return null;
+  for (const sig of EXTERNAL_AGENT_SIGNATURES) {
+    if (!sig.match.test(command)) continue;
+    const label =
+      extractPromptFileLabel(command) ??
+      extractInlinePromptLabel(command) ??
+      extractModelLabel(command) ??
+      extractTmuxWindowName(command);
+    return {
+      tool: sig.tool,
+      displayName: `${sig.tool} (${sig.mode})`,
+      label,
+      detached: isDetachedLaunch(command),
+      logPath: extractLogPath(command),
+      tmuxTarget: extractTmuxTarget(command),
+    };
+  }
+  return null;
+}
+
+/** Wrap a path/target in single quotes when it contains shell-significant chars. */
+function shellQuoteArg(value: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The command a thread terminal can run to watch an external worker: `tail -f`
+ * its log when a log path was found, else `tmux attach` its target. Null when we
+ * have no handle to monitor — the row then offers no "Open in terminal" action.
+ */
+export function externalAgentMonitorCommand(inv: ExternalAgentInvocation): string | null {
+  if (inv.logPath) return `tail -f -n 200 ${shellQuoteArg(inv.logPath)}`;
+  if (inv.tmuxTarget) return `tmux attach -t ${shellQuoteArg(inv.tmuxTarget)}`;
+  return null;
 }
 
 /**
@@ -840,40 +1042,88 @@ function collectSessionSubagents(
   const taskLiveness = indexTaskLiveness(activities);
   const items: SubagentRailItem[] = [];
   for (const entry of entries) {
-    if (entry.itemType !== "collab_agent_tool_call") continue;
-    if (!hasMeaningfulSubagentIdentity(entry)) continue;
-    const { name, detail } = parseSubagentName(entry);
-    const live = entry.subagentTaskId ? taskLiveness.get(entry.subagentTaskId) : undefined;
-    let status: SubagentRailStatus;
-    let statusDetail = detail;
-    if (live && live.terminalStatus === null && live.hasProgress) {
-      // Background agent still working: its collab tool call already reads
-      // "completed", but the task lifecycle proves otherwise. Show it running
-      // with its latest live activity as the detail line.
-      status = "running";
-      statusDetail = live.latestProgressDetail ?? detail;
-    } else if (live?.terminalStatus) {
-      status = live.terminalStatus;
-    } else {
-      status = subagentStatusFromLifecycle(entry.toolLifecycleStatus);
+    if (entry.itemType === "collab_agent_tool_call") {
+      if (!hasMeaningfulSubagentIdentity(entry)) continue;
+      const { name, detail } = parseSubagentName(entry);
+      const live = entry.subagentTaskId ? taskLiveness.get(entry.subagentTaskId) : undefined;
+      let status: SubagentRailStatus;
+      let statusDetail = detail;
+      if (live && live.terminalStatus === null && live.hasProgress) {
+        // Background agent still working: its collab tool call already reads
+        // "completed", but the task lifecycle proves otherwise. Show it running
+        // with its latest live activity as the detail line.
+        status = "running";
+        statusDetail = live.latestProgressDetail ?? detail;
+      } else if (live?.terminalStatus) {
+        status = live.terminalStatus;
+      } else {
+        status = subagentStatusFromLifecycle(entry.toolLifecycleStatus);
+      }
+      items.push({ id: entry.id, name, detail: statusDetail, status, createdAt: entry.createdAt });
+      continue;
     }
-    items.push({ id: entry.id, name, detail: statusDetail, status, createdAt: entry.createdAt });
+    if (entry.itemType === "command_execution" && entry.externalAgent) {
+      items.push(externalAgentSubagentRow(entry, entry.externalAgent));
+    }
   }
-  // Running agents first (live and actionable), then most-recent-first so the
-  // freshest finished agents stay near the top; stable for equal timestamps.
+  // Running agents first (live and actionable), then detached workers we can no
+  // longer track, then finished ones; within a group, most-recent-first, stable
+  // for equal timestamps.
   return items
     .map((item, index) => ({ item, index }))
     .toSorted((left, right) => {
-      const leftRank = left.item.status === "running" ? 0 : 1;
-      const rightRank = right.item.status === "running" ? 0 : 1;
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
+      const rankDelta =
+        subagentStatusRank(left.item.status) - subagentStatusRank(right.item.status);
+      if (rankDelta !== 0) {
+        return rankDelta;
       }
       const byRecency = right.item.createdAt.localeCompare(left.item.createdAt);
       return byRecency !== 0 ? byRecency : left.index - right.index;
     })
     .map(({ item }) => item)
     .slice(0, MAX_PANEL_SUBAGENTS);
+}
+
+/** Panel ordering: live work first, then untrackable detached launches, then done. */
+function subagentStatusRank(status: SubagentRailStatus): number {
+  if (status === "running") return 0;
+  if (status === "detached") return 1;
+  return 2;
+}
+
+/**
+ * Build a panel row for a shelled-out agent CLI. Status is honest about what we
+ * can know: a still-running `command_execution` (foreground exec) is `running`;
+ * a finished one that was a detached launch (nohup/tmux/`&`) is `detached` — the
+ * worker outlives the command, so we refuse to fake "running" OR "completed"; a
+ * finished foreground exec maps straight from its lifecycle.
+ */
+function externalAgentSubagentRow(
+  entry: WorkLogEntry,
+  inv: ExternalAgentInvocation,
+): SubagentRailItem {
+  const lifecycle = entry.toolLifecycleStatus;
+  let status: SubagentRailStatus;
+  if (lifecycle === undefined || lifecycle === "inProgress") {
+    status = "running";
+  } else if (inv.detached) {
+    status = "detached";
+  } else {
+    status = subagentStatusFromLifecycle(lifecycle);
+  }
+  return {
+    id: entry.id,
+    name: inv.displayName,
+    detail: inv.label,
+    status,
+    createdAt: entry.createdAt,
+    external: {
+      tool: inv.tool,
+      detached: inv.detached,
+      command: entry.rawCommand ?? entry.command ?? "",
+      monitorCommand: externalAgentMonitorCommand(inv),
+    },
+  };
 }
 
 /** Braces-only / empty payloads (e.g. an unstarted `Agent: {}`) carry no task text. */
@@ -1001,6 +1251,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (commandPreview.rawCommand) {
     entry.rawCommand = commandPreview.rawCommand;
+  }
+  if (itemType === "command_execution") {
+    const source = commandPreview.rawCommand ?? commandPreview.command;
+    const external = source ? detectExternalAgentInvocation(source) : null;
+    if (external) {
+      entry.externalAgent = external;
+    }
   }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
@@ -1132,6 +1389,7 @@ function mergeDerivedWorkLogEntries(
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
   const subagentTaskId = next.subagentTaskId ?? previous.subagentTaskId;
+  const externalAgent = next.externalAgent ?? previous.externalAgent;
   return {
     ...previous,
     ...next,
@@ -1151,6 +1409,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
     ...(subagentTaskId ? { subagentTaskId } : {}),
+    ...(externalAgent ? { externalAgent } : {}),
   };
 }
 

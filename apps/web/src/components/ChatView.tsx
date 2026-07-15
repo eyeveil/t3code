@@ -3056,6 +3056,50 @@ function ChatViewContent(props: ChatViewProps) {
     openTerminal,
     panelTerminalIds,
   ]);
+  // Monitor an externally-spawned agent (from the Subagents panel): open a fresh
+  // thread terminal — same plumbing as addTerminalSurface, in the thread's own
+  // environment, the box the exec runs on — then run the `tail -f`/`tmux attach`
+  // command the detector produced so the worker is watchable in place.
+  const openMonitorTerminal = useCallback(
+    (command: string) => {
+      if (!activeThreadRef || !activeThreadId || !activeProject) return;
+      const cwd = gitCwd ?? activeProject.workspaceRoot;
+      const terminalId = nextTerminalId([...activeKnownTerminalIds, ...panelTerminalIds]);
+      useRightPanelStore.getState().openTerminal(activeThreadRef, terminalId);
+      setTerminalFocusRequestId((value) => value + 1);
+      void (async () => {
+        const openResult = await openTerminal({
+          environmentId: activeThreadRef.environmentId,
+          input: {
+            threadId: activeThreadId,
+            terminalId,
+            cwd,
+            ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
+            env: projectScriptRuntimeEnv({
+              project: { cwd: activeProject.workspaceRoot },
+              worktreePath: activeThreadWorktreePath,
+            }),
+          },
+        });
+        if (openResult._tag === "Failure") return;
+        await writeTerminal({
+          environmentId: activeThreadRef.environmentId,
+          input: { threadId: activeThreadId, terminalId, data: `${command}\r` },
+        });
+      })();
+    },
+    [
+      activeKnownTerminalIds,
+      activeProject,
+      activeThreadId,
+      activeThreadRef,
+      activeThreadWorktreePath,
+      gitCwd,
+      openTerminal,
+      panelTerminalIds,
+      writeTerminal,
+    ],
+  );
   const splitPanelTerminal = useCallback(
     (direction: "horizontal" | "vertical" = "horizontal") => {
       if (
@@ -5317,6 +5361,7 @@ function ChatViewContent(props: ChatViewProps) {
         items={subagentPanelItems}
         entriesById={subagentEntriesById}
         workspaceRoot={activeWorkspaceRoot}
+        onOpenMonitor={openMonitorTerminal}
       />
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar
