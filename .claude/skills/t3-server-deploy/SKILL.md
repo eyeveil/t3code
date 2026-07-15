@@ -89,3 +89,13 @@ tmux new-window -d -t main -n t3- 't3 serve --host 0.0.0.0'
 
 Full rationale, the state.sqlite idle query, and the 2026-07-05 double-outage
 post-mortem: `references/deploy-internals.md`.
+
+## Dynamic deploy notification
+
+When staging, also write a manifest so the completion ping says what actually shipped (instead of a stale hardcoded body):
+
+```bash
+git -C "$REPO" log --oneline -4 > "$STATE_DIR/deploy-manifest.txt"
+```
+
+The deploy script includes up to 400 bytes of it in the ntfy body, falling back to a generic message when absent.

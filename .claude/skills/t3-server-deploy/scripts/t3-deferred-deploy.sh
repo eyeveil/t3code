@@ -153,7 +153,13 @@ stop_serve
 start_serve
 if serve_up; then
   say "deployed and restarted (previous dist kept at dist.old)"
-  notify "t3 deployed" "white_check_mark,rocket" "Patched t3 is live."
+  MANIFEST="${STAGED_DIST%/dist}/deploy-manifest.txt"
+  if [ -f "$MANIFEST" ]; then
+    BODY="$(head -c 400 "$MANIFEST")"
+  else
+    BODY="new t3 build is live"
+  fi
+  notify "t3 deployed" "white_check_mark,rocket" "$BODY"
 else
   say "serve did not come back, rolling back dist"
   mv "$GLOBAL_PKG/dist" "$GLOBAL_PKG/dist.failed" 2>/dev/null
