@@ -67,3 +67,18 @@ WHERE status IN ('running','starting');
 
 Set `NTFY_URL` to a topic (e.g. `http://127.0.0.1:2586/host-alerts`) to get
 deploy success/failure pushes. Leave empty to disable.
+
+## Headless MCP clients (cron/orchestrator sessions)
+
+Browser-paired bearer sessions expire (30-day default), which kills a cron
+session's t3-code MCP control channel mid-flight. Issue a long-lived scoped
+token instead and configure the client with a static Authorization header:
+
+```bash
+t3 auth session issue --ttl 365d --label "my-orchestrator" --token-only
+claude mcp add --transport http t3-code https://<host>/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+`t3 auth session list` shows active sessions (tokens never displayed);
+`t3 auth session revoke <id>` kills one. Never commit tokens anywhere.
