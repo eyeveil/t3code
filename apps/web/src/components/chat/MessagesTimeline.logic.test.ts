@@ -649,6 +649,7 @@ describe("deriveMessagesTimelineRows", () => {
           createdAt: "2026-01-01T00:00:00Z",
           message: {
             id: "message-user-1" as never,
+            turnId: "turn-1" as never,
             role: "user" as const,
             text: "Hello",
             createdAt: "2026-01-01T00:00:00Z",
