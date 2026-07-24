@@ -34,12 +34,14 @@ function makeThread(
     archivedAt: null,
     session: null,
     latestUserMessageAt: null,
-    lastActivitySummary: null,
-    lastActivityAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     ...input,
+    lastActivitySummary: input.lastActivitySummary ?? null,
+    lastActivityAt: input.lastActivityAt ?? null,
+    settledOverride: input.settledOverride ?? null,
+    settledAt: input.settledAt ?? null,
   };
 }
 

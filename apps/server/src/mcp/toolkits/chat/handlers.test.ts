@@ -71,6 +71,8 @@ const threadShell = (input: {
   createdAt: now,
   updatedAt: now,
   archivedAt: input.archivedAt ?? null,
+  settledOverride: null,
+  settledAt: null,
   session: null,
   latestUserMessageAt: null,
   lastActivitySummary: null,
@@ -182,6 +184,8 @@ const threadDetail = (input: {
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
     deletedAt: null,
     messages: input.messages ?? [],
     proposedPlans: [],
@@ -212,6 +216,7 @@ const runTool = <Name extends keyof typeof ChatToolkit.tools & string>(input: {
       ),
       Effect.provideService(OrchestrationEngineService, {
         readEvents: () => Stream.die("unused"),
+        latestSequence: Effect.succeed(0),
         dispatch: (command) =>
           Ref.update(dispatched, (commands) => [...commands, command]).pipe(
             Effect.as({ sequence: 1 }),

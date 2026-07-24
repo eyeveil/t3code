@@ -14,15 +14,13 @@ import type {
   ServerConfig as T3ServerConfig,
   ThreadId,
 } from "@t3tools/contracts";
-import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Platform, View, type GestureResponderEvent } from "react-native";
 import { KeyboardController, KeyboardStickyView } from "react-native-keyboard-controller";
-import Animated, { FadeInDown, FadeOut, LinearTransition } from "react-native-reanimated";
+import Animated, { FadeInDown, FadeOut } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
 import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
@@ -34,21 +32,13 @@ import type {
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
-import type { QueuedThreadMessage } from "../../state/thread-outbox";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { PendingUserInputCard } from "./PendingUserInputCard";
-import {
-  DEFAULT_HAPTICS_GATE_CONFIG,
-  INITIAL_HAPTICS_GATE_STATE,
-  stepHapticsGate,
-  type HapticsGateState,
-} from "./streamingHapticsGate";
 import {
   COMPOSER_COLLAPSED_CHROME,
   COMPOSER_EXPANDED_CHROME,
   ThreadComposer,
 } from "./ThreadComposer";
-import { estimatedQueuedMessagesHeight } from "./ThreadComposerQueuedMessages";
 import { ThreadFeed } from "./ThreadFeed";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 
@@ -59,7 +49,6 @@ export interface ThreadDetailScreenProps {
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
-  readonly onLoadEarlier: () => void;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -76,7 +65,7 @@ export interface ThreadDetailScreenProps {
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
   readonly threadCwd: string | null;
-  readonly selectedThreadQueuedMessages: ReadonlyArray<QueuedThreadMessage>;
+  readonly selectedThreadQueueCount: number;
   readonly serverConfig: T3ServerConfig | null;
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
@@ -88,9 +77,6 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
-  readonly onSteerQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
-  readonly onEditQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
-  readonly onDeleteQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -134,88 +120,54 @@ function latestStreamingAssistantMessage(
 }
 
 function useStreamingHaptics(threadId: ThreadId, feed: ReadonlyArray<ThreadFeedEntry>) {
-  const gateStateRef = useRef<HapticsGateState>(INITIAL_HAPTICS_GATE_STATE);
-  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastStreamingAssistantRef = useRef<{
+    readonly id: string;
+    readonly textLength: number;
+  } | null>(null);
+  const lastStreamHapticAtRef = useRef(0);
+  const hydratedRef = useRef(false);
+  const previousThreadIdRef = useRef(threadId);
 
   useEffect(() => {
-    const clearSettleTimer = () => {
-      if (settleTimerRef.current !== null) {
-        clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = null;
-      }
-    };
-
-    const latest = latestStreamingAssistantMessage(feed);
-    const step = stepHapticsGate(gateStateRef.current, {
-      type: "update",
-      threadId: String(threadId),
-      latest,
-      now: Date.now(),
-    });
-    gateStateRef.current = step.state;
-
-    if (step.fireHaptic) {
-      void Haptics.selectionAsync();
+    if (previousThreadIdRef.current !== threadId) {
+      previousThreadIdRef.current = threadId;
+      hydratedRef.current = false;
     }
 
-    // (Re)arm the settle timer while catching up: once the feed stays quiet for
-    // the settle window we flip to live and later growth buzzes as designed.
-    clearSettleTimer();
-    if (step.hydrating) {
-      settleTimerRef.current = setTimeout(() => {
-        settleTimerRef.current = null;
-        gateStateRef.current = stepHapticsGate(gateStateRef.current, {
-          type: "settle",
-          now: Date.now(),
-        }).state;
-      }, DEFAULT_HAPTICS_GATE_CONFIG.settleMs);
+    const latestStreamingMessage = latestStreamingAssistantMessage(feed);
+
+    if (!hydratedRef.current) {
+      hydratedRef.current = true;
+      lastStreamingAssistantRef.current = latestStreamingMessage;
+      return;
     }
 
-    return clearSettleTimer;
+    if (!latestStreamingMessage) {
+      lastStreamingAssistantRef.current = null;
+      return;
+    }
+
+    const previousStreamingMessage = lastStreamingAssistantRef.current;
+    lastStreamingAssistantRef.current = latestStreamingMessage;
+
+    const isNewStream = previousStreamingMessage?.id !== latestStreamingMessage.id;
+    const textGrew =
+      previousStreamingMessage?.id === latestStreamingMessage.id &&
+      latestStreamingMessage.textLength > previousStreamingMessage.textLength;
+
+    if (!isNewStream && !textGrew) {
+      return;
+    }
+
+    const now = Date.now();
+    if (!isNewStream && now - lastStreamHapticAtRef.current < 320) {
+      return;
+    }
+
+    lastStreamHapticAtRef.current = now;
+    void Haptics.selectionAsync();
   }, [threadId, feed]);
 }
-
-// Pre-measurement estimate for the working pill's slot (the real height is
-// measured via onComposerLayout since the pill lives inside the composer
-// overlay). Matches the rendered pill: pt-2 + pb-2 (16) wrapping a bordered
-// px-3/py-2 row (~36), so ~52 — keep it in sync with WorkingDurationPill.
-const WORKING_INDICATOR_HEIGHT = 52;
-
-const WorkingDurationPill = memo(function WorkingDurationPill(props: {
-  readonly startedAt: string;
-}) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
-  useEffect(() => {
-    const intervalId = setInterval(() => {
-      setNowMs(Date.now());
-    }, 1_000);
-    return () => clearInterval(intervalId);
-  }, [props.startedAt]);
-
-  const durationLabel = formatElapsed(props.startedAt, new Date(nowMs).toISOString()) ?? "0s";
-
-  return (
-    <Animated.View
-      className="shrink-0 px-4 pb-2 pt-2"
-      entering={FadeInDown.duration(200)}
-      exiting={FadeOut.duration(140)}
-    >
-      <View className="self-start rounded-full border border-border bg-card px-3 py-2">
-        <View className="flex-row items-center gap-2">
-          <View className="flex-row items-center gap-1">
-            <View className="h-1.5 w-1.5 rounded-full bg-foreground-tertiary" />
-            <View className="h-1.5 w-1.5 rounded-full bg-foreground-tertiary opacity-80" />
-            <View className="h-1.5 w-1.5 rounded-full bg-foreground-tertiary opacity-60" />
-          </View>
-          <Text className="font-t3-medium text-xs text-foreground-muted">
-            Working for {durationLabel}
-          </Text>
-        </View>
-      </View>
-    </Animated.View>
-  );
-});
 
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const insets = useSafeAreaInsets();
@@ -250,12 +202,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const selectedThreadFeed = props.selectedThreadFeed;
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
-  const activeWorkIndicatorHeight = props.activeWorkStartedAt ? WORKING_INDICATOR_HEIGHT : 0;
-  const estimatedOverlayHeight =
-    composerOverlapHeight +
-    activeWorkIndicatorHeight +
-    estimatedQueuedMessagesHeight(props.selectedThreadQueuedMessages.length) +
-    8;
+  const estimatedOverlayHeight = composerOverlapHeight;
   // The overlay's measured height includes the home-indicator inset (the
   // composer pads it), but contentInsetAdjustmentBehavior="automatic" makes
   // UIKit add the safe-area bottom to the content inset AGAIN — leaving a
@@ -409,10 +356,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             threadId={props.selectedThread.id}
             workspaceRoot={props.threadCwd}
             feed={props.selectedThreadFeed}
-            onLoadEarlier={props.onLoadEarlier}
             contentPresentation={props.contentPresentation}
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}
+            activeWorkStartedAt={props.activeWorkStartedAt}
             listRef={listRef}
             freeze={freeze}
             anchorMessageId={anchorMessageId}
@@ -440,15 +387,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               list's bottom inset, so any padding above the pill/composer
               pushes the resting content floor up by the same amount. */}
           <View ref={composerOverlayRef} onLayout={onComposerLayout} className="w-full">
-            <Animated.View
-              className="w-full self-center"
-              layout={LinearTransition.duration(220)}
-              style={{ maxWidth: contentMaxWidth }}
-            >
-              {props.activeWorkStartedAt ? (
-                <WorkingDurationPill startedAt={props.activeWorkStartedAt} />
-              ) : null}
-
+            <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
               {props.activePendingApproval || props.activePendingUserInput ? (
                 <Animated.View
                   className="shrink-0 gap-3 px-4 pb-3"
@@ -475,7 +414,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   ) : null}
                 </Animated.View>
               ) : null}
-            </Animated.View>
+            </View>
 
             <ThreadComposer
               editorRef={composerEditorRef}
@@ -489,7 +428,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               threadSyncPhase={threadSyncPhase}
               selectedThread={props.selectedThread}
               serverConfig={props.serverConfig}
-              queuedMessages={props.selectedThreadQueuedMessages}
+              queueCount={props.selectedThreadQueueCount}
               activeThreadBusy={props.activeThreadBusy}
               environmentId={props.environmentId}
               projectCwd={props.projectWorkspaceRoot}
@@ -500,9 +439,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onRemoveDraftImage={props.onRemoveDraftImage}
               onStopThread={props.onStopThread}
               onSendMessage={handleSendMessage}
-              onSteerQueuedMessage={props.onSteerQueuedMessage}
-              onEditQueuedMessage={props.onEditQueuedMessage}
-              onDeleteQueuedMessage={props.onDeleteQueuedMessage}
               onReconnectEnvironment={props.onReconnectEnvironment}
               onUpdateModelSelection={props.onUpdateThreadModelSelection}
               onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}

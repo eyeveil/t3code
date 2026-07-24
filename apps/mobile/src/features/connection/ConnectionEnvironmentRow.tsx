@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -85,7 +85,7 @@ export function ConnectionEnvironmentRow(props: {
             <Text
               className={cn(
                 "text-xs",
-                hasConnectionFailure ? "text-danger-foreground" : "text-foreground-muted",
+                hasConnectionFailure ? "text-rose-500 dark:text-rose-400" : "text-foreground-muted",
               )}
               numberOfLines={props.expanded ? undefined : 1}
               selectable={props.expanded}

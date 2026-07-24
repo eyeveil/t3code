@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Provider retry metadata is normalized at this pure boundary as ISO timestamps.
 /**
  * Provider usage/rate-limit error classifiers.
  *

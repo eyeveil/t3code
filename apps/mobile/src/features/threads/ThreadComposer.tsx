@@ -26,14 +26,19 @@ import {
   type ViewStyle,
 } from "react-native";
 import ImageViewing from "react-native-image-viewing";
-import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
+import Animated, {
+  FadeIn,
+  FadeInDown,
+  FadeOut,
+  FadeOutDown,
+  LinearTransition,
+} from "react-native-reanimated";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
-import { ComposerDictationButton } from "../../components/ComposerDictationButton";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -63,25 +68,17 @@ import {
   resolveProviderOptionDescriptors,
 } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
-import type { QueuedThreadMessage } from "../../state/thread-outbox";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
-import { ThreadComposerQueuedMessages } from "./ThreadComposerQueuedMessages";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
  * Exported so the parent can compute feed overlap / content insets.
- *
- * Android runs the tighter Material 3 layout (44px send button + 3px pill pad =
- * 50 pill, + 4px outer top/bottom = 58); iOS keeps its taller liquid-glass pill.
  */
 export const COMPOSER_COLLAPSED_CHROME = Platform.OS === "android" ? 50 : 60;
 
 /**
  * Height of the expanded composer (card + toolbar + vertical padding, excluding safe-area inset).
  * Used by the parent to compute the larger feed bottom inset when the composer is focused.
- *
- * Android: card (60 editor + 2×10 pad = 80) + toolbar (8 + 44 + 8 = 60) + outer
- * (2×8 = 16) = 156. iOS keeps its taller card.
  */
 export const COMPOSER_EXPANDED_CHROME = Platform.OS === "android" ? 138 : 174;
 
@@ -102,7 +99,7 @@ export interface ThreadComposerProps {
   readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
-  readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
+  readonly queueCount: number;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -113,9 +110,6 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
-  readonly onSteerQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
-  readonly onEditQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
-  readonly onDeleteQueuedMessage: (message: QueuedThreadMessage) => Promise<void>;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -126,12 +120,18 @@ export interface ThreadComposerProps {
 /**
  * The pill / card container — renders as LiquidGlassView on supported
  * iOS 26+ devices (progressive blur, native morph), opaque View otherwise.
+ * Exported so NewTaskDraftScreen can render the same composer chrome.
  */
 // One timing for every piece of the expanded↔compact morph so the surface,
 // toolbar, and siblings move together instead of popping between layouts.
-const COMPOSER_LAYOUT_TRANSITION = LinearTransition.duration(220);
+// Android gets NO layout transition: the composer rides the keyboard via
+// KeyboardStickyView (frame-synced to the IME), and a time-based morph
+// running alongside that translate reads as jitter. Snapping the layout and
+// letting the keyboard-synced slide be the only motion looks native there.
+const COMPOSER_LAYOUT_TRANSITION =
+  Platform.OS === "android" ? undefined : LinearTransition.duration(220);
 
-function ComposerSurface(props: {
+export function ComposerSurface(props: {
   readonly children: ReactNode;
   readonly style: ViewStyle;
   readonly isDarkMode: boolean;
@@ -141,17 +141,18 @@ function ComposerSurface(props: {
   const composerSurface = useThemeColor("--color-composer-surface");
   const borderColor = useThemeColor("--color-border");
 
+  // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
+  // (needed to clip content to the pill shape) would clip the shadow on iOS.
+  const shadowStyle: ViewStyle = {
+    borderRadius: props.style.borderRadius,
+    shadowColor,
+    shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+  };
+
   if (isLiquidGlassSupported) {
-    // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
-    // (needed to clip content to the pill shape) would clip the shadow on iOS.
-    const shadowStyle: ViewStyle = {
-      borderRadius: props.style.borderRadius,
-      shadowColor,
-      shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
-      shadowRadius: 14,
-      shadowOffset: { width: 0, height: 6 },
-      elevation: 10,
-    };
     return (
       <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={shadowStyle}>
         <LiquidGlassView
@@ -167,10 +168,7 @@ function ComposerSurface(props: {
   }
 
   if (Platform.OS === "android") {
-    // Material 3 filled-tonal surface: opaque surface-container fill, no outline,
-    // and a restrained level-2 elevation instead of the glassy translucent fill +
-    // hairline border + heavy drop shadow (which read as Apple / liquid-glass).
-    const shadowStyle: ViewStyle = {
+    const materialShadowStyle: ViewStyle = {
       borderRadius: props.style.borderRadius,
       shadowColor,
       shadowOpacity: props.isDarkMode ? 0.22 : 0.06,
@@ -179,21 +177,12 @@ function ComposerSurface(props: {
       elevation: 2,
     };
     return (
-      <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={shadowStyle}>
+      <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={materialShadowStyle}>
         <View style={[props.style, { backgroundColor: composerSurface }]}>{props.children}</View>
       </Animated.View>
     );
   }
 
-  // Non-glass iOS fallback keeps the original translucent + bordered surface.
-  const shadowStyle: ViewStyle = {
-    borderRadius: props.style.borderRadius,
-    shadowColor,
-    shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
-  };
   return (
     <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={shadowStyle}>
       <View
@@ -268,19 +257,23 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
   readonly status: ComposerStatusPillState;
 }) {
   const isReconnecting = props.status.kind !== "unavailable";
-  const activityTint = useThemeColor("--color-foreground-tertiary");
 
   return (
-    <View className="items-center pb-2">
+    <Animated.View
+      className="absolute inset-x-0 bottom-full items-center pb-2"
+      entering={FadeInDown.duration(180)}
+      exiting={FadeOutDown.duration(140)}
+      pointerEvents="box-none"
+    >
       <Pressable
         accessibilityRole="button"
         onPress={props.onPress}
-        className="max-w-full flex-row items-center gap-2 rounded-full bg-card px-3 py-2 shadow-sm active:opacity-70"
+        className="max-w-full flex-row items-center gap-2 rounded-full bg-white/90 px-3 py-2 shadow-sm active:opacity-70 dark:bg-neutral-900/90"
       >
         {isReconnecting ? (
-          <ActivityIndicator size="small" color={activityTint} />
+          <ActivityIndicator size="small" color="#8e8e93" />
         ) : (
-          <View className="h-2 w-2 rounded-full bg-danger-foreground" />
+          <View className="h-2 w-2 rounded-full bg-red-500" />
         )}
         <Text
           className="max-w-[260px] text-sm font-t3-bold leading-snug text-foreground"
@@ -289,12 +282,14 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
           {props.status.label}
         </Text>
       </Pressable>
-    </View>
+    </Animated.View>
   );
 });
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const isDarkMode = useColorScheme() === "dark";
+  const isAndroid = Platform.OS === "android";
+  const collapsedOuterPadding = isAndroid ? 3 : 6;
   const foregroundColor = useThemeColor("--color-foreground");
   const bodyText = useScaledTextRole("body");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
@@ -338,9 +333,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.status === "starting";
 
   const sendLabel =
-    props.connectionState !== "connected" ||
-    props.activeThreadBusy ||
-    props.queuedMessages.length > 0
+    props.connectionState !== "connected" || props.activeThreadBusy || props.queueCount > 0
       ? "Queue"
       : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
@@ -543,16 +536,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
   // ── Handle command selection ──────────────────────────────
   const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
-  const { onEditQueuedMessage } = props;
-
-  const handleEditQueuedMessage = useCallback(
-    async (message: QueuedThreadMessage) => {
-      await onEditQueuedMessage(message);
-      // The message is in the draft now; put the caret there for editing.
-      inputRef.current?.focus();
-    },
-    [inputRef, onEditQueuedMessage],
-  );
 
   const handleSend = useCallback(async () => {
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
@@ -678,10 +661,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             ? "Approve actions"
             : currentRuntimeMode === "auto-accept-edits"
               ? "Auto-accept edits"
-              : "Full access",
+              : currentRuntimeMode === "auto"
+                ? "Auto"
+                : "Full access",
         subactions: [
           { id: "options:runtime:approval-required", title: "Approve actions" },
           { id: "options:runtime:auto-accept-edits", title: "Auto-accept edits" },
+          { id: "options:runtime:auto", title: "Auto" },
           { id: "options:runtime:full-access", title: "Full access" },
         ].map((option) => {
           const value = option.id.replace("options:runtime:", "");
@@ -744,17 +730,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     }
   }
 
-  // Android's compact Material layout hugs the bottom edge a little tighter than
-  // the roomier iOS liquid-glass composer.
-  const isAndroid = Platform.OS === "android";
-  const collapsedOuterPadding = isAndroid ? 3 : 6;
-
   return (
     <Animated.View
       className="px-4"
       layout={COMPOSER_LAYOUT_TRANSITION}
       style={{
-        paddingHorizontal: 16,
         paddingTop: isExpanded ? 8 : collapsedOuterPadding,
         paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : collapsedOuterPadding),
         experimental_backgroundImage: isDarkMode
@@ -785,34 +765,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           />
         ) : null}
 
-        <ThreadComposerQueuedMessages
-          messages={props.queuedMessages}
-          steerEnabled={props.connectionState === "connected"}
-          onSteer={props.onSteerQueuedMessage}
-          onEdit={handleEditQueuedMessage}
-          onDelete={props.onDeleteQueuedMessage}
-        />
-
         <ComposerSurface
           isDarkMode={isDarkMode}
           style={
             isExpanded
               ? {
-                  // Android: smaller M3 radius + tight card padding.
                   borderRadius: isAndroid ? 14 : 20,
                   overflow: "hidden" as const,
                   paddingHorizontal: isAndroid ? 12 : 14,
                   paddingVertical: isAndroid ? 8 : 12,
                 }
               : {
-                  // Android: Material rounded field instead of the full 999 pill,
-                  // with tight padding so the collapsed bar is compact.
                   borderRadius: isAndroid ? 20 : 999,
                   overflow: "hidden" as const,
                   flexDirection: "row" as const,
                   alignItems: "center" as const,
                   paddingLeft: isAndroid ? 14 : 18,
-                  paddingRight: isAndroid ? 5 : 5,
+                  paddingRight: 5,
                   paddingVertical: isAndroid ? 2 : 5,
                 }
           }
@@ -847,12 +816,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               onBlur={handleBlur}
               onSubmit={handleSend}
               scrollEnabled={isExpanded}
-              contentInsetVertical={isExpanded ? 0 : 6}
+              // Android: collapsed single line centers natively (gravity) in
+              // a pill-height box matching the send button; iOS keeps insets.
+              singleLineCentered={!isExpanded}
+              contentInsetVertical={isExpanded || Platform.OS === "android" ? 0 : 6}
               style={
                 isExpanded
                   ? {
-                      // Android: shorter editor so the expanded card doesn't
-                      // dominate the screen.
                       minHeight: isAndroid ? 46 : 80,
                       maxHeight: isAndroid ? 140 : 160,
                       paddingHorizontal: 4,
@@ -892,14 +862,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
                 <ControlPill
-                  icon={{ ios: "stop.fill", android: "stop" }}
+                  icon="stop.fill"
                   variant="danger"
                   compact={isAndroid}
                   onPress={props.onStopThread}
                 />
               ) : (
                 <ControlPill
-                  icon={{ ios: "arrow.up", android: "arrow_upward" }}
+                  icon="arrow.up"
                   variant="primary"
                   compact={isAndroid}
                   disabled={!canSend}
@@ -910,8 +880,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           ) : null}
         </ComposerSurface>
 
-        {/* Toolbar row — matches draft page layout (expanded only) */}
         {isExpanded ? (
+          // Toolbar row — matches draft page layout (expanded only)
           <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)}>
             <ComposerToolbarRow paddingBottom={8} paddingHorizontal={0} paddingTop={8}>
               <ComposerToolbarScroller
@@ -919,7 +889,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 fadeTransparent={toolbarFadeTransparent}
               >
                 <ComposerToolbarButton
-                  icon={{ ios: "plus", android: "add" }}
+                  accessibilityLabel="Add attachment"
+                  icon="plus"
                   onPress={() => void props.onPickDraftImages()}
                   showChevron={false}
                 />
@@ -941,19 +912,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 >
                   <ComposerToolbarTrigger
                     accessibilityLabel="Configuration"
-                    icon={{ ios: "slider.horizontal.3", android: "tune" }}
+                    icon="slider.horizontal.3"
                     label={configurationLabel}
                   />
                 </ControlPillMenu>
-                {Platform.OS === "android" ? (
-                  <ComposerDictationButton
-                    draftMessage={props.draftMessage}
-                    onChangeDraftMessage={props.onChangeDraftMessage}
-                  />
-                ) : null}
                 {showStopAction ? (
                   <ComposerToolbarButton
-                    icon={{ ios: "stop.fill", android: "stop" }}
+                    accessibilityLabel="Stop"
+                    icon="stop.fill"
                     variant="danger"
                     onPress={props.onStopThread}
                     showChevron={false}
@@ -962,13 +928,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               </ComposerToolbarScroller>
               <ComposerToolbarButton
                 accessibilityLabel={sendLabel}
-                icon={{ ios: "arrow.up", android: "arrow_upward" }}
+                icon="arrow.up"
                 variant="primary"
                 disabled={!canSend}
                 onPress={handleSend}
                 showChevron={false}
               />
             </ComposerToolbarRow>
+          </Animated.View>
+        ) : null}
+
+        {/* Queue count */}
+        {props.queueCount > 0 ? (
+          <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
+            <Text className="pt-2 text-xs text-foreground-muted">
+              {props.queueCount} queued message{props.queueCount === 1 ? "" : "s"} will send
+              automatically.
+            </Text>
           </Animated.View>
         ) : null}
       </Animated.View>

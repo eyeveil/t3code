@@ -78,15 +78,14 @@ function useMarkdownPreviewStyles(): MarkdownPreviewStyles {
           link,
           blockquote: blockquoteBorder,
           border: horizontalRule,
+          surface: "transparent",
           surfaceLight: blockquoteBackground,
           accent: link,
           tableBorder: horizontalRule,
           tableHeader: blockquoteBackground,
           tableHeaderText: strong,
-          // Match ThreadFeed: transparent rows so the table blends into the
-          // themed parent instead of the light "#f8fafc" zebra default.
+          tableRowOdd: blockquoteBackground,
           tableRowEven: "transparent",
-          tableRowOdd: "transparent",
           code: codeText,
           codeBackground,
         },

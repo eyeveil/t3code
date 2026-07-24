@@ -1,12 +1,11 @@
 import * as Haptics from "expo-haptics";
-import { SymbolView, type SymbolViewProps } from "expo-symbols";
+import { type AppSymbolName, SymbolView } from "../../components/AppSymbol";
 import { LayoutAnimation, Pressable, ScrollView, useColorScheme, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import Animated, { FadeIn } from "react-native-reanimated";
-import { shouldPlayEntrance } from "./threadEntranceAnimation";
 
 const WORK_LOG_LAYOUT_ANIMATION = {
   duration: 180,
@@ -41,7 +40,7 @@ function compactActivityDetail(detail: string | null): string | null {
   return cleaned.length > 0 ? cleaned : null;
 }
 
-function workRowSymbolName(icon: ThreadFeedActivity["icon"]): SymbolViewProps["name"] {
+function workRowSymbolName(icon: ThreadFeedActivity["icon"]): AppSymbolName {
   switch (icon) {
     case "agent":
       return { ios: "sparkles", android: "auto_awesome" };
@@ -70,11 +69,18 @@ function workRowSymbolName(icon: ThreadFeedActivity["icon"]): SymbolViewProps["n
   }
 }
 
+// Entering fades only for rows created moments ago: rows remount whenever the
+// list scrolls them back into view, and old rows must not replay an entrance.
+const FRESH_ROW_WINDOW_MS = 3_000;
+function isFreshRow(createdAt: string): boolean {
+  const timestamp = Date.parse(createdAt);
+  return Number.isFinite(timestamp) && Date.now() - timestamp < FRESH_ROW_WINDOW_MS;
+}
+
 export function ThreadWorkLog(props: {
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
   readonly copiedRowId: string | null;
   readonly expandedRows: Readonly<Record<string, boolean>>;
-  readonly feedOpenedAt: number;
   readonly iconSubtleColor: import("react-native").ColorValue;
   readonly onCopyRow: (rowId: string, value: string) => void;
   readonly onToggleRow: (rowId: string) => void;
@@ -109,9 +115,7 @@ export function ThreadWorkLog(props: {
           return (
             <Animated.View
               key={row.id}
-              {...(shouldPlayEntrance(row.createdAt, props.feedOpenedAt)
-                ? { entering: FadeIn.duration(200) }
-                : {})}
+              {...(isFreshRow(row.createdAt) ? { entering: FadeIn.duration(200) } : {})}
             >
               <Pressable
                 accessibilityRole={canExpand ? "button" : undefined}

@@ -1,11 +1,8 @@
+import { describe, expect, it } from "@effect/vitest";
 import type { ServerProvider } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vite-plus/test";
 
 import { ProviderUsageTracker, ProviderUsageTrackerLive } from "./ProviderUsageTracker.ts";
-
-const run = <A>(effect: Effect.Effect<A, never, ProviderUsageTracker>): Promise<A> =>
-  Effect.runPromise(effect.pipe(Effect.provide(ProviderUsageTrackerLive)));
 
 function provider(instanceId: string): ServerProvider {
   // Minimal shape sufficient for decorateProviders (it only reads instanceId
@@ -18,23 +15,23 @@ function provider(instanceId: string): ServerProvider {
     version: null,
     status: "ready",
     auth: { status: "authenticated" },
-    checkedAt: new Date(0).toISOString(),
+    checkedAt: "1970-01-01T00:00:00.000Z",
     models: [],
     slashCommands: [],
     skills: [],
   } as unknown as ServerProvider;
 }
 
-const FUTURE_ISO = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-const PAST_ISO = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+const FUTURE_ISO = "2999-01-01T00:00:00.000Z";
+const PAST_ISO = "1969-01-01T00:00:00.000Z";
 
 describe("ProviderUsageTracker", () => {
-  it("records codex windows and decorates the matching provider", async () => {
-    const result = await run(
+  it.layer(ProviderUsageTrackerLive)("live tracker", (it) => {
+    it.effect("records codex windows and decorates the matching provider", () =>
       Effect.gen(function* () {
         const tracker = yield* ProviderUsageTracker;
         yield* tracker.recordRateLimits({
-          instanceId: "codex",
+          instanceId: "codex-record",
           driver: "codex",
           rateLimits: {
             rateLimits: {
@@ -43,49 +40,48 @@ describe("ProviderUsageTracker", () => {
             },
           },
         });
-        return yield* tracker.decorateProviders([provider("codex"), provider("other")]);
+        const result = yield* tracker.decorateProviders([
+          provider("codex-record"),
+          provider("other"),
+        ]);
+
+        expect(result[0]?.usage).toHaveLength(2);
+        expect(result[0]?.usage?.[0]?.id).toBe("primary");
+        expect(result[1]?.usage).toBeUndefined();
       }),
     );
-    expect(result[0]?.usage).toHaveLength(2);
-    expect(result[0]?.usage?.[0]?.id).toBe("primary");
-    // Unrelated instance is untouched.
-    expect(result[1]?.usage).toBeUndefined();
-  });
 
-  it("merges sparse Claude windows across events by id", async () => {
-    const usage = await run(
+    it.effect("merges sparse Claude windows across events by id", () =>
       Effect.gen(function* () {
         const tracker = yield* ProviderUsageTracker;
         yield* tracker.recordRateLimits({
-          instanceId: "claudeAgent",
+          instanceId: "claude-merge",
           driver: "claudeAgent",
           rateLimits: { rate_limit_info: { rateLimitType: "five_hour", utilization: 30 } },
         });
         yield* tracker.recordRateLimits({
-          instanceId: "claudeAgent",
+          instanceId: "claude-merge",
           driver: "claudeAgent",
           rateLimits: { rate_limit_info: { rateLimitType: "seven_day", utilization: 55 } },
         });
-        // Re-report the five_hour window with a fresh value; it replaces in place.
         yield* tracker.recordRateLimits({
-          instanceId: "claudeAgent",
+          instanceId: "claude-merge",
           driver: "claudeAgent",
           rateLimits: { rate_limit_info: { rateLimitType: "five_hour", utilization: 44 } },
         });
-        const [decorated] = yield* tracker.decorateProviders([provider("claudeAgent")]);
-        return decorated?.usage ?? [];
+        const [decorated] = yield* tracker.decorateProviders([provider("claude-merge")]);
+        const usage = decorated?.usage ?? [];
+
+        expect(usage.map((window) => window.id)).toEqual(["five_hour", "seven_day"]);
+        expect(usage[0]?.usedPercent).toBe(44);
       }),
     );
-    expect(usage.map((window) => window.id)).toEqual(["five_hour", "seven_day"]);
-    expect(usage[0]?.usedPercent).toBe(44);
-  });
 
-  it("prunes windows whose reset instant has already passed", async () => {
-    const usage = await run(
+    it.effect("prunes windows whose reset instant has already passed", () =>
       Effect.gen(function* () {
         const tracker = yield* ProviderUsageTracker;
         yield* tracker.recordRateLimits({
-          instanceId: "codex",
+          instanceId: "codex-prune",
           driver: "codex",
           rateLimits: {
             rateLimits: {
@@ -94,21 +90,21 @@ describe("ProviderUsageTracker", () => {
             },
           },
         });
-        const [decorated] = yield* tracker.decorateProviders([provider("codex")]);
-        return decorated?.usage ?? [];
+        const [decorated] = yield* tracker.decorateProviders([provider("codex-prune")]);
+        const usage = decorated?.usage ?? [];
+
+        expect(usage).toHaveLength(1);
+        expect(usage[0]?.id).toBe("secondary");
       }),
     );
-    expect(usage).toHaveLength(1);
-    expect(usage[0]?.id).toBe("secondary");
-  });
 
-  it("leaves usage absent when no telemetry was recorded", async () => {
-    const [decorated] = await run(
+    it.effect("leaves usage absent when no telemetry was recorded", () =>
       Effect.gen(function* () {
         const tracker = yield* ProviderUsageTracker;
-        return yield* tracker.decorateProviders([provider("codex")]);
+        const [decorated] = yield* tracker.decorateProviders([provider("codex-empty")]);
+
+        expect(decorated?.usage).toBeUndefined();
       }),
     );
-    expect(decorated?.usage).toBeUndefined();
   });
 });

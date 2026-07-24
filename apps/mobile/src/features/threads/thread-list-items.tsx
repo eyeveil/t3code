@@ -4,7 +4,7 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { MenuAction } from "@react-native-menu/menu";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import { memo, useCallback, useMemo, type ComponentProps } from "react";
 import { Pressable, useColorScheme, useWindowDimensions, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
@@ -290,11 +290,8 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   );
 
   const statusPill = (
-    <View
-      className="bg-subtle"
-      style={{ borderRadius: 99, paddingHorizontal: 6, paddingVertical: 2 }}
-    >
-      <Text className="text-3xs font-t3-bold text-foreground-muted">Pending</Text>
+    <View className="rounded-full bg-zinc-500/12 px-1.5 py-0.5 dark:bg-zinc-500/16">
+      <Text className="text-3xs font-t3-bold text-zinc-600 dark:text-zinc-300">Pending</Text>
     </View>
   );
 
@@ -463,7 +460,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const effectivePressedBackground = selected ? "rgba(255,255,255,0.16)" : pressedBackgroundColor;
   const effectiveStatus =
     selected && status
-      ? { ...status, pillClassName: "bg-subtle", textClassName: "text-user-bubble-foreground" }
+      ? { ...status, pillClassName: "bg-white/20", textClassName: "text-white" }
       : status;
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
@@ -648,12 +645,14 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
       threadTitle={thread.title}
     >
       {(close) => (
-        // Messages-style row actions: a real UIContextMenuInteraction on
-        // long-press / pointer right-click, with the row as the zoom preview.
-        // Requires the patched @react-native-menu (see
-        // patches/@react-native-menu__menu@2.0.0.patch): in long-press mode
-        // the interaction is hosted by the component view and the underlying
-        // UIButton passes touches through, so row taps keep working.
+        // Messages-style row actions on long-press. iOS: a real
+        // UIContextMenuInteraction with the row as the zoom preview (needs the
+        // patched @react-native-menu, see
+        // patches/@react-native-menu__menu@2.0.0.patch — in long-press mode the
+        // interaction is hosted by the component view and the underlying
+        // UIButton passes touches through, so row taps keep working). Android:
+        // ControlPillMenu injects onLongPress into the row and anchors the
+        // token-styled dropdown to it; taps and swipes are untouched.
         <ControlPillMenu
           actions={THREAD_ROW_MENU_ACTIONS}
           onPressAction={handleMenuAction}

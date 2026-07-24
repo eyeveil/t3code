@@ -5,7 +5,7 @@ import * as Notifications from "expo-notifications";
 import * as Updates from "expo-updates";
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -19,6 +19,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
@@ -37,7 +38,6 @@ import { runtime } from "../../lib/runtime";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
-import { ProviderUsageSection } from "./components/ProviderUsageSection";
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
@@ -64,23 +64,31 @@ export function SettingsRouteScreen() {
   return (
     <>
       <WorkspaceSidebarToolbar />
-      <NativeStackScreenOptions
-        options={{
-          unstable_headerRightItems:
-            Platform.OS === "ios"
-              ? () => [
-                  withNativeGlassHeaderItem({
-                    accessibilityLabel: "Close settings",
-                    icon: { name: "xmark", type: "sfSymbol" } as const,
-                    identifier: "settings-close",
-                    label: "",
-                    onPress: () => navigation.goBack(),
-                    type: "button",
-                  }),
-                ]
-              : undefined,
-        }}
-      />
+      {Platform.OS === "android" ? (
+        <>
+          {/* Android renders its own in-screen header instead of the native bar. */}
+          <NativeStackScreenOptions options={{ headerShown: false }} />
+          <AndroidScreenHeader title="Settings" onBack={() => navigation.goBack()} />
+        </>
+      ) : (
+        <NativeStackScreenOptions
+          options={{
+            unstable_headerRightItems:
+              Platform.OS === "ios"
+                ? () => [
+                    withNativeGlassHeaderItem({
+                      accessibilityLabel: "Close settings",
+                      icon: { name: "xmark", type: "sfSymbol" } as const,
+                      identifier: "settings-close",
+                      label: "",
+                      onPress: () => navigation.goBack(),
+                      type: "button",
+                    }),
+                  ]
+                : undefined,
+          }}
+        />
+      )}
       {hasCloudPublicConfig() ? <ConfiguredSettingsRouteScreen /> : <LocalSettingsRouteScreen />}
     </>
   );
@@ -111,11 +119,13 @@ function LocalSettingsRouteScreen() {
           />
         </SettingsSection>
 
+        <GeneralSettingsSection />
+
         <SettingsSection title="Appearance">
           <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
         </SettingsSection>
 
-        <ProviderUsageSection />
+        <BetaSettingsSection />
 
         <ArchivedThreadsSettingsSection />
 
@@ -126,11 +136,9 @@ function LocalSettingsRouteScreen() {
 }
 
 function ConfiguredSettingsRouteScreen() {
-  // Push/APNs entitlements are stripped from personal-team builds, so these
-  // toggles can never take effect there; render them disabled and off.
-  const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { expand: expandClerkSheet } = useClerkSettingsSheetDetent();
@@ -498,16 +506,66 @@ function ConfiguredSettingsRouteScreen() {
           />
         </SettingsSection>
 
+        <GeneralSettingsSection />
+
         <SettingsSection title="Appearance">
           <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
         </SettingsSection>
 
-        <ProviderUsageSection />
+        <BetaSettingsSection />
 
         <ArchivedThreadsSettingsSection />
 
         <AppSettingsSection />
       </ScrollView>
+    </View>
+  );
+}
+
+function GeneralSettingsSection() {
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const projectGroupingEnabled = AsyncResult.isSuccess(preferencesResult)
+    ? preferencesResult.value.projectGroupingEnabled !== false
+    : true;
+
+  return (
+    <SettingsSection title="General">
+      <SettingsSwitchRow
+        icon="folder"
+        label="Project Grouping"
+        value={projectGroupingEnabled}
+        onValueChange={(value) => savePreferences({ projectGroupingEnabled: value })}
+      />
+    </SettingsSection>
+  );
+}
+
+/**
+ * Device-local beta toggles. Mobile has no client-settings sync, so this is
+ * the counterpart of web's Settings → Beta backed by mobile preferences.
+ */
+function BetaSettingsSection() {
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const threadListV2Enabled = AsyncResult.isSuccess(preferencesResult)
+    ? preferencesResult.value.threadListV2Enabled === true
+    : false;
+
+  return (
+    <View className="gap-3">
+      <SettingsSection title="Beta">
+        <SettingsSwitchRow
+          icon="sidebar.left"
+          label="Thread List v2"
+          value={threadListV2Enabled}
+          onValueChange={(value) => savePreferences({ threadListV2Enabled: value })}
+        />
+      </SettingsSection>
+      <Text className="px-2 text-sm text-foreground-muted">
+        One flat thread list in creation order. Active work renders as cards; settled threads
+        collapse to compact rows. Switch back any time.
+      </Text>
     </View>
   );
 }
@@ -535,6 +593,7 @@ function AppSettingsSection() {
   return (
     <SettingsSection title="App">
       <SettingsRow icon="internaldrive" label="Client Storage" target="SettingsClientStorage" />
+      <SettingsRow icon="doc.text" label="Legal" fullScreenTarget="SettingsLegal" />
       <View className="flex-row items-center gap-4 p-4">
         <SymbolView
           name="info.circle"

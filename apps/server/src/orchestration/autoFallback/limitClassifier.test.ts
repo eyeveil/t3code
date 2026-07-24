@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures intentionally exercise provider timestamp normalization.
 import { describe, expect, it } from "vite-plus/test";
 
 import {

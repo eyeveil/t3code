@@ -100,6 +100,8 @@ function makeReadModel(
       createdAt: now,
       updatedAt: now,
       archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
       latestUserMessageAt: null,
       lastActivitySummary: null,
       lastActivityAt: null,

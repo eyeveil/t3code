@@ -1,13 +1,19 @@
 import { MenuView } from "@react-native-menu/menu";
 import * as Haptics from "expo-haptics";
-import type { ComponentProps, ReactNode } from "react";
+import {
+  cloneElement,
+  isValidElement,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { Platform, Pressable, useColorScheme, View } from "react-native";
-import { SymbolView } from "expo-symbols";
 import { useThemeColor } from "../lib/useThemeColor";
 
 import { cn } from "../lib/cn";
+import { AndroidAnchoredMenu } from "./AndroidAnchoredMenu";
+import { SymbolView } from "./AppSymbol";
 import { AppText as Text } from "./AppText";
-import { MaterialMenuAndroid } from "./MaterialMenuAndroid";
 
 export function ControlPill(props: {
   readonly icon?: ComponentProps<typeof SymbolView>["name"];
@@ -17,20 +23,17 @@ export function ControlPill(props: {
   readonly onPress?: () => void;
   readonly variant?: "circle" | "pill" | "primary" | "danger";
   readonly disabled?: boolean;
-  /** Tighter 40px circle (Material composer) instead of the default 44px. */
+  /** Tighter Material composer control on Android. */
   readonly compact?: boolean;
 }) {
   const variant = props.variant ?? "circle";
   const isAndroid = Platform.OS === "android";
-  const circleSize = props.compact ? "h-10 w-10" : "h-11 w-11";
 
   const iconColor = useThemeColor("--color-icon");
   const iconSubtle = useThemeColor("--color-icon-subtle");
   const primaryFg = useThemeColor("--color-primary-foreground");
   const dangerFg = useThemeColor("--color-danger-foreground");
   const accentForeground = useThemeColor("--color-accent-foreground");
-  // Android idle send reads as a low-emphasis tonal accent (M3), not grey — so
-  // the send arrow stays "the material color" even when disabled.
   const iconTintColor =
     variant === "primary"
       ? props.disabled
@@ -46,7 +49,9 @@ export function ControlPill(props: {
     variant === "circle" || variant === "danger" || (variant === "primary" && !props.label);
   const containerClassName = cn(
     isCircle
-      ? `${circleSize} items-center justify-center rounded-full`
+      ? props.compact
+        ? "h-10 w-10 items-center justify-center rounded-full"
+        : "h-11 w-11 items-center justify-center rounded-full"
       : variant === "primary"
         ? "h-11 flex-row items-center justify-center gap-2 rounded-full px-5"
         : "h-11 flex-row items-center justify-center gap-2 rounded-full px-3.5",
@@ -75,11 +80,12 @@ export function ControlPill(props: {
     <Pressable
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       accessibilityRole="button"
-      // Light selection tick on tap; menu/long-press haptics live in their menus.
       onPress={
         props.onPress
           ? () => {
-              void Haptics.selectionAsync();
+              if (isAndroid) {
+                void Haptics.selectionAsync();
+              }
               props.onPress?.();
             }
           : undefined
@@ -97,36 +103,60 @@ export function ControlPill(props: {
   );
 }
 
+// iOS renders the native UIMenu (standard checkmark for `state: "on"`);
+// Android renders the token-styled AndroidAnchoredMenu, since the native
+// AppCompat popup can't be themed past its stock animation, metrics, and
+// submenu chrome.
 export function ControlPillMenu(
   props: Omit<ComponentProps<typeof MenuView>, "children" | "themeVariant"> & {
     readonly children: ReactNode;
+    readonly className?: string;
   },
 ) {
   const isDarkMode = useColorScheme() === "dark";
 
-  // Android's native PopupMenu surface is unstyleable from JS (square corners,
-  // flat gray). Render a Material 3 popover instead; iOS keeps the native
-  // UIMenu / liquid-glass MenuView untouched.
   if (Platform.OS === "android") {
-    const { children, ...menuProps } = props;
+    // Long-press menus keep their child interactive: the child element gets
+    // an injected onLongPress (mirroring the iOS context-menu interaction)
+    // so its own tap handling still works.
+    if (props.shouldOpenOnLongPress && isValidElement(props.children)) {
+      const child = props.children as ReactElement<{ onLongPress?: () => void }>;
+      return (
+        <AndroidAnchoredMenu
+          actions={props.actions}
+          className={props.className}
+          title={props.title}
+          style={props.style}
+          onPressAction={props.onPressAction}
+        >
+          {(open) =>
+            cloneElement(child, {
+              onLongPress: () => {
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                open();
+              },
+            })
+          }
+        </AndroidAnchoredMenu>
+      );
+    }
     return (
-      <MaterialMenuAndroid
-        actions={menuProps.actions}
-        title={menuProps.title}
-        isAnchoredToRight={menuProps.isAnchoredToRight}
-        shouldOpenOnLongPress={menuProps.shouldOpenOnLongPress}
-        onPressAction={menuProps.onPressAction}
-        onOpenMenu={menuProps.onOpenMenu}
-        onCloseMenu={menuProps.onCloseMenu}
+      <AndroidAnchoredMenu
+        actions={props.actions}
+        className={props.className}
+        title={props.title}
+        style={props.style}
+        onPressAction={props.onPressAction}
       >
-        {children}
-      </MaterialMenuAndroid>
+        {props.children}
+      </AndroidAnchoredMenu>
     );
   }
 
+  const { className: _className, ...menuProps } = props;
   return (
-    <MenuView {...props} themeVariant={isDarkMode ? "dark" : "light"}>
-      {props.children}
+    <MenuView {...menuProps} themeVariant={isDarkMode ? "dark" : "light"}>
+      {menuProps.children}
     </MenuView>
   );
 }

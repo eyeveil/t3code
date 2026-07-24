@@ -1,3 +1,4 @@
+// @effect-diagnostics cryptoRandomUUID:off - MCP command ids are opaque boundary identifiers, not deterministic domain randomness.
 import * as NodeCrypto from "node:crypto";
 
 import {

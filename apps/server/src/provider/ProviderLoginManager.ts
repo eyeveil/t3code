@@ -1,3 +1,4 @@
+// @effect-diagnostics anyUnknownInErrorContext:off - Provider CLI and PTY adapters expose unknown external failures at this boundary.
 /**
  * ProviderLoginManager — ephemeral provider login sessions.
  *

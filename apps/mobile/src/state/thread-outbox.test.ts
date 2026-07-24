@@ -15,19 +15,15 @@ import {
   groupQueuedThreadMessages,
   isQueuedThreadCreationSendable,
   modelSelectionsEqual,
-  queuedThreadMessagePreview,
   resolveThreadOutboxDeliveryAction,
   resolveThreadOutboxFailureAction,
   resolveQueuedThreadSettings,
   shouldRetryThreadOutboxDelivery,
   threadOutboxRetryDelayMs,
   type QueuedThreadMessage,
-} from "@t3tools/client-runtime/state/thread-outbox-model";
-import {
-  createThreadOutboxManager,
-  ThreadOutboxManagerError,
-  type ThreadOutboxStorage,
-} from "@t3tools/client-runtime/state/thread-outbox-manager";
+} from "./thread-outbox-model";
+import { createThreadOutboxManager, ThreadOutboxManagerError } from "./thread-outbox-manager";
+import type { ThreadOutboxStorage } from "./thread-outbox-storage";
 
 function queuedMessage(input: {
   readonly environmentId?: string;
@@ -145,7 +141,6 @@ describe("thread outbox", () => {
         write: async () => undefined,
         remove: async () => undefined,
       },
-      warn: () => {},
     });
     const order: string[] = [];
     let releaseFirst!: () => void;
@@ -197,7 +192,7 @@ describe("thread outbox", () => {
         stored.delete(candidate.messageId);
       },
     };
-    const manager = createThreadOutboxManager({ registry, storage, warn: () => {} });
+    const manager = createThreadOutboxManager({ registry, storage });
 
     const loading = manager.load();
     await Promise.resolve();
@@ -269,7 +264,7 @@ describe("thread outbox", () => {
         stored.delete(message.messageId);
       },
     };
-    const manager = createThreadOutboxManager({ registry, storage, warn: () => {} });
+    const manager = createThreadOutboxManager({ registry, storage });
     const message = queuedMessage({
       messageId: "message-1",
       createdAt: "2026-06-08T10:00:01.000Z",
@@ -299,6 +294,31 @@ describe("thread outbox", () => {
     registry.dispose();
   });
 
+  it("replaces an existing message when an enqueue retry uses the same id", async () => {
+    const registry = AtomRegistry.make();
+    const manager = createThreadOutboxManager({
+      registry,
+      storage: {
+        load: async () => [],
+        write: async () => undefined,
+        remove: async () => undefined,
+      },
+    });
+    const message = queuedMessage({
+      messageId: "message-1",
+      createdAt: "2026-06-08T10:00:01.000Z",
+    });
+    const retried = { ...message, text: "retried" };
+
+    await manager.enqueue(message);
+    await manager.enqueue(retried);
+
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({
+      "environment-1:thread-1": [retried],
+    });
+    registry.dispose();
+  });
+
   it("updates a queued message in place but never resurrects a removed one", async () => {
     const registry = AtomRegistry.make();
     const stored = new Map<MessageId, QueuedThreadMessage>();
@@ -311,7 +331,7 @@ describe("thread outbox", () => {
         stored.delete(message.messageId);
       },
     };
-    const manager = createThreadOutboxManager({ registry, storage, warn: () => {} });
+    const manager = createThreadOutboxManager({ registry, storage });
     const message = queuedMessage({
       messageId: "message-1",
       createdAt: "2026-06-08T10:00:01.000Z",
@@ -454,35 +474,6 @@ describe("thread outbox", () => {
       }),
     ).toBe(true);
     expect(shouldRetryThreadOutboxDelivery(new Error("Thread no longer exists"))).toBe(false);
-  });
-
-  it("previews queued messages as a single collapsed line", () => {
-    const message = queuedMessage({
-      messageId: "message-1",
-      createdAt: "2026-06-08T10:00:01.000Z",
-    });
-
-    expect(
-      queuedThreadMessagePreview({ ...message, text: "\n\n  fix the bug\nthen run tests  " }),
-    ).toBe("fix the bug then run tests");
-    expect(
-      queuedThreadMessagePreview({
-        ...message,
-        text: "   ",
-        attachments: [
-          {
-            id: "image-1",
-            previewUri: "file:///a.png",
-            type: "image",
-            name: "a.png",
-            mimeType: "image/png",
-            sizeBytes: 1,
-            dataUrl: "data:image/png;base64,",
-          },
-        ],
-      }),
-    ).toBe("1 image attachment");
-    expect(queuedThreadMessagePreview({ ...message, text: "" })).toBe("0 image attachments");
   });
 
   it("retains queued messages when settings synchronization fails before startTurn", () => {

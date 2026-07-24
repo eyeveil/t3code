@@ -1,19 +1,15 @@
-import { createThreadOutboxManager } from "@t3tools/client-runtime/state/thread-outbox-manager";
-import type { QueuedThreadMessage } from "@t3tools/client-runtime/state/thread-outbox-model";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import { appAtomRegistry } from "./atom-registry";
+import { createThreadOutboxManager } from "./thread-outbox-manager";
+import type { QueuedThreadMessage } from "./thread-outbox-model";
 import { expoThreadOutboxStorage } from "./thread-outbox-storage";
 
-export * from "@t3tools/client-runtime/state/thread-outbox-model";
+export * from "./thread-outbox-model";
 
 export const threadOutboxManager = createThreadOutboxManager({
   registry: appAtomRegistry,
   storage: expoThreadOutboxStorage,
-  atomLabel: "mobile:thread-outbox:queued-messages",
-  warn: (message, error) => {
-    console.warn(message, error);
-  },
 });
 
 export function ensureThreadOutboxLoaded(): void {

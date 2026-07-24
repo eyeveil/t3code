@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Cooldown snapshots cross a JSON boundary as ISO timestamps.
 /**
  * AutoFallbackCooldownTracker — shared in-memory limit-cooldown state.
  *
@@ -48,7 +49,7 @@ export interface AutoFallbackCooldownTrackerShape {
 export class AutoFallbackCooldownTracker extends Context.Service<
   AutoFallbackCooldownTracker,
   AutoFallbackCooldownTrackerShape
->()("t3/orchestration/autoFallback/CooldownTracker") {}
+>()("t3/orchestration/autoFallback/CooldownTracker/AutoFallbackCooldownTracker") {}
 
 const make = Effect.gen(function* () {
   const stateRef = yield* Ref.make<ReadonlyMap<string, LimitCooldownEntry>>(new Map());

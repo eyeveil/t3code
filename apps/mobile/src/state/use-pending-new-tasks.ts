@@ -5,7 +5,7 @@ import {
   flattenQueuedThreadMessages,
   type QueuedThreadCreation,
   type QueuedThreadMessage,
-} from "@t3tools/client-runtime/state/thread-outbox-model";
+} from "./thread-outbox-model";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
 
 /** A queued new-task creation, shaped for thread-list presentation. */

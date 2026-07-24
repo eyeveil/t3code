@@ -1,11 +1,10 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-
-import { useEnvironmentPullRefresh } from "../../state/use-environment-pull-refresh";
 import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
-import { SymbolView } from "expo-symbols";
+import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
+import { SymbolView } from "../../components/AppSymbol";
 import { HeaderHeightContext } from "@react-navigation/elements";
 import { useNavigation } from "@react-navigation/native";
 import {
@@ -45,16 +44,11 @@ import {
 } from "react-native";
 import { TouchableOpacity } from "react-native-gesture-handler";
 import ImageViewing from "react-native-image-viewing";
-import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
   FadeIn,
   FadeInUp,
-  FadeOut,
   LinearTransition,
-  useAnimatedStyle,
-  ZoomIn,
-  ZoomOut,
   type SharedValue,
 } from "react-native-reanimated";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -98,16 +92,6 @@ import {
 } from "../../lib/threadActivity";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { ThreadWorkGroupToggle, ThreadWorkLog } from "./thread-work-log";
-import { shouldPlayEntrance } from "./threadEntranceAnimation";
-import {
-  deriveJumpToBottomState,
-  distanceFromEndForScrollEvent,
-  nextFollowStream,
-  nextNewActivityWhileAway,
-  resolveEndScrollMaintenance,
-  shouldArmSendAnchorAnimation,
-  SEND_ANCHOR_ANIMATION_WINDOW_MS,
-} from "./threadScrollMaintenance";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceRelativeFilePath } from "../files/filePath";
@@ -128,15 +112,24 @@ function formatMessageTime(input: string): string {
 // animating the container position turns those jumps into slides.
 const FEED_ITEM_LAYOUT_TRANSITION = LinearTransition.duration(180);
 
+// Entering animations must only play for rows born just now — LegendList
+// remounts rows when they scroll back into view, and replaying an entrance for
+// old content would be its own kind of jank.
+const FRESH_ENTRY_WINDOW_MS = 3_000;
+function isFreshTimestamp(input: string): boolean {
+  const timestamp = Date.parse(input);
+  return Number.isFinite(timestamp) && Date.now() - timestamp < FRESH_ENTRY_WINDOW_MS;
+}
+
 export interface ThreadFeedProps {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly workspaceRoot?: string | null;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
-  readonly onLoadEarlier: () => void;
   readonly contentPresentation: ThreadContentPresentation;
   readonly agentLabel: string;
   readonly latestTurn: ThreadFeedLatestTurn | null;
+  readonly activeWorkStartedAt: string | null;
   readonly listRef: RefObject<LegendListRef | null>;
   readonly freeze: SharedValue<boolean>;
   readonly anchorMessageId: MessageId | null;
@@ -176,6 +169,49 @@ function MessageAttachmentImage(props: {
   );
 }
 
+const MARKDOWN_COLORS = {
+  light: {
+    body: "#111111",
+    strong: "#000000",
+    link: "#2563eb",
+    blockquoteBorder: "rgba(0, 0, 0, 0.08)",
+    blockquoteBackground: "rgba(0, 0, 0, 0.02)",
+    codeBackground: "rgba(0, 0, 0, 0.04)",
+    codeText: "#262626",
+    inlineCodeText: "#5f6368",
+    horizontalRule: "rgba(0, 0, 0, 0.08)",
+    userBody: "#ffffff",
+    userCodeBackground: "rgba(255, 255, 255, 0.22)",
+    userCodeText: "#ffffff",
+    userInlineCodeText: "rgba(255, 255, 255, 0.82)",
+    userFenceBackground: "rgba(0, 0, 0, 0.16)",
+    userFenceText: "#ffffff",
+  },
+  dark: {
+    body: "#e5e5e5",
+    strong: "#f5f5f5",
+    link: "#60a5fa",
+    blockquoteBorder: "rgba(255, 255, 255, 0.1)",
+    blockquoteBackground: "rgba(255, 255, 255, 0.03)",
+    codeBackground: "rgba(255, 255, 255, 0.06)",
+    codeText: "#e5e5e5",
+    inlineCodeText: "#b8bcc2",
+    horizontalRule: "rgba(255, 255, 255, 0.08)",
+    userBody: "#ffffff",
+    userCodeBackground: "rgba(255, 255, 255, 0.18)",
+    userCodeText: "#ffffff",
+    userInlineCodeText: "rgba(255, 255, 255, 0.82)",
+    userFenceBackground: "rgba(0, 0, 0, 0.28)",
+    userFenceText: "#ffffff",
+  },
+} as const;
+
+const MARKDOWN_MONO_FONT = Platform.select({
+  ios: "ui-monospace",
+  android: "monospace",
+  default: "monospace",
+});
+
 interface MarkdownStyleSets {
   readonly user: MarkdownStyleSet;
   readonly assistant: MarkdownStyleSet;
@@ -208,12 +244,6 @@ const markdownLinkStyles = StyleSheet.create({
   favicon: {
     borderRadius: 3,
   },
-});
-
-const MARKDOWN_MONO_FONT = Platform.select({
-  ios: "ui-monospace",
-  android: "monospace",
-  default: "monospace",
 });
 
 const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
@@ -254,14 +284,6 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   );
 });
 
-// Ported from upstream PR pingdotgg/t3code#3579 by @juliusmarminge ("Use Shiki
-// for markdown code blocks"). Syntax-highlighted, horizontally scrollable code
-// block for the JS markdown renderer (Android; iOS renders via the native
-// SelectableMarkdownText.ios path). Highlighting is async: until the Shiki
-// result resolves the block shows plain themed text, so streaming assistant
-// tokens never flicker. Adapted for our tree: themed colors stay driven by the
-// caller's --color-md-* tokens; only per-token foreground/weight comes from
-// Shiki. Reconcile against PR #3579 on future upstream merges.
 function MarkdownCodeBlock(props: {
   readonly backgroundColor: string;
   readonly borderColor: string;
@@ -287,40 +309,19 @@ function MarkdownCodeBlock(props: {
 
   return (
     <View
-      style={{
-        alignSelf: "stretch",
-        backgroundColor: props.backgroundColor,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: props.borderColor,
-        marginVertical: 12,
-        maxWidth: "100%",
-        minWidth: 0,
-        overflow: "hidden",
-      }}
+      className="my-3 min-w-0 max-w-full self-stretch overflow-hidden rounded-lg border"
+      style={{ backgroundColor: props.backgroundColor, borderColor: props.borderColor }}
     >
       <View
-        style={{
-          borderBottomWidth: 1,
-          borderBottomColor: props.borderColor,
-          paddingLeft: 14,
-          paddingRight: 6,
-          paddingVertical: 4,
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-        }}
+        className="flex-row items-center justify-between gap-2 border-b py-1 pr-1.5 pl-3.5"
+        style={{ borderBottomColor: props.borderColor }}
       >
         <NativeText
+          className="flex-1 font-mono uppercase opacity-70"
           numberOfLines={1}
           style={{
-            flex: 1,
             color: props.headerTextColor,
-            fontFamily: MARKDOWN_MONO_FONT,
             fontSize: props.fontSize,
-            opacity: 0.7,
-            textTransform: "uppercase",
             ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
           }}
         >
@@ -339,13 +340,13 @@ function MarkdownCodeBlock(props: {
         bounces={false}
         nestedScrollEnabled={Platform.OS === "android"}
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 12 }}
+        contentContainerClassName="px-3.5 py-3"
       >
         <NativeText
           selectable
+          className="font-mono"
           style={{
             color: props.textColor,
-            fontFamily: MARKDOWN_MONO_FONT,
             fontSize: props.fontSize,
             lineHeight: props.lineHeight,
             ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
@@ -376,7 +377,6 @@ function MarkdownCodeBlock(props: {
                           }`}
                           style={{
                             color: token.color ?? props.textColor,
-                            fontFamily: MARKDOWN_MONO_FONT,
                             fontStyle,
                             fontWeight,
                           }}
@@ -401,12 +401,14 @@ function MarkdownCodeBlock(props: {
 }
 
 function useReviewCommentColors(): ReviewCommentColors {
-  const background = useThemeColor("--color-card");
-  const border = useThemeColor("--color-border");
-  const mutedBackground = useThemeColor("--color-subtle");
-  const text = useThemeColor("--color-foreground");
-  const mutedText = useThemeColor("--color-foreground-muted");
-  const codeBackground = useThemeColor("--color-md-code-bg");
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === "dark";
+  const background = isDark ? "#151515" : "#ffffff";
+  const border = isDark ? "#2a2a2a" : "#d7d7d7";
+  const mutedBackground = isDark ? "#242424" : "#f2f2f2";
+  const text = isDark ? "#f3f3f3" : "#111111";
+  const mutedText = isDark ? "#8f8f8f" : "#666666";
+  const codeBackground = isDark ? "#0f0f0f" : "#ffffff";
 
   return useMemo(
     () => ({
@@ -422,9 +424,8 @@ function useReviewCommentColors(): ReviewCommentColors {
 }
 
 function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSets {
-  const { appearance } = useAppearancePreferences();
   const colorScheme = useColorScheme();
-  const themeMode: ReviewDiffTheme = colorScheme === "dark" ? "dark" : "light";
+  const { appearance } = useAppearancePreferences();
   const markdownFontSizes = useMemo(
     () => resolveMarkdownFontSizes(appearance.baseFontSize),
     [appearance.baseFontSize],
@@ -433,28 +434,30 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
     () => resolveNativeMarkdownTypography(appearance.baseFontSize),
     [appearance.baseFontSize],
   );
-  const markdownBodyColor = String(useThemeColor("--color-md-body"));
-  const markdownStrongColor = String(useThemeColor("--color-md-strong"));
-  const markdownLinkColor = String(useThemeColor("--color-md-link"));
-  const markdownBlockquoteBg = String(useThemeColor("--color-md-blockquote-bg"));
-  const markdownBlockquoteBorder = String(useThemeColor("--color-md-blockquote-border"));
-  const markdownCodeBg = String(useThemeColor("--color-md-code-bg"));
-  const markdownCodeText = String(useThemeColor("--color-md-code-text"));
-  const markdownHrColor = String(useThemeColor("--color-md-hr"));
-  const markdownUserBodyColor = String(useThemeColor("--color-user-bubble-foreground"));
-  const markdownUserBodyMutedColor = String(useThemeColor("--color-user-bubble-foreground-muted"));
-  const markdownUserCodeBg = String(useThemeColor("--color-md-user-code-bg"));
-  const markdownUserCodeText = String(useThemeColor("--color-md-user-code-text"));
-  const markdownUserFenceBg = String(useThemeColor("--color-md-user-fence-bg"));
-  const markdownUserFenceText = String(useThemeColor("--color-md-user-fence-text"));
-  const inlineSkillForeground = String(useThemeColor("--color-inline-skill-foreground"));
+  const themeMode = colorScheme === "dark" ? "dark" : "light";
+  const colors = MARKDOWN_COLORS[themeMode];
   const iconSubtleColor = String(useThemeColor("--color-icon-subtle"));
+  const inlineSkillForeground = String(useThemeColor("--color-inline-skill-foreground"));
+  const userBubbleForegroundMuted = String(useThemeColor("--color-user-bubble-foreground-muted"));
   const regularFontFamily = useFontFamily("regular");
   const boldFontFamily = useFontFamily("bold");
 
   return useMemo(() => {
-    const markdownInlineCodeText = markdownBodyColor;
-    const markdownUserInlineCodeText = markdownUserBodyMutedColor;
+    const markdownBodyColor = colors.body;
+    const markdownStrongColor = colors.strong;
+    const markdownLinkColor = colors.link;
+    const markdownBlockquoteBg = colors.blockquoteBackground;
+    const markdownBlockquoteBorder = colors.blockquoteBorder;
+    const markdownCodeBg = colors.codeBackground;
+    const markdownCodeText = colors.codeText;
+    const markdownInlineCodeText = colors.inlineCodeText;
+    const markdownHrColor = colors.horizontalRule;
+    const markdownUserBodyColor = colors.userBody;
+    const markdownUserCodeBg = colors.userCodeBackground;
+    const markdownUserCodeText = colors.userCodeText;
+    const markdownUserInlineCodeText = colors.userInlineCodeText;
+    const markdownUserFenceBg = colors.userFenceBackground;
+    const markdownUserFenceText = colors.userFenceText;
 
     const baseTheme: PartialMarkdownTheme = {
       colors: {
@@ -463,6 +466,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
         link: markdownLinkColor,
         blockquote: markdownBlockquoteBorder,
         border: markdownHrColor,
+        surface: "transparent",
         surfaceLight: markdownBlockquoteBg,
         accent: markdownLinkColor,
         tableBorder: markdownHrColor,
@@ -633,10 +637,8 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
             className="font-mono"
             style={{
               color: inlineCodeTextColor,
-              fontFamily: MARKDOWN_MONO_FONT,
               fontSize: markdownFontSizes.codeBlockFontSize,
               lineHeight: markdownFontSizes.bodyLineHeight,
-              ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
             }}
           >
             {value}
@@ -719,7 +721,7 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           markdownUserInlineCodeText,
           markdownUserFenceBg,
           markdownUserFenceText,
-          markdownUserBodyMutedColor,
+          userBubbleForegroundMuted,
           true,
           false,
         ),
@@ -732,8 +734,8 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           codeColor: markdownUserCodeText,
           codeBackgroundColor: markdownUserCodeBg,
           codeBlockBackgroundColor: markdownUserFenceBg,
-          fileTextColor: markdownUserBodyColor,
-          skillTextColor: inlineSkillForeground,
+          fileTextColor: "#ffffff",
+          skillTextColor: "#f0abfc",
           quoteMarkerColor: markdownUserBodyColor,
           dividerColor: markdownUserBodyColor,
           fontSize: nativeMarkdownTypography.fontSize,
@@ -780,27 +782,15 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
     };
   }, [
     boldFontFamily,
+    colors,
     iconSubtleColor,
     inlineSkillForeground,
-    markdownBlockquoteBg,
-    markdownBlockquoteBorder,
-    markdownBodyColor,
-    markdownCodeBg,
-    markdownCodeText,
     markdownFontSizes,
-    markdownHrColor,
-    markdownLinkColor,
-    markdownStrongColor,
-    markdownUserBodyColor,
-    markdownUserBodyMutedColor,
-    markdownUserCodeBg,
-    markdownUserCodeText,
-    markdownUserFenceBg,
-    markdownUserFenceText,
     nativeMarkdownTypography,
     onLinkPress,
     regularFontFamily,
     themeMode,
+    userBubbleForegroundMuted,
   ]);
 }
 
@@ -817,21 +807,19 @@ function renderFeedEntry(
     readonly onToggleTurnFold: (turnId: TurnId) => void;
     readonly onPressImage: (uri: string, headers?: Record<string, string>) => void;
     readonly onMarkdownLinkPress: (href: string) => void;
-    readonly onLoadEarlier: () => void;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
     readonly userBubbleColor: string | import("react-native").ColorValue;
     readonly markdownStyles: MarkdownStyleSets;
     readonly reviewCommentColors: ReviewCommentColors;
     readonly reviewCommentBubbleWidth: number;
     readonly userBubbleMaxWidth: number;
-    readonly feedOpenedAt: number;
   },
 ) {
   const entry = info.item;
   const { markdownStyles, iconSubtleColor, userBubbleColor } = props;
 
-  if (entry.type === "load-earlier") {
-    return <LoadEarlierRow onLoadEarlier={props.onLoadEarlier} />;
+  if (entry.type === "working") {
+    return <WorkingTimelineRow startedAt={entry.createdAt} />;
   }
 
   if (entry.type === "turn-fold") {
@@ -841,7 +829,7 @@ function renderFeedEntry(
         accessibilityState={{ expanded: entry.expanded }}
         onPress={() => props.onToggleTurnFold(entry.turnId)}
         hitSlop={4}
-        className="mb-3 min-h-11 flex-row items-center gap-2 border-b border-border px-2"
+        className="mb-3 min-h-11 flex-row items-center gap-2 border-b border-neutral-200/80 px-2 dark:border-white/[0.08]"
       >
         <Text className="font-t3-medium text-sm tabular-nums text-foreground-muted">
           {entry.label}
@@ -886,7 +874,7 @@ function renderFeedEntry(
       !message.streaming;
 
     if (isUser) {
-      const enterAnimated = shouldPlayEntrance(message.createdAt, props.feedOpenedAt);
+      const enterAnimated = isFreshTimestamp(message.createdAt);
       return (
         <Animated.View
           className="mb-5 items-end"
@@ -915,14 +903,14 @@ function renderFeedEntry(
                   key={attachment.id}
                   environmentId={props.environmentId}
                   attachmentId={attachment.id}
-                  className="aspect-[1.3] w-full rounded-[14px] bg-subtle"
+                  className="aspect-[1.3] w-full rounded-[14px] bg-white/15"
                   onPressImage={props.onPressImage}
                 />
               );
             })}
           </View>
           <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
-            <Text className="font-t3-medium text-xs tabular-nums text-foreground-muted">
+            <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
               {timestampLabel}
             </Text>
             {message.text.trim().length > 0 ? (
@@ -945,7 +933,7 @@ function renderFeedEntry(
       return null;
     }
 
-    const enterAnimated = shouldPlayEntrance(message.createdAt, props.feedOpenedAt);
+    const enterAnimated = isFreshTimestamp(message.createdAt);
     return (
       <Animated.View
         className={cn(showAssistantMeta ? "mb-5 px-1" : "mb-2 px-1")}
@@ -976,7 +964,7 @@ function renderFeedEntry(
               key={attachment.id}
               environmentId={props.environmentId}
               attachmentId={attachment.id}
-              className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-subtle"
+              className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-neutral-200 dark:bg-neutral-800"
               onPressImage={props.onPressImage}
             />
           );
@@ -990,7 +978,7 @@ function renderFeedEntry(
               buttonSize={28}
               iconSize={13}
             />
-            <Text className="font-t3-medium text-xs tabular-nums text-foreground-muted">
+            <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
               {timestampLabel}
             </Text>
           </View>
@@ -1004,13 +992,38 @@ function renderFeedEntry(
       activities={entry.activities}
       copiedRowId={props.copiedRowId}
       expandedRows={props.expandedWorkRows}
-      feedOpenedAt={props.feedOpenedAt}
       iconSubtleColor={iconSubtleColor}
       onCopyRow={props.onCopyWorkRow}
       onToggleRow={props.onToggleWorkRow}
     />
   );
 }
+
+const WorkingTimelineRow = memo(function WorkingTimelineRow(props: { readonly startedAt: string }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1_000);
+    return () => clearInterval(intervalId);
+  }, [props.startedAt]);
+
+  const durationLabel = formatElapsed(props.startedAt, new Date(nowMs).toISOString()) ?? "0s";
+
+  return (
+    <View className="mb-4 flex-row items-center gap-2 px-1.5 py-1">
+      <View className="flex-row items-center gap-1">
+        <View className="h-1 w-1 rounded-full bg-neutral-400 dark:bg-neutral-500" />
+        <View className="h-1 w-1 rounded-full bg-neutral-400/80 dark:bg-neutral-500/80" />
+        <View className="h-1 w-1 rounded-full bg-neutral-400/60 dark:bg-neutral-500/60" />
+      </View>
+      <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
+        Working for {durationLabel}
+      </Text>
+    </View>
+  );
+});
 
 function UserMessageContent(props: {
   readonly text: string;
@@ -1279,45 +1292,6 @@ function ThreadFeedPlaceholder(props: {
   );
 }
 
-// Chrome rows have genuinely fixed heights (content box + margin) that never
-// change with content: seeding them via getFixedItemSize avoids the 180px flat
-// estimate stretching them ~4x while unmeasured. Only truly immutable rows may
-// be seeded — feeding measured heights of mutable rows (messages, activity
-// groups) back into getFixedItemSize poisons @legendapp/list's sizesKnown
-// ground truth (getKnownOrFixedSize adds scrollAxisGap on top, and native
-// isNativeLayoutNoise then drops the real correction), which overlapped rows.
-const TURN_FOLD_ROW_HEIGHT = 56;
-const WORK_TOGGLE_ROW_HEIGHT = 36;
-const LOAD_EARLIER_ROW_HEIGHT = 44;
-
-// Head sentinel of a windowed feed. LegendList only mounts rows within its draw
-// distance, so this row mounting means the reader has scrolled to the current
-// head — the cue to page in the next window of older history. Firing on mount
-// (once per instance) turns scroll-to-top into automatic upward paging; the
-// widened window unmounts this instance until the new head is reached, and
-// maintainVisibleContentPosition keeps the viewport pinned as content prepends.
-const LoadEarlierRow = memo(function LoadEarlierRow(props: { readonly onLoadEarlier: () => void }) {
-  const requestedRef = useRef(false);
-  useEffect(() => {
-    if (requestedRef.current) {
-      return;
-    }
-    requestedRef.current = true;
-    props.onLoadEarlier();
-  }, [props.onLoadEarlier]);
-
-  return (
-    <View style={{ height: LOAD_EARLIER_ROW_HEIGHT }} className="mb-2 items-center justify-center">
-      <ActivityIndicator />
-    </View>
-  );
-});
-
-// Gap between the floating jump-to-bottom arrow and the composer/keyboard it
-// rests above.
-const JUMP_TO_BOTTOM_GAP = 12;
-const JUMP_TO_BOTTOM_SIZE = 44;
-
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1326,46 +1300,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const disclosureAnchorKeyRef = useRef<string | null>(null);
   const headerMaterialVisibleRef = useRef(false);
   const previousLatestTurnRef = useRef(props.latestTurn);
-  // Tracks the last send anchor so a fresh one can briefly animate the end scroll
-  // (smooth glide to the just-sent message) while streaming stays instant.
-  const previousAnchorMessageIdRef = useRef<MessageId | null>(props.anchorMessageId);
-  const sendAnchorAnimationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // When this thread was opened. Rows created before this never replay an
-  // entrance animation, so a freshly hydrated history (even one active moments
-  // ago) paints without a burst of simultaneous FadeIns. Reset on thread change
-  // in case the component is reused rather than remounted.
-  const feedOpenedAtRef = useRef({ threadId: props.threadId, at: Date.now() });
-  if (feedOpenedAtRef.current.threadId !== props.threadId) {
-    feedOpenedAtRef.current = { threadId: props.threadId, at: Date.now() };
-  }
-  const feedOpenedAt = feedOpenedAtRef.current.at;
   const { width: windowWidth } = useWindowDimensions();
   const [viewportWidth, setViewportWidth] = useState(() =>
     props.layoutVariant === "split" ? 0 : windowWidth,
   );
   const [viewportHeight, setViewportHeight] = useState(0);
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
-  const [sendAnchorAnimating, setSendAnchorAnimating] = useState(false);
-  // Sticky-scroll follow state: true while the feed should track the live stream,
-  // false once the reader has deliberately scrolled up. Derived from real scroll
-  // geometry in handleScroll because LegendList's own at-end gate keeps reporting
-  // "at end" mid-stream (see threadScrollMaintenance). A ref mirrors it so the
-  // scroll handler reads the latest value without re-subscribing.
-  const [followStream, setFollowStream] = useState(true);
-  // Whether the in-flight scroll is user-driven (drag/fling) rather than a
-  // programmatic end-pin, send glide, keyboard shift, or remeasure. Only user
-  // scrolls may break follow; anything else can only ever re-arm it at the bottom.
-  const userInteractingRef = useRef(false);
-  // Set while the jump-to-bottom button's animated scrollToEnd is in flight so the
-  // momentum handlers don't flag that programmatic glide as a user scroll (which
-  // would be read as scrolling away from the bottom at the start of the animation
-  // and immediately re-break the follow we just re-armed).
-  const jumpToBottomRef = useRef(false);
-  // Latches true when the feed grows while the reader is scrolled away, so the
-  // jump button can carry a "new activity" dot. Purely derived from props.feed
-  // already on hand — no new runtime state is plumbed for it.
-  const [hasNewActivityWhileAway, setHasNewActivityWhileAway] = useState(false);
-  const feedLengthRef = useRef(props.feed.length);
   const [interactionState, setInteractionState] = useState<{
     readonly copiedRowId: string | null;
     readonly expandedWorkGroups: Record<string, boolean>;
@@ -1477,51 +1417,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       // UIKit's adjustedContentInset, so topContentInset is 0 here). Add the
       // header height back or the material toggles a full header too late.
       reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
-      const distanceFromEnd = distanceFromEndForScrollEvent(event.nativeEvent);
-      setFollowStream((current) =>
-        nextFollowStream(current, {
-          distanceFromEnd,
-          isUserScroll: userInteractingRef.current,
-        }),
-      );
     },
     [reportHeaderMaterialVisibility, anchorTopInset],
   );
-  const handleScrollBeginDrag = useCallback(() => {
-    // A real touch always cancels any in-flight jump glide and counts as a user
-    // scroll from here on.
-    jumpToBottomRef.current = false;
-    userInteractingRef.current = true;
-  }, []);
-  const handleMomentumScrollEnd = useCallback(() => {
-    userInteractingRef.current = false;
-    jumpToBottomRef.current = false;
-  }, []);
-  // A drag with no fling never emits momentum events; clear the flag on drag end
-  // (a fling re-sets it via onMomentumScrollBegin before this frame matters).
-  const handleScrollEndDrag = useCallback(() => {
-    userInteractingRef.current = false;
-  }, []);
-  const handleMomentumScrollBegin = useCallback(() => {
-    // A programmatic scrollToEnd can surface momentum events on some platforms;
-    // don't let the jump glide masquerade as a user scroll.
-    if (jumpToBottomRef.current) {
-      return;
-    }
-    userInteractingRef.current = true;
-  }, []);
-  const handleJumpToBottom = useCallback(() => {
-    void Haptics.selectionAsync();
-    // Programmatic glide: keep the momentum/scroll handlers from reading it as a
-    // user scroll, and re-arm follow up front so streamed frames re-pin to the end.
-    jumpToBottomRef.current = true;
-    userInteractingRef.current = false;
-    setFollowStream(true);
-    setHasNewActivityWhileAway(false);
-    void props.listRef.current?.scrollToEnd({ animated: true }).catch(() => {
-      jumpToBottomRef.current = false;
-    });
-  }, [props.listRef]);
   const handleViewportLayout = useCallback((event: LayoutChangeEvent) => {
     const nextWidth = Math.round(event.nativeEvent.layout.width);
     const nextHeight = Math.round(event.nativeEvent.layout.height);
@@ -1529,55 +1427,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     setViewportHeight((current) => (Math.abs(current - nextHeight) > 1 ? nextHeight : current));
   }, []);
 
-  // Only genuinely fixed-height chrome rows may be seeded. Mutable rows
-  // (messages, activity groups) return undefined so LegendList measures them
-  // and learns per-type averages from getItemType — never a persisted per-row
-  // size, which poisoned the library's measurement ground truth and overlapped
-  // rows on native.
-  const getFixedItemSize = useCallback((entry: ThreadFeedEntry) => {
-    if (entry.type === "turn-fold") {
-      return TURN_FOLD_ROW_HEIGHT;
-    }
-    if (entry.type === "work-toggle") {
-      return WORK_TOGGLE_ROW_HEIGHT;
-    }
-    if (entry.type === "load-earlier") {
-      return LOAD_EARLIER_ROW_HEIGHT;
-    }
-    return undefined;
-  }, []);
-
-  const pullRefresh = useEnvironmentPullRefresh(
-    useMemo(() => [props.environmentId], [props.environmentId]),
-  );
-
   useEffect(() => {
     reportHeaderMaterialVisibility(false);
-    // A freshly opened thread starts pinned to the newest message; drop any
-    // scrolled-up follow state carried over from the previous thread.
-    setFollowStream(true);
-    setHasNewActivityWhileAway(false);
-    userInteractingRef.current = false;
-    jumpToBottomRef.current = false;
-    // Re-baseline the feed-length watermark to the new thread's feed so the
-    // first post-switch growth doesn't spuriously latch new-activity. Read, not
-    // depended on: this effect only re-runs on a thread switch.
-    feedLengthRef.current = props.feed.length;
   }, [props.threadId, reportHeaderMaterialVisibility]);
-
-  // Track feed growth so the jump button can flag unseen activity. Latch on when
-  // new entries arrive while the reader is away; clear the instant follow resumes.
-  useEffect(() => {
-    const previousLength = feedLengthRef.current;
-    feedLengthRef.current = props.feed.length;
-    setHasNewActivityWhileAway((current) =>
-      nextNewActivityWhileAway({
-        current,
-        followingStream: followStream,
-        feedGrew: props.feed.length > previousLength,
-      }),
-    );
-  }, [props.feed.length, followStream]);
 
   const expandedWorkGroupIds = useMemo(() => {
     const ids = new Set<string>();
@@ -1595,8 +1447,15 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         props.latestTurn,
         expandedTurnIds,
         expandedWorkGroupIds,
+        props.activeWorkStartedAt,
       ),
-    [expandedTurnIds, expandedWorkGroupIds, props.feed, props.latestTurn],
+    [
+      expandedTurnIds,
+      expandedWorkGroupIds,
+      props.activeWorkStartedAt,
+      props.feed,
+      props.latestTurn,
+    ],
   );
 
   // The empty↔filled key below remounts the list, which resets its imperative
@@ -1665,37 +1524,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     });
   }, [props.latestTurn]);
 
-  // A just-sent message (new send anchor) glides to its anchor: animate the end
-  // scroll for a short beat, then fall back to instant. Instant is what keeps a
-  // live stream from oscillating — an animated scrollToEnd re-fired on every
-  // streamed dataChange fights maintainVisibleContentPosition's restore, yanking
-  // the feed up and down (the library only reconciles the two on web).
-  useEffect(() => {
-    const previous = previousAnchorMessageIdRef.current;
-    previousAnchorMessageIdRef.current = props.anchorMessageId;
-    if (!shouldArmSendAnchorAnimation(previous, props.anchorMessageId)) {
-      return;
-    }
-    // Sending your own message always re-arms follow: the feed glides to the new
-    // anchor and tracks the reply, even if you had scrolled up before sending.
-    setFollowStream(true);
-    setSendAnchorAnimating(true);
-    if (sendAnchorAnimationTimeoutRef.current) {
-      clearTimeout(sendAnchorAnimationTimeoutRef.current);
-    }
-    sendAnchorAnimationTimeoutRef.current = setTimeout(() => {
-      setSendAnchorAnimating(false);
-      sendAnchorAnimationTimeoutRef.current = null;
-    }, SEND_ANCHOR_ANIMATION_WINDOW_MS);
-  }, [props.anchorMessageId]);
-
   useEffect(() => {
     return () => {
       if (copyFeedbackTimeoutRef.current) {
         clearTimeout(copyFeedbackTimeoutRef.current);
-      }
-      if (sendAnchorAnimationTimeoutRef.current) {
-        clearTimeout(sendAnchorAnimationTimeoutRef.current);
       }
       if (foldSettleFrameRef.current !== null) {
         cancelAnimationFrame(foldSettleFrameRef.current);
@@ -1738,35 +1570,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }),
     [shouldRestoreVisibleContentPosition],
   );
-
-  const maintainScrollAtEnd = useMemo(
-    () =>
-      resolveEndScrollMaintenance({
-        followingStream: followStream,
-        disclosureToggleSettling,
-        sendAnchorAnimating,
-      }),
-    [followStream, disclosureToggleSettling, sendAnchorAnimating],
-  );
-
-  const jumpToBottomState = deriveJumpToBottomState({
-    followingStream: followStream,
-    hasNewActivityWhileAway,
-  });
-  const isDarkMode = useColorScheme() === "dark";
-  const jumpSurfaceColor = useThemeColor("--color-menu-surface");
-  const jumpBorderColor = useThemeColor("--color-border");
-  const jumpIconColor = useThemeColor("--color-icon");
-  const jumpShadowColor = useThemeColor("--color-drawer-shadow");
-  const jumpAccentColor = useThemeColor("--color-primary");
-  // On iOS the keyboard composer inset is reported net of the safe-area bottom
-  // (UIKit adds it back). Fold it back in here so the arrow rests above the whole
-  // visual composer rather than sinking a home-indicator's worth into it.
-  const jumpBottomInsetCompensation = usesNativeAutomaticInsets ? insets.bottom : 0;
-  const jumpButtonPositionStyle = useAnimatedStyle(() => ({
-    bottom:
-      props.contentInsetEndAdjustment.value + jumpBottomInsetCompensation + JUMP_TO_BOTTOM_GAP,
-  }));
 
   const onCopyWorkRow = useCallback((rowId: string, value: string) => {
     copyTextWithHaptic(value, {
@@ -1853,8 +1656,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         reviewCommentColors,
         reviewCommentBubbleWidth,
         userBubbleMaxWidth,
-        feedOpenedAt,
-        onLoadEarlier: props.onLoadEarlier,
         skills: props.skills,
       }),
     [
@@ -1868,7 +1669,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       reviewCommentColors,
       reviewCommentBubbleWidth,
       userBubbleMaxWidth,
-      feedOpenedAt,
       onCopyWorkRow,
       onMarkdownLinkPress,
       onPressImage,
@@ -1876,7 +1676,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       onToggleWorkGroup,
       onToggleWorkRow,
       props.environmentId,
-      props.onLoadEarlier,
       props.skills,
     ],
   );
@@ -1944,16 +1743,24 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // targets land one safe-area short of the true resting offset.
             adjustedInsetCompensation={usesNativeAutomaticInsets ? insets.bottom : 0}
             freeze={props.freeze}
-            // Animated end pinning is scoped to the post-send window only (see
-            // threadScrollMaintenance): on send, the optimistic message's
-            // dataChange fires maintainScrollAtEnd before the explicit anchor
-            // scroll runs, and an instant snap teleports the feed to the anchor
-            // instead of gliding to it. During streaming it stays instant —
-            // an animated scrollToEnd re-fired on every streamed dataChange
-            // fights maintainVisibleContentPosition's restore (uncoordinated on
-            // native; the library only reconciles the two on web) and yanks the
-            // feed up and down on a loop.
-            maintainScrollAtEnd={maintainScrollAtEnd}
+            // Animated: on send, the optimistic message's dataChange fires
+            // maintainScrollAtEnd before any render-cycle suppression could
+            // engage — an instant snap there teleports the feed to the anchor
+            // instead of scrolling to it. Keeping it enabled (animated) during
+            // anchor scrolls also lets it correct a scroll that landed on a
+            // stale end target once the anchor row finishes measuring.
+            maintainScrollAtEnd={
+              disclosureToggleSettling
+                ? false
+                : {
+                    animated: true,
+                    on: {
+                      dataChange: true,
+                      itemLayout: true,
+                      layout: true,
+                    },
+                  }
+            }
             maintainVisibleContentPosition={maintainVisibleContentPosition}
             data={presentedFeed}
             extraData={listAppearanceData}
@@ -1981,15 +1788,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // user overscroll back to the adjusted rest position.
             scrollToOverflowEnabled
             estimatedItemSize={180}
-            getFixedItemSize={getFixedItemSize}
             initialScrollAtEnd
-            onRefresh={() => void pullRefresh.onRefresh()}
-            refreshing={pullRefresh.isRefreshing}
             onScroll={handleScroll}
-            onScrollBeginDrag={handleScrollBeginDrag}
-            onScrollEndDrag={handleScrollEndDrag}
-            onMomentumScrollBegin={handleMomentumScrollBegin}
-            onMomentumScrollEnd={handleMomentumScrollEnd}
             scrollEventThrottle={16}
             ListHeaderComponent={
               usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />
@@ -2000,7 +1800,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             }}
           />
         </View>
-        {props.feed.length === 0 && props.contentPresentation.kind === "ready" ? (
+        {props.feed.length === 0 &&
+        props.activeWorkStartedAt === null &&
+        props.contentPresentation.kind === "ready" ? (
           <View pointerEvents="none" style={StyleSheet.absoluteFill}>
             <ThreadFeedPlaceholder
               title="No conversation yet"
@@ -2011,78 +1813,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             />
           </View>
         ) : null}
-        {/* Floating "jump to latest" arrow. Rides the same KeyboardStickyView
-            mechanism as the composer so it stays a fixed gap above it and lifts
-            with the keyboard; box-none lets every other touch reach the list.
-            Only shown once the reader has scrolled away (followStream === false). */}
-        <KeyboardStickyView
-          style={StyleSheet.absoluteFill}
-          offset={{ closed: 0, opened: 0 }}
-          pointerEvents="box-none"
-        >
-          {jumpToBottomState.visible ? (
-            <Animated.View
-              pointerEvents="box-none"
-              entering={ZoomIn.duration(180)}
-              exiting={ZoomOut.duration(140)}
-              style={[
-                {
-                  position: "absolute",
-                  right: horizontalPadding,
-                },
-                jumpButtonPositionStyle,
-              ]}
-            >
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Scroll to latest"
-                hitSlop={8}
-                onPress={handleJumpToBottom}
-                style={({ pressed }) => ({
-                  width: JUMP_TO_BOTTOM_SIZE,
-                  height: JUMP_TO_BOTTOM_SIZE,
-                  borderRadius: JUMP_TO_BOTTOM_SIZE / 2,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: jumpSurfaceColor,
-                  borderWidth: StyleSheet.hairlineWidth,
-                  borderColor: jumpBorderColor,
-                  // M3 level-2/3 floating chrome: tonal surface + restrained
-                  // elevation on Android, a soft ambient shadow on iOS.
-                  shadowColor: jumpShadowColor,
-                  shadowOpacity: isDarkMode ? 0.35 : 0.14,
-                  shadowRadius: 8,
-                  shadowOffset: { width: 0, height: 3 },
-                  elevation: 3,
-                  opacity: pressed ? 0.85 : 1,
-                  transform: [{ scale: pressed ? 0.96 : 1 }],
-                })}
-              >
-                <SymbolView
-                  name={{ ios: "chevron.down", android: "arrow_downward" }}
-                  size={20}
-                  tintColor={jumpIconColor}
-                  type="monochrome"
-                />
-                {jumpToBottomState.showNewActivityDot ? (
-                  <View
-                    style={{
-                      position: "absolute",
-                      top: 8,
-                      right: 8,
-                      width: 10,
-                      height: 10,
-                      borderRadius: 5,
-                      backgroundColor: jumpAccentColor,
-                      borderWidth: 2,
-                      borderColor: jumpSurfaceColor,
-                    }}
-                  />
-                ) : null}
-              </Pressable>
-            </Animated.View>
-          ) : null}
-        </KeyboardStickyView>
       </View>
 
       <ImageViewing

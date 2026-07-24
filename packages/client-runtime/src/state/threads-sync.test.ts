@@ -26,11 +26,11 @@ import {
   type PreparedConnection,
   type SupervisorConnectionState,
 } from "../connection/model.ts";
+import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
 import {
-  applyThreadDetailEvent,
   EMPTY_ENVIRONMENT_THREAD_STATE,
   makeEnvironmentThreadState,
   ThreadSnapshotLoader,
@@ -69,6 +69,8 @@ const BASE_THREAD: OrchestrationThread = {
   createdAt: "2026-04-01T00:00:00.000Z",
   updatedAt: "2026-04-01T00:00:00.000Z",
   archivedAt: null,
+  settledOverride: null,
+  settledAt: null,
   deletedAt: null,
   messages: [],
   proposedPlans: [],
@@ -99,10 +101,17 @@ const ACTIVE_THREAD: OrchestrationThread = {
 
 type TestThreadInput = OrchestrationThreadStreamItem | Error;
 
-function testSession(client: WsRpcProtocolClient): RpcSession.RpcSession {
+function testSession(
+  client: WsRpcProtocolClient,
+  options?: { readonly completionMarker?: boolean },
+): RpcSession.RpcSession {
   return {
     client,
-    initialConfig: Effect.never,
+    initialConfig: Effect.succeed(
+      options?.completionMarker === true
+        ? ({ threadResumeCompletionMarker: true } as never)
+        : ({} as never),
+    ),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
@@ -123,18 +132,19 @@ function awaitThreadState(
 const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (options?: {
   readonly cached?: OrchestrationThread;
   readonly httpSnapshot?: Option.Option<OrchestrationThreadDetailSnapshot>;
+  readonly completionMarker?: boolean;
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
   const latest = yield* Ref.make<EnvironmentThreadState>(EMPTY_ENVIRONMENT_THREAD_STATE);
-  const publishedStates = yield* Ref.make(0);
   const retryCount = yield* Ref.make(0);
   const subscriptionCount = yield* Ref.make(0);
   const loaderCalls = yield* Ref.make(0);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
-  const lastSubscribeSignalCaughtUp = yield* Ref.make<boolean | undefined>(undefined);
+  const lastRequestCompletionMarker = yield* Ref.make<boolean | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+  const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
     AVAILABLE_CONNECTION_STATE,
   );
@@ -147,18 +157,23 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const client = {
     [ORCHESTRATION_WS_METHODS.subscribeThread]: (input: {
       readonly afterSequence?: number;
-      readonly signalCaughtUp?: boolean;
+      readonly requestCompletionMarker?: boolean;
     }) =>
       Stream.unwrap(
         Ref.updateAndGet(subscriptionCount, (count) => count + 1).pipe(
           Effect.andThen(Ref.set(lastSubscribeAfterSequence, input.afterSequence)),
-          Effect.andThen(Ref.set(lastSubscribeSignalCaughtUp, input.signalCaughtUp)),
+          Effect.andThen(Ref.set(lastRequestCompletionMarker, input.requestCompletionMarker)),
           Effect.as(streamFrom(inputs)),
         ),
       ),
   } as unknown as WsRpcProtocolClient;
   const supervisorSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-    Option.some(testSession(client)),
+    Option.some(
+      testSession(
+        client,
+        options?.completionMarker === true ? { completionMarker: true } : undefined,
+      ),
+    ),
   );
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
     Option.some(PREPARED),
@@ -208,13 +223,14 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
     Effect.provideService(ThreadSnapshotLoader, snapshotLoader),
+    Effect.provideService(
+      ConnectionWakeups.ConnectionWakeups,
+      ConnectionWakeups.ConnectionWakeups.of({ changes: Stream.fromQueue(wakeups) }),
+    ),
   );
   yield* SubscriptionRef.changes(threadState).pipe(
     Stream.runForEach((state) =>
-      Ref.set(latest, state).pipe(
-        Effect.andThen(Queue.offer(observed, state)),
-        Effect.andThen(Ref.update(publishedStates, (count) => count + 1)),
-      ),
+      Ref.set(latest, state).pipe(Effect.andThen(Queue.offer(observed, state))),
     ),
     Effect.forkScoped,
   );
@@ -223,17 +239,25 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     inputs,
     observed,
     latest,
-    publishedStates,
     retryCount,
     subscriptionCount,
     loaderCalls,
     lastSubscribeAfterSequence,
-    lastSubscribeSignalCaughtUp,
+    lastRequestCompletionMarker,
     supervisorState,
     supervisorSession,
     savedThreads,
     removedThreads,
-    replaceSession: SubscriptionRef.set(supervisorSession, Option.some(testSession(client))),
+    wakeups,
+    replaceSession: SubscriptionRef.set(
+      supervisorSession,
+      Option.some(
+        testSession(
+          client,
+          options?.completionMarker === true ? { completionMarker: true } : undefined,
+        ),
+      ),
+    ),
   };
 });
 
@@ -244,6 +268,8 @@ const snapshot = (thread: OrchestrationThread): OrchestrationThreadStreamItem =>
     thread,
   },
 });
+
+const synchronized = (): OrchestrationThreadStreamItem => ({ kind: "synchronized" });
 
 const titleUpdated = (title: string, sequence = 2): OrchestrationThreadStreamItem => ({
   kind: "event",
@@ -264,12 +290,6 @@ const titleUpdated = (title: string, sequence = 2): OrchestrationThreadStreamIte
       updatedAt: "2026-04-01T01:00:00.000Z",
     },
   },
-});
-
-const caughtUp = (sequence: number): OrchestrationThreadStreamItem => ({
-  kind: "caught-up",
-  threadId: THREAD_ID,
-  sequence,
 });
 
 const deleted = (): OrchestrationThreadStreamItem => ({
@@ -307,10 +327,9 @@ describe("EnvironmentThreads", () => {
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });
 
-      // The warm cache reaches live from the cached data, and a replayed event
-      // applies on top of it once the catch-up sentinel flushes the batch.
+      // The warm cache reaches live from the cached data, and a live event
+      // applies on top of it.
       yield* Queue.offer(harness.inputs, titleUpdated("Live title", CACHED_SNAPSHOT_SEQUENCE + 1));
-      yield* Queue.offer(harness.inputs, caughtUp(CACHED_SNAPSHOT_SEQUENCE + 1));
       yield* awaitThreadState(
         harness.observed,
         (value) =>
@@ -319,10 +338,9 @@ describe("EnvironmentThreads", () => {
           value.data.value.title === "Live title",
       );
 
-      // The subscription resumed from the cached sequence, opted into the
-      // sentinel, and never fetched the full snapshot over HTTP.
+      // The subscription resumed from the cached sequence and never fetched the
+      // full snapshot over HTTP.
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
-      expect(yield* Ref.get(harness.lastSubscribeSignalCaughtUp)).toBe(true);
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
     }),
   );
@@ -332,7 +350,6 @@ describe("EnvironmentThreads", () => {
       const harness = yield* makeHarness({ cached: BASE_THREAD });
       yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
       yield* Queue.offer(harness.inputs, titleUpdated("Live title"));
-      yield* Queue.offer(harness.inputs, caughtUp(2));
 
       const state = yield* awaitThreadState(
         harness.observed,
@@ -381,11 +398,9 @@ describe("EnvironmentThreads", () => {
       const harness = yield* makeHarness({
         httpSnapshot: Option.some({ snapshotSequence: 1, thread: httpThread }),
       });
-      // No socket snapshot is pushed; only a replayed event arrives over the
-      // socket. It can only be applied if the HTTP snapshot already seeded the
-      // thread, and it publishes once the sentinel flushes the batch.
+      // No socket snapshot is pushed; only a live event arrives over the socket.
+      // It can only be applied if the HTTP snapshot already seeded the thread.
       yield* Queue.offer(harness.inputs, titleUpdated("Live title", 2));
-      yield* Queue.offer(harness.inputs, caughtUp(2));
 
       const state = yield* awaitThreadState(
         harness.observed,
@@ -409,7 +424,6 @@ describe("EnvironmentThreads", () => {
       yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
       yield* Queue.offer(harness.inputs, titleUpdated("Replayed title", 1));
       yield* Queue.offer(harness.inputs, titleUpdated("Live title", 2));
-      yield* Queue.offer(harness.inputs, caughtUp(2));
 
       const state = yield* awaitThreadState(
         harness.observed,
@@ -436,6 +450,35 @@ describe("EnvironmentThreads", () => {
 
       expect(Option.isNone(state.data)).toBe(true);
       expect(yield* Ref.get(harness.removedThreads)).toEqual([THREAD_ID]);
+    }),
+  );
+
+  it.effect("does not resurrect a deleted thread when the app returns to the foreground", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        completionMarker: true,
+        httpSnapshot: Option.some({
+          snapshotSequence: 4,
+          thread: { ...BASE_THREAD, title: "Stale HTTP thread" },
+        }),
+      });
+      yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
+      yield* Queue.offer(harness.inputs, deleted());
+      yield* awaitThreadState(harness.observed, (value) => value.status === "deleted");
+
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      yield* Queue.offer(harness.wakeups, "application-active");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
+        yield* Effect.yieldNow;
+      }
+
+      const latest = yield* Ref.get(harness.latest);
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect(latest.status).toBe("deleted");
+      expect(Option.isNone(latest.data)).toBe(true);
     }),
   );
 
@@ -520,40 +563,6 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("returns to live on reconnect with cached data even when nothing new replays", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
-      // The warm cache reaches live from the applied snapshot.
-      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
-
-      // A disconnect drops back to "cached" while retaining the loaded data.
-      yield* SubscriptionRef.set(harness.supervisorState, AVAILABLE_CONNECTION_STATE);
-      yield* awaitThreadState(
-        harness.observed,
-        (value) => value.status === "cached" && Option.isSome(value.data),
-      );
-
-      // Reconnecting with the snapshot already in hand is current again — the
-      // resume cursor covers any gap — so the status must return to "live"
-      // without waiting for a fresh event the server may never send.
-      yield* SubscriptionRef.set(harness.supervisorState, {
-        desired: true,
-        network: "online",
-        phase: "connected",
-        stage: null,
-        attempt: 1,
-        generation: 1,
-        lastFailure: null,
-        retryAt: null,
-      });
-      const reconnected = yield* awaitThreadState(
-        harness.observed,
-        (value) => value.status === "live",
-      );
-      expect(Option.isSome(reconnected.data)).toBe(true);
-    }),
-  );
-
   it.effect("does not overwrite a live snapshot when the supervisor becomes ready", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });
@@ -588,141 +597,103 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("batches the catch-up replay into far fewer publishes than events", () =>
+  it.effect("keeps replayed updates synchronizing until the completion marker arrives", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
-      // Reach live from the warm cache before measuring the replay.
-      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
-
-      const eventCount = 40;
-      const events = Array.from({ length: eventCount }, (_unused, index) =>
-        titleUpdated(`Title ${index + 1}`, index + 2),
+      const harness = yield* makeHarness({ cached: BASE_THREAD, completionMarker: true });
+      yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "synchronizing" && Option.isSome(value.data),
       );
-      const publishesBefore = yield* Ref.get(harness.publishedStates);
-      for (const event of events) {
-        yield* Queue.offer(harness.inputs, event);
-      }
-      yield* Queue.offer(harness.inputs, caughtUp(eventCount + 1));
+      expect(yield* Ref.get(harness.lastRequestCompletionMarker)).toBe(true);
 
-      const finalTitle = `Title ${eventCount}`;
+      yield* Queue.offer(
+        harness.inputs,
+        titleUpdated("Caught-up title", CACHED_SNAPSHOT_SEQUENCE + 1),
+      );
+      const catchingUp = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "synchronizing" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Caught-up title",
+      );
+      expect(catchingUp.status).toBe("synchronizing");
+
+      yield* Queue.offer(harness.inputs, synchronized());
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(Option.getOrThrow(live.data).title).toBe("Caught-up title");
+    }),
+  );
+
+  it.effect("resumes replacement sessions from the latest applied sequence", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_THREAD, completionMarker: true });
+      yield* Queue.offer(
+        harness.inputs,
+        titleUpdated("Latest title", CACHED_SNAPSHOT_SEQUENCE + 1),
+      );
+      yield* Queue.offer(harness.inputs, synchronized());
       yield* awaitThreadState(
         harness.observed,
         (value) =>
           value.status === "live" &&
           Option.isSome(value.data) &&
-          value.data.value.title === finalTitle,
+          value.data.value.title === "Latest title",
       );
 
-      // The whole replay collapses into a handful of publishes instead of one
-      // per event.
-      const publishes = (yield* Ref.get(harness.publishedStates)) - publishesBefore;
-      expect(publishes).toBeLessThan(eventCount);
-      expect(publishes).toBeLessThanOrEqual(8);
-
-      // No event loss or reordering: the batched result equals folding every
-      // event one-by-one.
-      const expected = events.reduce(
-        (thread, item) =>
-          item.kind === "event"
-            ? (() => {
-                const result = applyThreadDetailEvent(thread, item.event);
-                return result.kind === "updated" ? result.thread : thread;
-              })()
-            : thread,
-        BASE_THREAD,
-      );
-      expect(Option.getOrThrow((yield* Ref.get(harness.latest)).data)).toEqual(expected);
-    }),
-  );
-
-  it.effect("stays hydrating and paints no intermediate turn states during catch-up", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
-      // First paint from the warm cache: data is present but the catch-up window
-      // is still open, so the hydration gate is engaged.
-      const live = yield* awaitThreadState(harness.observed, (value) => value.status === "live");
-      expect(live.hydrating).toBe(true);
-
-      // Replay a run of finished-turn events. While catching up they must fold
-      // silently — not one intermediate publish, so the UI never replays them.
-      const publishesBefore = yield* Ref.get(harness.publishedStates);
-      for (let index = 0; index < 10; index += 1) {
-        yield* Queue.offer(
-          harness.inputs,
-          titleUpdated(`Replay ${index + 1}`, CACHED_SNAPSHOT_SEQUENCE + 1 + index),
-        );
-      }
-      for (let tick = 0; tick < 20; tick += 1) {
+      yield* harness.replaceSession;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
         yield* Effect.yieldNow;
       }
-      expect((yield* Ref.get(harness.publishedStates)) - publishesBefore).toBe(0);
-      expect((yield* Ref.get(harness.latest)).hydrating).toBe(true);
 
-      // The sentinel settles catch-up: one publish lands the fully-folded state
-      // and clears the gate.
-      yield* Queue.offer(harness.inputs, caughtUp(CACHED_SNAPSHOT_SEQUENCE + 10));
-      const settled = yield* awaitThreadState(
-        harness.observed,
-        (value) =>
-          value.hydrating === false &&
-          Option.isSome(value.data) &&
-          value.data.value.title === "Replay 10",
-      );
-      expect(settled.hydrating).toBe(false);
-
-      // Post-hydration a live event paints per event with the gate released.
-      yield* Queue.offer(harness.inputs, titleUpdated("Live", CACHED_SNAPSHOT_SEQUENCE + 11));
-      const liveAfter = yield* awaitThreadState(
-        harness.observed,
-        (value) => Option.isSome(value.data) && value.data.value.title === "Live",
-      );
-      expect(liveAfter.hydrating).toBe(false);
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 1);
+      expect((yield* Ref.get(harness.latest)).status).toBe("synchronizing");
     }),
   );
 
-  it.effect("switches to per-event publishing once the sentinel arrives", () =>
+  it.effect("resubscribes on app foreground from the latest applied sequence", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
-      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
-
-      // Catch-up ends with the sentinel; a later live event then publishes
-      // immediately with no batching and no clock advance.
-      yield* Queue.offer(harness.inputs, caughtUp(CACHED_SNAPSHOT_SEQUENCE));
-      yield* Queue.offer(harness.inputs, titleUpdated("Live", CACHED_SNAPSHOT_SEQUENCE + 1));
-
-      const state = yield* awaitThreadState(
-        harness.observed,
-        (value) => Option.isSome(value.data) && value.data.value.title === "Live",
+      const harness = yield* makeHarness({ cached: BASE_THREAD, completionMarker: true });
+      yield* Queue.offer(
+        harness.inputs,
+        titleUpdated("Latest title", CACHED_SNAPSHOT_SEQUENCE + 1),
       );
-      expect(state.status).toBe("live");
-    }),
-  );
-
-  it.effect("falls back to live publishing when the sentinel never arrives", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
-      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
-
-      // Old server: it replays an event but never sends the sentinel. The batch
-      // is held until the idle fallback fires on the maintenance interval.
-      yield* Queue.offer(harness.inputs, titleUpdated("Replayed", CACHED_SNAPSHOT_SEQUENCE + 1));
-      yield* TestClock.adjust("500 millis");
+      yield* Queue.offer(harness.inputs, synchronized());
       yield* awaitThreadState(
         harness.observed,
         (value) =>
           value.status === "live" &&
           Option.isSome(value.data) &&
-          value.data.value.title === "Replayed",
+          value.data.value.title === "Latest title",
       );
 
-      // Having fallen back to live mode, a further event publishes immediately
-      // without any additional clock advance.
-      yield* Queue.offer(harness.inputs, titleUpdated("Live", CACHED_SNAPSHOT_SEQUENCE + 2));
-      const state = yield* awaitThreadState(
+      yield* Queue.offer(harness.wakeups, "application-active");
+      const synchronizing = yield* awaitThreadState(
         harness.observed,
-        (value) => Option.isSome(value.data) && value.data.value.title === "Live",
+        (value) => value.status === "synchronizing" && Option.isSome(value.data),
       );
-      expect(state.status).toBe("live");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
+        yield* Effect.yieldNow;
+      }
+
+      expect(synchronizing.status).toBe("synchronizing");
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 1);
+      expect(yield* Ref.get(harness.lastRequestCompletionMarker)).toBe(true);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+
+      yield* Queue.offer(harness.inputs, synchronized());
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(Option.getOrThrow(live.data).title).toBe("Latest title");
     }),
   );
 });

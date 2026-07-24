@@ -1,10 +1,3 @@
-// Ported from upstream PR pingdotgg/t3code#3579 by @juliusmarminge ("Use Shiki
-// for markdown code blocks"). Async Shiki highlighting for markdown fenced code
-// blocks, cached per (theme, language, code) via an Effect atom family so
-// streaming assistant messages degrade gracefully to plain themed text until a
-// highlight result resolves. Mirrors features/files/sourceHighlightingState.ts
-// and reuses the review-diff Shiki engine. Reconcile against PR #3579 on future
-// upstream merges.
 import { useAtomValue } from "@effect/atom-react";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";

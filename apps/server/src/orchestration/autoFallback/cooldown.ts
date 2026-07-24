@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - This pure boundary helper stores cooldown deadlines as ISO timestamps.
 /**
  * Per-instance auto-fallback cooldown bookkeeping (pure).
  *

@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import {
   CommandId,
@@ -21,7 +21,7 @@ import {
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
-import { buildThreadFeed, DEFAULT_THREAD_FEED_WINDOW_MESSAGES } from "../lib/threadActivity";
+import { buildThreadFeed } from "../lib/threadActivity";
 import { appAtomRegistry } from "../state/atom-registry";
 import {
   appendComposerDraftAttachments,
@@ -38,25 +38,10 @@ import {
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
 import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
-import {
-  enqueueThreadOutboxMessage,
-  removeThreadOutboxMessage,
-  type QueuedThreadMessage,
-} from "./thread-outbox";
-import {
-  editingQueuedMessageIdsAtom,
-  holdEditingQueuedMessage,
-  releaseEditingQueuedMessage,
-  useThreadOutboxMessages,
-} from "./use-thread-outbox";
-import {
-  claimQueuedMessageDispatch,
-  dispatchingQueuedMessageIdAtom,
-  finishDispatchingQueuedMessage,
-  useThreadOutboxDelivery,
-} from "./use-thread-outbox-delivery";
+import { enqueueThreadOutboxMessage } from "./thread-outbox";
+import { useThreadOutboxMessages } from "./use-thread-outbox";
 
-export function appendToThreadComposerDraft(input: {
+export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly text: string;
@@ -104,46 +89,15 @@ export function useThreadComposerState() {
     () => (selectedThreadKey ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []) : []),
     [queuedMessagesByThreadKey, selectedThreadKey],
   );
-  // How many of the newest messages to materialize for the open thread. Huge
-  // histories (e.g. the 1.7k-message Vale thread) build/render only this tail on
-  // open; scrolling to the head widens the window a page at a time. Keyed by
-  // thread so switching threads resets to the default window.
-  const [feedWindowByThread, setFeedWindowByThread] = useState<Record<string, number>>({});
-  const feedWindow = selectedThreadKey
-    ? (feedWindowByThread[selectedThreadKey] ?? DEFAULT_THREAD_FEED_WINDOW_MESSAGES)
-    : DEFAULT_THREAD_FEED_WINDOW_MESSAGES;
   const selectedThreadFeed = useMemo(
-    () =>
-      selectedThreadDetail ? buildThreadFeed(selectedThreadDetail, { window: feedWindow }) : [],
-    [selectedThreadDetail, feedWindow],
+    () => (selectedThreadDetail ? buildThreadFeed(selectedThreadDetail) : []),
+    [selectedThreadDetail],
   );
-  // Guard against a mounted sentinel firing repeatedly for the same window: only
-  // the first request at a given width grows it, and the wider window unmounts
-  // the sentinel until the reader scrolls to the new head.
-  const loadEarlierGuardRef = useRef<{ key: string | null; window: number }>({
-    key: null,
-    window: 0,
-  });
-  const onLoadEarlier = useCallback(() => {
-    if (!selectedThreadKey) {
-      return;
-    }
-    const guard = loadEarlierGuardRef.current;
-    if (guard.key === selectedThreadKey && guard.window === feedWindow) {
-      return;
-    }
-    loadEarlierGuardRef.current = { key: selectedThreadKey, window: feedWindow };
-    setFeedWindowByThread((current) => ({
-      ...current,
-      [selectedThreadKey]:
-        (current[selectedThreadKey] ?? DEFAULT_THREAD_FEED_WINDOW_MESSAGES) +
-        DEFAULT_THREAD_FEED_WINDOW_MESSAGES,
-    }));
-  }, [selectedThreadKey, feedWindow]);
 
   const selectedDraft = selectedThreadKey ? composerDrafts[selectedThreadKey] : null;
   const draftMessage = selectedDraft?.text ?? "";
   const draftAttachments = selectedDraft?.attachments ?? [];
+  const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
   const selectedThread = selectedThreadDetail ?? selectedThreadShell;
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
   const runtimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
@@ -216,100 +170,6 @@ export function useThreadComposerState() {
       return null;
     }
   }, [selectedThreadDetail, selectedThreadShell]);
-
-  const { sendQueuedMessage } = useThreadOutboxDelivery();
-
-  const onSteerQueuedMessage = useCallback(
-    async (queuedMessage: QueuedThreadMessage) => {
-      // Steer bypasses the drain's thread-busy gate on purpose: the server
-      // treats a turn start on a running thread as a steer into that turn.
-      if (
-        !selectedThreadShell ||
-        scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id) !==
-          scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId) ||
-        queuedMessage.creation !== undefined
-      ) {
-        return;
-      }
-      if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
-        return;
-      }
-      if (!claimQueuedMessageDispatch(queuedMessage.messageId)) {
-        // Another delivery holds the dispatch slot; steering now could send
-        // the same message twice.
-        return;
-      }
-      try {
-        const sent = await sendQueuedMessage(queuedMessage, selectedThreadShell);
-        if (!sent) {
-          setPendingConnectionError("Could not send the queued message. It stays queued.");
-        }
-      } finally {
-        finishDispatchingQueuedMessage(queuedMessage.messageId);
-      }
-    },
-    [selectedThreadShell, sendQueuedMessage],
-  );
-
-  const onEditQueuedMessage = useCallback(
-    async (queuedMessage: QueuedThreadMessage) => {
-      if (!selectedThreadShell) {
-        return;
-      }
-      if (appAtomRegistry.get(dispatchingQueuedMessageIdAtom) === queuedMessage.messageId) {
-        // Mid-delivery; pulling it into the draft now would fork the payload.
-        return;
-      }
-      // Hold the drain off this message while it moves into the draft, so it
-      // cannot be delivered between the decision to edit and the removal.
-      holdEditingQueuedMessage(queuedMessage.messageId);
-      try {
-        await removeThreadOutboxMessage(queuedMessage);
-      } catch (error) {
-        setPendingConnectionError(
-          error instanceof Error ? error.message : "Failed to load the queued message for editing.",
-        );
-        return;
-      } finally {
-        releaseEditingQueuedMessage(queuedMessage.messageId);
-      }
-      appendToThreadComposerDraft({
-        environmentId: queuedMessage.environmentId,
-        threadId: queuedMessage.threadId,
-        text: queuedMessage.text,
-        attachments: queuedMessage.attachments,
-      });
-      // Carry the queued settings into the draft so a later send keeps what
-      // the user originally picked for this message.
-      const threadKey = scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
-      updateComposerDraftSettings(threadKey, {
-        ...(queuedMessage.modelSelection !== undefined
-          ? { modelSelection: queuedMessage.modelSelection }
-          : {}),
-        ...(queuedMessage.runtimeMode !== undefined
-          ? { runtimeMode: queuedMessage.runtimeMode }
-          : {}),
-        ...(queuedMessage.interactionMode !== undefined
-          ? { interactionMode: queuedMessage.interactionMode }
-          : {}),
-      });
-    },
-    [selectedThreadShell],
-  );
-
-  const onDeleteQueuedMessage = useCallback(async (queuedMessage: QueuedThreadMessage) => {
-    // Hold the drain off while removing so it cannot deliver mid-delete.
-    holdEditingQueuedMessage(queuedMessage.messageId);
-    try {
-      await removeThreadOutboxMessage(queuedMessage);
-    } catch (error) {
-      setPendingConnectionError(
-        error instanceof Error ? error.message : "Failed to delete the queued message.",
-      );
-    } finally {
-      releaseEditingQueuedMessage(queuedMessage.messageId);
-    }
-  }, []);
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {
@@ -431,8 +291,7 @@ export function useThreadComposerState() {
 
   return {
     selectedThreadFeed,
-    onLoadEarlier,
-    selectedThreadQueuedMessages,
+    selectedThreadQueueCount,
     activeWorkStartedAt,
     draftMessage,
     draftAttachments,
@@ -446,9 +305,6 @@ export function useThreadComposerState() {
     onNativePasteImages,
     onRemoveDraftImage,
     onSendMessage,
-    onSteerQueuedMessage,
-    onEditQueuedMessage,
-    onDeleteQueuedMessage,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,

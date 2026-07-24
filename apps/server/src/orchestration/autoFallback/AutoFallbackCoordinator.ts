@@ -46,6 +46,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -284,7 +285,7 @@ const make = Effect.gen(function* () {
     );
 
     const cooldowns = yield* cooldownTracker.snapshot;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     const { candidate, rejections } = selectFallbackCandidate({
       instances,
       snapshots,

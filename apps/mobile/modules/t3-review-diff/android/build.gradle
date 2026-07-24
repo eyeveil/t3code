@@ -1,5 +1,3 @@
-// Ported from upstream PR pingdotgg/t3code#3579 (branch android-dev-pr-3514).
-// Mirrors modules/t3-terminal/android/build.gradle conventions.
 apply plugin: 'com.android.library'
 apply plugin: 'org.jetbrains.kotlin.android'
 

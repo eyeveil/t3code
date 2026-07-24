@@ -4,6 +4,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { useMaterial3Theme, type Material3Theme } from "@pchmn/expo-material3-theme";
+import { Platform } from "react-native";
 import { Uniwind } from "uniwind";
 
 import {
@@ -85,7 +86,9 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
   }, [preferences]);
 
   useEffect(() => {
-    applyMaterialAccentVariables(materialTheme);
+    if (Platform.OS === "android") {
+      applyMaterialAccentVariables(materialTheme);
+    }
   }, [materialTheme]);
 
   const updatePreferences = useCallback(

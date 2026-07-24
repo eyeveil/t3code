@@ -1,10 +1,3 @@
-// Ported from upstream PR pingdotgg/t3code#3579 (branch android-dev-pr-3514) by
-// @juliusmarminge. Mirrors the iOS T3ReviewDiffModule view contract (props,
-// events, async commands) so `requireNativeView("T3ReviewDiffSurface")` resolves
-// on Android. Keep in sync with ios/T3ReviewDiffModule.swift; reconcile against
-// PR #3579. DEVIATION: adds the `refreshing` prop + `onPullToRefresh` event that
-// PR #3579's Android port omitted, restoring parity with the iOS pull-to-refresh
-// contract (see T3ReviewDiffView.setRefreshing).
 package expo.modules.t3reviewdiff
 
 import expo.modules.kotlin.modules.Module
@@ -51,10 +44,6 @@ class T3ReviewDiffModule : Module() {
       Prop("initialRowIndex") { view: T3ReviewDiffView, initialRowIndex: Double ->
         view.setInitialRowIndex(initialRowIndex)
       }
-      // DEVIATION FROM PR #3579: pull-to-refresh prop, mirrors ios setRefreshing.
-      Prop("refreshing") { view: T3ReviewDiffView, refreshing: Boolean ->
-        view.setRefreshing(refreshing)
-      }
 
       Events(
         "onDebug",
@@ -63,8 +52,6 @@ class T3ReviewDiffModule : Module() {
         "onToggleViewedFile",
         "onPressLine",
         "onToggleComment",
-        // DEVIATION FROM PR #3579: mirrors ios onPullToRefresh event.
-        "onPullToRefresh",
       )
 
       AsyncFunction("scrollToFile") { view: T3ReviewDiffView, fileId: String, animated: Boolean ->

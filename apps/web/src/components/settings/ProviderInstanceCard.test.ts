@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { ServerProviderModel } from "@t3tools/contracts";
+import type { ServerProviderModel, ServerProviderUsageWindow } from "@t3tools/contracts";
 
-import { deriveProviderModelsForDisplay } from "./ProviderInstanceCard";
+import { derivePrimaryUsageWindows, deriveProviderModelsForDisplay } from "./ProviderInstanceCard";
 
 describe("deriveProviderModelsForDisplay", () => {
   it("uses current config custom models instead of stale live custom rows", () => {
@@ -32,5 +32,31 @@ describe("deriveProviderModelsForDisplay", () => {
         customModels: ["kept-custom"],
       }).map((model) => model.slug),
     ).toEqual(["server-model", "kept-custom"]);
+  });
+});
+
+describe("derivePrimaryUsageWindows", () => {
+  const usage: ReadonlyArray<ServerProviderUsageWindow> = [
+    { id: "secondary", label: "Weekly", usedPercent: 28 },
+    { id: "primary", label: "5h", usedPercent: 64 },
+    { id: "other", label: "Other", usedPercent: 99 },
+  ];
+
+  it("keeps Codex's 5h and 7d windows in a stable display order", () => {
+    expect(derivePrimaryUsageWindows("codex", usage)).toEqual([
+      { id: "primary", label: "5h", window: usage[1] },
+      { id: "secondary", label: "7d", window: usage[0] },
+    ]);
+  });
+
+  it("keeps both rows visible when telemetry has not arrived", () => {
+    expect(derivePrimaryUsageWindows("codex", undefined)).toEqual([
+      { id: "primary", label: "5h", window: undefined },
+      { id: "secondary", label: "7d", window: undefined },
+    ]);
+  });
+
+  it("does not invent usage rows for unsupported drivers", () => {
+    expect(derivePrimaryUsageWindows("cursor", usage)).toEqual([]);
   });
 });

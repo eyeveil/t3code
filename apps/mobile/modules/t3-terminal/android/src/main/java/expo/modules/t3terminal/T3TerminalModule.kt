@@ -55,6 +55,10 @@ class T3TerminalModule : Module() {
       }
 
       Events("onInput", "onResize")
+
+      OnViewDestroys { view: T3TerminalView ->
+        view.cleanup()
+      }
     }
   }
 }

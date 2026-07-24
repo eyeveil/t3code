@@ -1,4 +1,4 @@
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../components/AppSymbol";
 import { Image, Pressable, ScrollView, View } from "react-native";
 import { useThemeColor } from "../lib/useThemeColor";
 
@@ -75,7 +75,7 @@ export function ComposerAttachmentStrip(props: ComposerAttachmentStripProps) {
               onPress={() => props.onRemove(image.id)}
             >
               <SymbolView
-                name={{ ios: "xmark", android: "close" }}
+                name="xmark"
                 size={9}
                 tintColor="#ffffff"
                 type="monochrome"

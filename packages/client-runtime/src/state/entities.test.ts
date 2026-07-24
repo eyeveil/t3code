@@ -96,6 +96,8 @@ const THREAD_SHELL = {
   createdAt: "2026-06-01T00:00:00.000Z",
   updatedAt: "2026-06-01T00:00:00.000Z",
   archivedAt: null,
+  settledOverride: null,
+  settledAt: null,
   session: null,
   latestUserMessageAt: null,
   lastActivitySummary: null,
@@ -333,7 +335,6 @@ describe("environment entity projections", () => {
         data: Option.some(detail),
         status: "live",
         error: Option.none(),
-        hydrating: false,
       }),
     );
 
@@ -362,7 +363,6 @@ describe("environment entity projections", () => {
         }),
         status: "live",
         error: Option.none(),
-        hydrating: false,
       }),
     );
 

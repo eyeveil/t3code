@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Provider reset instants arrive as epochs and leave this pure boundary as ISO strings.
 /**
  * Pure per-driver usage/rate-limit mapping.
  *

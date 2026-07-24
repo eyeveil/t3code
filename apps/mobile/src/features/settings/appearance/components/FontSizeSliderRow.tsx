@@ -1,5 +1,5 @@
 import * as Haptics from "expo-haptics";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../../../components/AppSymbol";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { View, type AccessibilityActionEvent } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -40,9 +40,6 @@ export function FontSizeSliderRow(props: {
   const iconMuted = String(useThemeColor("--color-icon-muted"));
   const trackColor = String(useThemeColor("--color-secondary-border"));
   const fillColor = String(useThemeColor("--color-primary"));
-  const thumbColor = String(useThemeColor("--color-card"));
-  const thumbBorderColor = String(useThemeColor("--color-border"));
-  const thumbShadowColor = String(useThemeColor("--color-primary-shadow"));
 
   const latest = useRef(props);
   latest.current = props;
@@ -185,15 +182,14 @@ export function FontSizeSliderRow(props: {
               />
             </View>
             <Animated.View
-              className="absolute left-0 rounded-full"
+              className="absolute left-0 rounded-full bg-white"
               style={[
                 {
-                  backgroundColor: thumbColor,
-                  borderColor: thumbBorderColor,
+                  borderColor: "rgba(0, 0, 0, 0.06)",
                   borderWidth: 1,
                   height: THUMB_SIZE,
                   marginTop: -THUMB_SIZE / 2,
-                  shadowColor: thumbShadowColor,
+                  shadowColor: "#000000",
                   shadowOffset: { height: 2, width: 0 },
                   shadowOpacity: 0.18,
                   shadowRadius: 3,

@@ -1,7 +1,7 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
 import type { ComposerTriggerKind } from "@t3tools/shared/composerTrigger";
 import type { ServerProviderSkill, ServerProviderSlashCommand } from "@t3tools/contracts";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import { memo } from "react";
 import { Pressable, ScrollView, useColorScheme, View, type ViewStyle } from "react-native";
 
@@ -78,9 +78,6 @@ function PopoverSurface(props: {
           backgroundColor: props.isDarkMode ? "rgba(44,44,46,0.96)" : "rgba(255,255,255,0.96)",
           borderWidth: 1,
           borderColor: props.isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
-          // Material elevation on Android (ignored on iOS, which uses the
-          // liquid-glass branch above); lifts the popover off the composer.
-          elevation: 8,
         },
       ]}
     >
@@ -93,9 +90,9 @@ function itemIcon(item: ComposerCommandItem) {
   switch (item.type) {
     case "slash-command":
     case "provider-slash-command":
-      return { ios: "terminal", android: "terminal" } as const;
+      return "terminal" as const;
     case "skill":
-      return { ios: "cube", android: "deployed_code" } as const;
+      return "cube" as const;
     case "path":
       return null;
   }

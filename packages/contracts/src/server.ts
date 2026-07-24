@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { ExecutionEnvironmentDescriptor, ServerSelfUpdateMethod } from "./environment.ts";
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
   IsoDateTime,
@@ -64,6 +64,7 @@ export const ServerProviderModel = Schema.Struct({
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
   isCustom: Schema.Boolean,
+  isDefault: Schema.optional(Schema.Boolean),
   capabilities: Schema.NullOr(ModelCapabilities),
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
@@ -457,6 +458,10 @@ export const ServerConfig = Schema.Struct({
    * omit it still decode; the web dialog uses it to pre-fill the home field.
    */
   providerHomesDir: Schema.optional(TrimmedNonEmptyString),
+  /** Whether shell subscriptions can emit an opt-in catch-up completion marker. */
+  shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /** Whether thread subscriptions can emit an opt-in catch-up completion marker. */
+  threadResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
@@ -607,5 +612,32 @@ export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerPro
 ) {
   override get message(): string {
     return `Provider update failed for ${this.provider}: ${this.reason}`;
+  }
+}
+
+export const ServerSelfUpdateInput = Schema.Struct({
+  /** Exact npm version of the `t3` package to install (never a dist-tag, so
+      the server and the acknowledging client agree on what was requested). */
+  targetVersion: TrimmedNonEmptyString,
+});
+export type ServerSelfUpdateInput = typeof ServerSelfUpdateInput.Type;
+
+/** Acknowledgement that the update artifact is installed and the server is
+    about to restart into it — the connection will drop moments later. */
+export const ServerSelfUpdateResult = Schema.Struct({
+  targetVersion: TrimmedNonEmptyString,
+  method: ServerSelfUpdateMethod,
+});
+export type ServerSelfUpdateResult = typeof ServerSelfUpdateResult.Type;
+
+export class ServerSelfUpdateError extends Schema.TaggedErrorClass<ServerSelfUpdateError>()(
+  "ServerSelfUpdateError",
+  {
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Server update failed: ${this.reason}`;
   }
 }

@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures intentionally assert epoch-to-ISO provider usage mapping.
 import { describe, expect, it } from "vite-plus/test";
 
 import { mapClaudeRateLimits, mapCodexRateLimits, mapRateLimitsToUsage } from "./providerUsage.ts";

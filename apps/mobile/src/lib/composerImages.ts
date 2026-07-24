@@ -1,18 +1,30 @@
-import type { DraftComposerImageAttachment } from "@t3tools/client-runtime/state/composer-attachment";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  type UploadChatImageAttachment,
 } from "@t3tools/contracts";
+import { estimateBase64ByteSize } from "./base64";
 import { uuidv4 } from "./uuid";
 
-export type { DraftComposerImageAttachment };
+export interface DraftComposerImageAttachment extends UploadChatImageAttachment {
+  readonly id: string;
+  readonly previewUri: string;
+}
+
+/** Wire shape for startTurn: pure uploads without client draft id / previewUri. */
+export function toUploadChatImageAttachments(
+  attachments: ReadonlyArray<DraftComposerImageAttachment>,
+): ReadonlyArray<UploadChatImageAttachment> {
+  return attachments.map((attachment) => ({
+    type: attachment.type,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    dataUrl: attachment.dataUrl,
+  }));
+}
 
 const OWNED_PASTED_IMAGE_DIRECTORY = "t3-composer-paste";
-
-function estimateBase64ByteSize(base64: string): number {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.floor((base64.length * 3) / 4) - padding;
-}
 
 async function loadImagePicker() {
   try {

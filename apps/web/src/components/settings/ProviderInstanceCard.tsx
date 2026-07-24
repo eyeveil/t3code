@@ -104,51 +104,70 @@ function usageBarColorClass(usedPercent: number): string {
   return "bg-primary";
 }
 
+const PRIMARY_USAGE_WINDOW_IDS: Partial<
+  Record<string, readonly [fiveHour: string, sevenDay: string]>
+> = {
+  codex: ["primary", "secondary"],
+  claudeAgent: ["five_hour", "seven_day"],
+};
+
+export function derivePrimaryUsageWindows(
+  driver: string,
+  usage: ReadonlyArray<ServerProviderUsageWindow> | undefined,
+): ReadonlyArray<{
+  readonly id: string;
+  readonly label: "5h" | "7d";
+  readonly window: ServerProviderUsageWindow | undefined;
+}> {
+  const ids = PRIMARY_USAGE_WINDOW_IDS[driver];
+  if (!ids) return [];
+  return [
+    { id: ids[0], label: "5h", window: usage?.find((window) => window.id === ids[0]) },
+    { id: ids[1], label: "7d", window: usage?.find((window) => window.id === ids[1]) },
+  ];
+}
+
 /**
- * Slim per-plan usage progress bars rendered from the live provider snapshot's
- * volatile `usage` windows (codex primary/secondary, Claude 5h/weekly). Absent
- * usage renders nothing — drivers with no machine-readable telemetry show no
- * bars rather than a fake one.
+ * Keep the two plan windows that matter visible directly beneath supported
+ * provider cards. Missing telemetry stays visibly unknown instead of being
+ * presented as zero usage.
  */
 function ProviderUsageBars(props: {
+  readonly driver: ProviderDriverKind;
   readonly usage: ReadonlyArray<ServerProviderUsageWindow> | undefined;
 }) {
-  const usage = props.usage;
-  if (usage === undefined || usage.length === 0) return null;
+  const usage = derivePrimaryUsageWindows(props.driver, props.usage);
+  if (usage.length === 0) return null;
   return (
-    <div className="mt-2 grid gap-1.5">
-      {usage.map((window) => {
-        const normalized = Math.max(0, Math.min(100, window.usedPercent));
-        const resetLabel = formatResetLabel(window.resetsAt);
+    <div className="mt-3 grid grid-cols-2 gap-3" aria-label="Provider plan usage">
+      {usage.map(({ id, label, window }) => {
+        const normalized =
+          window === undefined ? null : Math.max(0, Math.min(100, window.usedPercent));
+        const resetLabel = formatResetLabel(window?.resetsAt);
+        const percentLabel = window === undefined ? "—" : formatUsagePercent(window.usedPercent);
         return (
-          <div key={window.id} className="grid gap-1">
-            <div className="flex items-center justify-between gap-2 text-[11px] leading-none">
-              <span className="font-medium text-muted-foreground">{window.label}</span>
-              <span className="flex items-center gap-1.5 tabular-nums text-muted-foreground/70">
-                <span>{formatUsagePercent(window.usedPercent)}</span>
-                {resetLabel ? (
-                  <>
-                    <span aria-hidden>·</span>
-                    <span>{resetLabel}</span>
-                  </>
-                ) : null}
-              </span>
+          <div key={id} className="grid gap-1" title={resetLabel ?? undefined}>
+            <div className="flex items-center justify-between gap-2 text-[10px] leading-none text-muted-foreground/75">
+              <span className="font-medium">{label}</span>
+              <span className="tabular-nums">{percentLabel}</span>
             </div>
             <div
-              className="h-1.5 w-full overflow-hidden rounded-full bg-muted/60"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(normalized)}
-              aria-label={`${window.label} usage ${formatUsagePercent(window.usedPercent)}`}
+              className="h-1 w-full overflow-hidden rounded-full bg-muted/70"
+              role={normalized === null ? undefined : "progressbar"}
+              aria-valuemin={normalized === null ? undefined : 0}
+              aria-valuemax={normalized === null ? undefined : 100}
+              aria-valuenow={normalized === null ? undefined : Math.round(normalized)}
+              aria-label={`${label} usage ${normalized === null ? "unavailable" : percentLabel}`}
             >
-              <div
-                className={cn(
-                  "h-full rounded-full transition-[width] duration-500 ease-out motion-reduce:transition-none",
-                  usageBarColorClass(normalized),
-                )}
-                style={{ width: `${normalized}%` }}
-              />
+              {normalized !== null ? (
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-[width] duration-500 ease-out motion-reduce:transition-none",
+                    usageBarColorClass(normalized),
+                  )}
+                  style={{ width: `${normalized}%` }}
+                />
+              ) : null}
             </div>
           </div>
         );
@@ -679,7 +698,7 @@ export function ProviderInstanceCard({
   const titleHeadNode = (
     <>
       {titleIconNode}
-      <h3 className="truncate text-[13px] font-semibold tracking-[-0.01em] text-foreground">
+      <h3 className="truncate text-sm font-medium tracking-[-0.005em] text-foreground">
         {displayName}
       </h3>
       {String(instanceId) !== String(instance.driver) ? (
@@ -731,7 +750,7 @@ export function ProviderInstanceCard({
   );
 
   const authRowNode = (
-    <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground/80">
+    <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[13px] leading-[1.45] text-muted-foreground/80">
       {hasAuthenticatedEmail ? (
         <>
           <span>Authenticated as</span>
@@ -753,8 +772,8 @@ export function ProviderInstanceCard({
   ) : null;
 
   return (
-    <div className="border-t border-border/60 first:border-t-0">
-      <div className="px-4 py-3.5 sm:px-5">
+    <div className="rounded-xl transition-colors hover:bg-muted/20">
+      <div className="px-3 py-3 sm:px-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -898,13 +917,13 @@ export function ProviderInstanceCard({
             />
           </div>
         </div>
-        <ProviderUsageBars usage={liveProvider?.usage} />
+        <ProviderUsageBars driver={instance.driver} usage={liveProvider?.usage} />
       </div>
 
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
-          <div className="space-y-0">
-            <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+          <div className="space-y-5 px-3 pb-4 pt-2 sm:px-4">
+            <div>
               <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
                 <span className="text-xs font-medium text-foreground">Display name</span>
                 <DraftInput
@@ -921,7 +940,7 @@ export function ProviderInstanceCard({
               </label>
             </div>
 
-            <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+            <div>
               <ProviderAccentColorPicker
                 displayName={displayName}
                 value={accentColor}
@@ -931,7 +950,7 @@ export function ProviderInstanceCard({
               />
             </div>
 
-            <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+            <div>
               <ProviderEnvironmentSection
                 environment={instance.environment ?? []}
                 onChange={updateEnvironment}
@@ -1004,7 +1023,7 @@ export function ProviderInstanceCard({
                 onModelOrderChange={onModelOrderChange}
               />
             ) : (
-              <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+              <div>
                 <p className="text-xs text-muted-foreground">
                   This instance uses a driver (
                   <code className="text-foreground">{String(instance.driver)}</code>) that is not

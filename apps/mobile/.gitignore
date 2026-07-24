@@ -39,5 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local EAS signing credentials
 credentials.json
 credentials/
