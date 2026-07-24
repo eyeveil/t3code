@@ -50,9 +50,9 @@ describe("ClientSettings glass opacity", () => {
 });
 
 describe("ClientSettings sidebar v2", () => {
-  it("defaults the beta off with a three-day auto-settle threshold", () => {
+  it("defaults the Eyeveil sidebar on with a three-day auto-settle threshold", () => {
     const settings = decodeClientSettings({});
-    expect(settings.sidebarV2Enabled).toBe(false);
+    expect(settings.sidebarV2Enabled).toBe(true);
     expect(settings.sidebarAutoSettleAfterDays).toBe(3);
   });
 

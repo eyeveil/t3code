@@ -183,7 +183,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled =
     AsyncResult.isSuccess(preferencesResult) &&
-    preferencesResult.value.threadListV2Enabled === true;
+    preferencesResult.value.threadListV2Enabled !== false;
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const listRef = useRef<LegendListRef | null>(null);

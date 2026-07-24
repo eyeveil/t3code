@@ -199,7 +199,7 @@ function ThreadNavigationSidebarPane(
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled =
     AsyncResult.isSuccess(preferencesResult) &&
-    preferencesResult.value.threadListV2Enabled === true;
+    preferencesResult.value.threadListV2Enabled !== false;
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(

@@ -5,7 +5,7 @@ import { APP_STAGE_LABEL } from "../branding";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
 import { primaryServerConfigAtom } from "../state/server";
 
-export type SidebarStageBackdropVariant = "nightly" | "dev" | "alpha";
+export type SidebarStageBackdropVariant = "nightly" | "dev";
 
 // A wide viewBox keeps the 96-unit art height at a fixed scale while sidebar resizing reveals
 // more horizontal canvas instead of zooming the scene.
@@ -17,7 +17,9 @@ export function resolveSidebarStageBackdropVariant(
   const normalized = stageLabel.trim().toLowerCase();
   if (normalized === "nightly") return "nightly";
   if (normalized === "dev") return "dev";
-  if (normalized === "alpha") return "alpha";
+  // Eyeveil keeps the upstream nightly artwork as its default visual identity
+  // without changing the build channel or desktop data directory.
+  if (normalized === "alpha" || normalized === "latest") return "nightly";
   return null;
 }
 
@@ -47,129 +49,7 @@ export function SidebarStageBackdrop({ variant }: { variant: SidebarStageBackdro
 
 export function StageBackdropArt({ variant }: { variant: SidebarStageBackdropVariant }) {
   if (variant === "nightly") return <NightlySkyArt />;
-  if (variant === "alpha") return <AlphaDawnArt />;
   return <DevBlueprintArt />;
-}
-
-// Alpha channel: a first-light dawn sky — same weather family as the nightly
-// clouds, but "alpha" reads as the beginning, so the horizon warms into
-// sunrise with a low rising sun and clouds catching the first light. Kept as
-// subtle as the nightly scene; fixed warm palette works in light and dark.
-const ALPHA_STARS: ReadonlyArray<{
-  cx: number;
-  cy: number;
-  r: number;
-  opacity: number;
-}> = [
-  { cx: 22, cy: 12, r: 0.5, opacity: 0.5 },
-  { cx: 64, cy: 8, r: 0.45, opacity: 0.42 },
-  { cx: 108, cy: 16, r: 0.4, opacity: 0.34 },
-  { cx: 150, cy: 9, r: 0.5, opacity: 0.4 },
-  { cx: 196, cy: 14, r: 0.4, opacity: 0.3 },
-  { cx: 236, cy: 7, r: 0.45, opacity: 0.4 },
-  { cx: 272, cy: 15, r: 0.4, opacity: 0.28 },
-];
-
-function AlphaDawnArt() {
-  return (
-    <svg
-      className="h-full w-full"
-      fill="none"
-      preserveAspectRatio="xMinYMin slice"
-      viewBox={STAGE_BACKDROP_VIEW_BOX}
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <defs>
-        <linearGradient
-          id="stage-dawn-sky"
-          x1="24"
-          y1="0"
-          x2="264"
-          y2="96"
-          gradientUnits="userSpaceOnUse"
-          spreadMethod="reflect"
-        >
-          <stop stopColor="#241A46" />
-          <stop offset="0.55" stopColor="#7A466F" />
-          <stop offset="1" stopColor="#F0A06B" />
-        </linearGradient>
-        <radialGradient
-          id="stage-dawn-sun"
-          cx="0"
-          cy="0"
-          r="1"
-          gradientTransform="translate(52 80) rotate(-58) scale(120 96)"
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop stopColor="#FFE7B8" stopOpacity="0.85" />
-          <stop offset="0.4" stopColor="#FFB073" stopOpacity="0.42" />
-          <stop offset="1" stopColor="#E86A5A" stopOpacity="0" />
-        </radialGradient>
-        <linearGradient
-          id="stage-dawn-cloud"
-          x1="0"
-          y1="60"
-          x2="288"
-          y2="96"
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop stopColor="#FFD9A8" stopOpacity="0.5" />
-          <stop offset="0.5" stopColor="#F7A985" stopOpacity="0.6" />
-          <stop offset="1" stopColor="#D98BB0" stopOpacity="0.48" />
-        </linearGradient>
-        <filter
-          id="stage-dawn-soft"
-          x="-24"
-          y="-24"
-          width="336"
-          height="144"
-          filterUnits="userSpaceOnUse"
-        >
-          <feGaussianBlur stdDeviation="4" />
-        </filter>
-        <pattern id="stage-dawn-stars" width="288" height="96" patternUnits="userSpaceOnUse">
-          <g fill="#FFEBD6">
-            {ALPHA_STARS.map((star) => (
-              <circle
-                key={`${star.cx}-${star.cy}`}
-                cx={star.cx}
-                cy={star.cy}
-                r={star.r}
-                fillOpacity={star.opacity}
-              />
-            ))}
-          </g>
-        </pattern>
-        <pattern id="stage-dawn-suns" width="576" height="96" patternUnits="userSpaceOnUse">
-          <rect width="576" height="96" fill="url(#stage-dawn-sun)" />
-        </pattern>
-      </defs>
-
-      <rect width="100%" height="96" fill="url(#stage-dawn-sky)" />
-      <rect width="100%" height="96" fill="url(#stage-dawn-suns)" />
-      <rect width="100%" height="96" fill="url(#stage-dawn-stars)" />
-
-      {/* Rising sun disc just above the horizon */}
-      <g filter="url(#stage-dawn-soft)">
-        <circle cx="52" cy="82" r="13" fill="#FFDCA0" fillOpacity="0.85" />
-      </g>
-
-      {/* Warm clouds catching first light */}
-      <g filter="url(#stage-dawn-soft)">
-        <path
-          d="M-12 90C-12 78 -2 69 12 69C16 58 28 51 42 51C56 51 66 58 70 70C78 68 86 72 90 80C99 80 108 85 112 96H-12V90Z"
-          fill="url(#stage-dawn-cloud)"
-        />
-      </g>
-      <g filter="url(#stage-dawn-soft)">
-        <path
-          d="M156 96C157 85 167 77 179 77C182 67 192 61 204 61C216 61 225 68 228 78C236 78 243 83 246 90C254 90 261 93 264 96H156Z"
-          fill="url(#stage-dawn-cloud)"
-          fillOpacity="0.82"
-        />
-      </g>
-    </svg>
-  );
 }
 
 export function StageBackdropButtonArt({ variant }: { variant: SidebarStageBackdropVariant }) {

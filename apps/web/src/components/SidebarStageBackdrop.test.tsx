@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { StageBackdropArt, StageBackdropButtonArt } from "./SidebarStageBackdrop";
+import {
+  resolveSidebarStageBackdropVariant,
+  StageBackdropArt,
+  StageBackdropButtonArt,
+} from "./SidebarStageBackdrop";
 
 describe("SidebarStageBackdrop", () => {
+  it.each(["alpha", "latest"])("uses the nightly artwork for Eyeveil's %s label", (label) => {
+    expect(resolveSidebarStageBackdropVariant(label)).toBe("nightly");
+  });
+
   it.each(["nightly", "dev"] as const)(
     "uses unique SVG definition ids when %s artwork is rendered more than once",
     (variant) => {

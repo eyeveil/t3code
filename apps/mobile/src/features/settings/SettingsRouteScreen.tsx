@@ -549,7 +549,7 @@ function BetaSettingsSection() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const threadListV2Enabled = AsyncResult.isSuccess(preferencesResult)
-    ? preferencesResult.value.threadListV2Enabled === true
+    ? preferencesResult.value.threadListV2Enabled !== false
     : false;
 
   return (
