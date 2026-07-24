@@ -67,6 +67,29 @@ describe("derivePrimaryUsageWindows", () => {
     ]);
   });
 
+  it("classifies legacy positional Codex windows by label during version skew", () => {
+    const legacyUsage: ReadonlyArray<ServerProviderUsageWindow> = [
+      { id: "primary", label: "Weekly", usedPercent: 30 },
+    ];
+
+    expect(derivePrimaryUsageWindows("codex", legacyUsage)).toEqual([
+      { id: "five_hour", label: "5h", window: undefined },
+      { id: "seven_day", label: "7d", window: legacyUsage[0] },
+    ]);
+  });
+
+  it("accepts both legacy Codex positions when their labels prove the durations", () => {
+    const legacyUsage: ReadonlyArray<ServerProviderUsageWindow> = [
+      { id: "primary", label: "5h", usedPercent: 12 },
+      { id: "secondary", label: "Weekly", usedPercent: 34 },
+    ];
+
+    expect(derivePrimaryUsageWindows("codex", legacyUsage)).toEqual([
+      { id: "five_hour", label: "5h", window: legacyUsage[0] },
+      { id: "seven_day", label: "7d", window: legacyUsage[1] },
+    ]);
+  });
+
   it("does not invent usage rows for unsupported drivers", () => {
     expect(derivePrimaryUsageWindows("cursor", usage)).toEqual([]);
   });

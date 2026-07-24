@@ -111,6 +111,25 @@ const PRIMARY_USAGE_WINDOW_IDS: Partial<
   claudeAgent: ["five_hour", "seven_day"],
 };
 
+function findPrimaryUsageWindow(
+  driver: string,
+  usage: ReadonlyArray<ServerProviderUsageWindow> | undefined,
+  id: string,
+): ServerProviderUsageWindow | undefined {
+  const exact = usage?.find((window) => window.id === id);
+  if (exact !== undefined || driver !== "codex") return exact;
+
+  // Older T3 servers forwarded Codex's positional primary/secondary IDs.
+  // Classify those by their duration-derived label so a weekly-only primary
+  // cannot leak back into the 5h slot during client/server version skew.
+  const acceptedLabels = id === "five_hour" ? new Set(["5h"]) : new Set(["7d", "weekly"]);
+  return usage?.find(
+    (window) =>
+      (window.id === "primary" || window.id === "secondary") &&
+      acceptedLabels.has(window.label.trim().toLowerCase()),
+  );
+}
+
 export function derivePrimaryUsageWindows(
   driver: string,
   usage: ReadonlyArray<ServerProviderUsageWindow> | undefined,
@@ -122,8 +141,8 @@ export function derivePrimaryUsageWindows(
   const ids = PRIMARY_USAGE_WINDOW_IDS[driver];
   if (!ids) return [];
   return [
-    { id: ids[0], label: "5h", window: usage?.find((window) => window.id === ids[0]) },
-    { id: ids[1], label: "7d", window: usage?.find((window) => window.id === ids[1]) },
+    { id: ids[0], label: "5h", window: findPrimaryUsageWindow(driver, usage, ids[0]) },
+    { id: ids[1], label: "7d", window: findPrimaryUsageWindow(driver, usage, ids[1]) },
   ];
 }
 
