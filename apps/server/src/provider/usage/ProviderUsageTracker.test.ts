@@ -77,6 +77,62 @@ describe("ProviderUsageTracker", () => {
       }),
     );
 
+    it.effect("lets live telemetry override a proactive probe baseline", () =>
+      Effect.gen(function* () {
+        const tracker = yield* ProviderUsageTracker;
+        yield* tracker.recordRateLimits({
+          instanceId: "codex-probed",
+          driver: "codex",
+          rateLimits: {
+            rateLimits: {
+              primary: { usedPercent: 45, windowDurationMins: 300 },
+            },
+          },
+        });
+        const baseline = {
+          ...provider("codex-probed"),
+          usage: [
+            { id: "primary", label: "5h", usedPercent: 20 },
+            { id: "secondary", label: "Weekly", usedPercent: 10 },
+          ],
+        } satisfies ServerProvider;
+        const [decorated] = yield* tracker.decorateProviders([baseline]);
+
+        expect(decorated?.usage).toEqual([
+          { id: "primary", label: "5h", usedPercent: 45 },
+          { id: "secondary", label: "Weekly", usedPercent: 10 },
+        ]);
+      }),
+    );
+
+    it.effect("treats each Codex update as a complete replacement", () =>
+      Effect.gen(function* () {
+        const tracker = yield* ProviderUsageTracker;
+        yield* tracker.recordRateLimits({
+          instanceId: "codex-replace",
+          driver: "codex",
+          rateLimits: {
+            rateLimits: {
+              primary: { usedPercent: 10 },
+              secondary: { usedPercent: 20 },
+            },
+          },
+        });
+        yield* tracker.recordRateLimits({
+          instanceId: "codex-replace",
+          driver: "codex",
+          rateLimits: {
+            rateLimits: {
+              primary: { usedPercent: 30 },
+            },
+          },
+        });
+        const [decorated] = yield* tracker.decorateProviders([provider("codex-replace")]);
+
+        expect(decorated?.usage).toEqual([{ id: "primary", label: "Primary", usedPercent: 30 }]);
+      }),
+    );
+
     it.effect("prunes windows whose reset instant has already passed", () =>
       Effect.gen(function* () {
         const tracker = yield* ProviderUsageTracker;
@@ -95,6 +151,19 @@ describe("ProviderUsageTracker", () => {
 
         expect(usage).toHaveLength(1);
         expect(usage[0]?.id).toBe("secondary");
+      }),
+    );
+
+    it.effect("prunes an expired proactive probe baseline", () =>
+      Effect.gen(function* () {
+        const tracker = yield* ProviderUsageTracker;
+        const baseline = {
+          ...provider("codex-expired-probe"),
+          usage: [{ id: "primary", label: "5h", usedPercent: 90, resetsAt: PAST_ISO }],
+        } satisfies ServerProvider;
+        const [decorated] = yield* tracker.decorateProviders([baseline]);
+
+        expect(decorated?.usage).toBeUndefined();
       }),
     );
 

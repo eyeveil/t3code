@@ -27,6 +27,8 @@
  * @module provider/usage/providerUsage
  */
 import type { ServerProviderUsageWindow } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 /** A usage window plus an internal sort weight (shorter windows first). */
 export interface RankedUsageWindow {
@@ -156,6 +158,128 @@ const CLAUDE_WINDOW_META: Record<string, { readonly label: string; readonly sort
     seven_day_sonnet: { label: "Sonnet weekly", sortWeight: 7 * 24 * 60 + 2 },
     overage: { label: "Overage", sortWeight: Number.MAX_SAFE_INTEGER },
   };
+
+const MONTHS = [
+  "jan",
+  "feb",
+  "mar",
+  "apr",
+  "may",
+  "jun",
+  "jul",
+  "aug",
+  "sep",
+  "oct",
+  "nov",
+  "dec",
+] as const;
+
+function parseClaudeReset(input: {
+  readonly month: string;
+  readonly day: string;
+  readonly hour: string;
+  readonly minute: string | undefined;
+  readonly meridiem: string;
+  readonly timeZone: string;
+  readonly checkedAt: string;
+}): string | undefined {
+  const month =
+    MONTHS.indexOf(input.month.toLowerCase().slice(0, 3) as (typeof MONTHS)[number]) + 1;
+  if (month === 0) return undefined;
+  const checked = DateTime.make(input.checkedAt);
+  if (Option.isNone(checked)) return undefined;
+  const checkedInResetZone = DateTime.setZoneNamed(checked.value, input.timeZone);
+  if (Option.isNone(checkedInResetZone)) return undefined;
+  const checkedParts = DateTime.toParts(checkedInResetZone.value);
+  const day = Number.parseInt(input.day, 10);
+  let hour = Number.parseInt(input.hour, 10);
+  if (
+    !Number.isFinite(day) ||
+    !Number.isFinite(hour) ||
+    day < 1 ||
+    day > 31 ||
+    hour < 1 ||
+    hour > 12
+  ) {
+    return undefined;
+  }
+  if (hour === 12) hour = 0;
+  if (input.meridiem.toLowerCase() === "pm") hour += 12;
+  const year = checkedParts.month === 12 && month === 1 ? checkedParts.year + 1 : checkedParts.year;
+  const localDateTime = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")} ${String(hour).padStart(2, "0")}:${input.minute ?? "00"}:00`;
+  const reset = DateTime.makeZoned(localDateTime, {
+    timeZone: input.timeZone,
+    adjustForTimeZone: true,
+  });
+  return Option.isSome(reset) ? DateTime.formatIso(reset.value) : undefined;
+}
+
+function claudeWeeklyWindowId(suffix: string | undefined): string {
+  if (!suffix || suffix.toLowerCase() === "all models") return "seven_day";
+  const normalized = suffix
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "_")
+    .replaceAll(/^_+|_+$/g, "");
+  return normalized.length > 0 ? `seven_day_${normalized}` : "seven_day";
+}
+
+/**
+ * Parse the machine-readable JSON envelope emitted by
+ * `claude --print "/usage" --output-format json` into the same normalized
+ * windows used by live SDK rate-limit events.
+ */
+export function parseClaudeUsageLimitsJson(
+  output: string,
+  checkedAt: string,
+): ReadonlyArray<RankedUsageWindow> {
+  let result: string;
+  try {
+    const decoded: unknown = JSON.parse(output);
+    if (
+      typeof decoded !== "object" ||
+      decoded === null ||
+      typeof (decoded as { result?: unknown }).result !== "string"
+    ) {
+      return [];
+    }
+    result = (decoded as { result: string }).result;
+  } catch {
+    return [];
+  }
+
+  const windows: RankedUsageWindow[] = [];
+  const pattern =
+    /^Current (session|week(?: \([^)]+\))?):\s*(\d{1,3}(?:\.\d+)?)% used\s*[\u00b7-]\s*resets ([A-Za-z]{3,9}) (\d{1,2}), (\d{1,2})(?::(\d{2}))?(am|pm) \(([^)]+)\)$/gim;
+  for (const match of result.matchAll(pattern)) {
+    const [, rawLabel, percent, month, day, hour, minute, meridiem, timeZone] = match;
+    if (!rawLabel || !percent || !month || !day || !hour || !meridiem || !timeZone) continue;
+    const usedPercent = Number.parseFloat(percent);
+    if (!Number.isFinite(usedPercent)) continue;
+    const isSession = rawLabel.toLowerCase() === "session";
+    const suffix = rawLabel.match(/\(([^)]+)\)/)?.[1];
+    const isPrimaryWeekly = !suffix || suffix.toLowerCase() === "all models";
+    const resetsAt = parseClaudeReset({
+      month,
+      day,
+      hour,
+      minute,
+      meridiem,
+      timeZone,
+      checkedAt,
+    });
+    windows.push({
+      window: makeWindow({
+        id: isSession ? "five_hour" : claudeWeeklyWindowId(suffix),
+        label: isSession ? "5h" : isPrimaryWeekly ? "Weekly" : `${suffix} weekly`,
+        usedPercent,
+        ...(resetsAt ? { resetsAt } : {}),
+      }),
+      sortWeight: isSession ? 5 * 60 : 7 * 24 * 60 + (isPrimaryWeekly ? 0 : 1),
+    });
+  }
+
+  return windows;
+}
 
 /** Map a Claude `account.rate-limits.updated` payload to a usage window. */
 export function mapClaudeRateLimits(rawRateLimits: unknown): ReadonlyArray<RankedUsageWindow> {

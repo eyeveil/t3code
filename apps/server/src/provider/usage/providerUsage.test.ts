@@ -1,10 +1,15 @@
 // @effect-diagnostics globalDate:off - Fixtures intentionally assert epoch-to-ISO provider usage mapping.
 import { describe, expect, it } from "vite-plus/test";
 
-import { mapClaudeRateLimits, mapCodexRateLimits, mapRateLimitsToUsage } from "./providerUsage.ts";
+import {
+  mapClaudeRateLimits,
+  mapCodexRateLimits,
+  mapRateLimitsToUsage,
+  parseClaudeUsageLimitsJson,
+} from "./providerUsage.ts";
 
 // A fixed reset instant well in the future so ISO conversion is deterministic.
-const RESET_EPOCH_SECONDS = 1_900_000_000; // 2030-03-17T15:06:40.000Z
+const RESET_EPOCH_SECONDS = 1_900_000_000; // 2030-03-17T17:46:40.000Z
 const RESET_ISO = new Date(RESET_EPOCH_SECONDS * 1000).toISOString();
 
 describe("mapCodexRateLimits", () => {
@@ -104,6 +109,68 @@ describe("mapClaudeRateLimits", () => {
   it("ignores events without a usable window", () => {
     expect(mapClaudeRateLimits({ rate_limit_info: { status: "allowed" } })).toEqual([]);
     expect(mapClaudeRateLimits(undefined)).toEqual([]);
+  });
+});
+
+describe("parseClaudeUsageLimitsJson", () => {
+  it("maps session, weekly, and model-specific windows onto live telemetry ids", () => {
+    const output = JSON.stringify({
+      result: [
+        "Current session: 30% used · resets Jul 23, 1:30am (America/Chicago)",
+        "Current week (all models): 16% used · resets Jul 28, 1am (America/Chicago)",
+        "Current week (Fable): 26% used · resets Jul 28, 1am (America/Chicago)",
+      ].join("\n"),
+    });
+
+    expect(parseClaudeUsageLimitsJson(output, "2026-07-22T12:00:00.000Z")).toEqual([
+      {
+        window: {
+          id: "five_hour",
+          label: "5h",
+          usedPercent: 30,
+          resetsAt: "2026-07-23T06:30:00.000Z",
+        },
+        sortWeight: 300,
+      },
+      {
+        window: {
+          id: "seven_day",
+          label: "Weekly",
+          usedPercent: 16,
+          resetsAt: "2026-07-28T06:00:00.000Z",
+        },
+        sortWeight: 10_080,
+      },
+      {
+        window: {
+          id: "seven_day_fable",
+          label: "Fable weekly",
+          usedPercent: 26,
+          resetsAt: "2026-07-28T06:00:00.000Z",
+        },
+        sortWeight: 10_081,
+      },
+    ]);
+  });
+
+  it("fails closed for malformed or changed output", () => {
+    expect(parseClaudeUsageLimitsJson("not json", "2026-07-22T12:00:00.000Z")).toEqual([]);
+    expect(
+      parseClaudeUsageLimitsJson(
+        JSON.stringify({ result: "Your limits look healthy." }),
+        "2026-07-22T12:00:00.000Z",
+      ),
+    ).toEqual([]);
+  });
+
+  it("uses the reset zone's local year around the UTC new-year boundary", () => {
+    const output = JSON.stringify({
+      result: "Current session: 30% used · resets Dec 31, 11pm (America/Los_Angeles)",
+    });
+
+    expect(parseClaudeUsageLimitsJson(output, "2027-01-01T00:30:00.000Z")[0]?.window.resetsAt).toBe(
+      "2027-01-01T07:00:00.000Z",
+    );
   });
 });
 

@@ -349,6 +349,46 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
+      it.effect("includes proactively probed Codex usage windows", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                rateLimits: {
+                  rateLimits: {
+                    primary: {
+                      usedPercent: 25,
+                      windowDurationMins: 300,
+                      resetsAt: 1_900_000_000,
+                    },
+                    secondary: {
+                      usedPercent: 40,
+                      windowDurationMins: 10_080,
+                      resetsAt: 1_900_000_000,
+                    },
+                  },
+                },
+              }),
+            ),
+          );
+
+          assert.deepStrictEqual(status.usage, [
+            {
+              id: "primary",
+              label: "5h",
+              usedPercent: 25,
+              resetsAt: "2030-03-17T17:46:40.000Z",
+            },
+            {
+              id: "secondary",
+              label: "Weekly",
+              usedPercent: 40,
+              resetsAt: "2030-03-17T17:46:40.000Z",
+            },
+          ]);
+        }),
+      );
+
       it.effect("passes configured launch args to the Codex provider probe", () =>
         Effect.gen(function* () {
           let observedLaunchArgs: string | undefined;
@@ -1812,6 +1852,60 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   stderr: "",
                   code: 0,
                 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("includes proactively probed Claude usage for a subscription account", () =>
+        Effect.gen(function* () {
+          let observedAccountIdentity: string | undefined;
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              email: "claude@example.com",
+              subscriptionType: "claudeProSubscription",
+            }),
+            undefined,
+            undefined,
+            (accountIdentity) => {
+              observedAccountIdentity = accountIdentity;
+              return Effect.succeed([
+                {
+                  id: "five_hour",
+                  label: "5h",
+                  usedPercent: 32,
+                  resetsAt: "2030-03-17T17:46:40.000Z",
+                },
+                {
+                  id: "seven_day",
+                  label: "Weekly",
+                  usedPercent: 18,
+                },
+              ]);
+            },
+          );
+
+          assert.strictEqual(observedAccountIdentity, "claude@example.com");
+          assert.deepStrictEqual(status.usage, [
+            {
+              id: "five_hour",
+              label: "5h",
+              usedPercent: 32,
+              resetsAt: "2030-03-17T17:46:40.000Z",
+            },
+            {
+              id: "seven_day",
+              label: "Weekly",
+              usedPercent: 18,
+            },
+          ]);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),

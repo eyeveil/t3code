@@ -62,20 +62,41 @@ function mergeWindows(
   return next;
 }
 
+function isWindowActive(window: ServerProviderUsageWindow, now: number): boolean {
+  const resetsAt = window.resetsAt;
+  if (resetsAt === undefined) return true;
+  const parsed = Date.parse(resetsAt);
+  return Number.isNaN(parsed) ? true : parsed > now;
+}
+
 /** Present windows for one instance: prune reset-elapsed, sort, strip weights. */
 function presentWindows(
   state: InstanceUsageState | undefined,
   now: number,
 ): ReadonlyArray<ServerProviderUsageWindow> {
   if (state === undefined || state.size === 0) return [];
-  const ranked = [...state.values()].filter((entry) => {
-    const resetsAt = entry.window.resetsAt;
-    if (resetsAt === undefined) return true;
-    const parsed = Date.parse(resetsAt);
-    return Number.isNaN(parsed) ? true : parsed > now;
-  });
+  const ranked = [...state.values()].filter((entry) => isWindowActive(entry.window, now));
   ranked.sort((a, b) => a.sortWeight - b.sortWeight || a.window.id.localeCompare(b.window.id));
   return ranked.map((entry) => entry.window);
+}
+
+/**
+ * Probe snapshots provide an immediate baseline; live runtime events replace
+ * matching windows as fresher telemetry arrives.
+ */
+function mergePresentedWindows(
+  probed: ReadonlyArray<ServerProviderUsageWindow> | undefined,
+  live: ReadonlyArray<ServerProviderUsageWindow>,
+  now: number,
+): ReadonlyArray<ServerProviderUsageWindow> {
+  const merged = new Map<string, ServerProviderUsageWindow>();
+  for (const window of probed ?? []) {
+    if (isWindowActive(window, now)) merged.set(window.id, window);
+  }
+  for (const window of live) {
+    merged.set(window.id, window);
+  }
+  return [...merged.values()];
 }
 
 const make = Effect.gen(function* () {
@@ -89,7 +110,15 @@ const make = Effect.gen(function* () {
             ? Effect.void
             : Ref.update(stateRef, (state) => {
                 const next = new Map(state);
-                next.set(instanceId, mergeWindows(state.get(instanceId), windows));
+                // Codex snapshots contain every window and replace the prior
+                // set. Claude emits one sparse window per event, so those must
+                // accumulate by id.
+                next.set(
+                  instanceId,
+                  driver === "codex"
+                    ? new Map(windows.map((entry) => [entry.window.id, entry] as const))
+                    : mergeWindows(state.get(instanceId), windows),
+                );
                 return next;
               }),
         ),
@@ -98,8 +127,12 @@ const make = Effect.gen(function* () {
       Effect.all([Ref.get(stateRef), Clock.currentTimeMillis]).pipe(
         Effect.map(([state, now]) =>
           providers.map((provider) => {
-            const usage = presentWindows(state.get(String(provider.instanceId)), now);
-            return usage.length === 0 ? provider : { ...provider, usage };
+            const live = presentWindows(state.get(String(provider.instanceId)), now);
+            const usage = mergePresentedWindows(provider.usage, live, now);
+            if (usage.length > 0) return { ...provider, usage };
+            if (provider.usage === undefined) return provider;
+            const { usage: _expiredUsage, ...withoutUsage } = provider;
+            return withoutUsage;
           }),
         ),
       ),

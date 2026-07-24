@@ -4,6 +4,7 @@ import {
   type ModelSelection,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
+  type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -42,6 +43,7 @@ import {
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
+import { parseClaudeUsageLimitsJson } from "../usage/providerUsage.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -54,6 +56,7 @@ const CLAUDE_PRESENTATION = {
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.169";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
+const USAGE_PROBE_TIMEOUT_MS = 4_000;
 
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -716,6 +719,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
   environment?: NodeJS.ProcessEnv,
+  options?: { readonly closeStdin?: boolean; readonly cwd?: string },
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const spawnCommand = yield* resolveSpawnCommand(claudeSettings.binaryPath, args, {
@@ -724,8 +728,54 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     env: claudeEnvironment,
     shell: spawnCommand.shell,
+    ...(options?.cwd ? { cwd: options.cwd } : {}),
+    ...(options?.closeStdin ? { stdin: "ignore" as const } : {}),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
+});
+
+export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(function* (
+  claudeSettings: ClaudeSettings,
+  environment?: NodeJS.ProcessEnv,
+  cwd?: string,
+): Effect.fn.Return<
+  ReadonlyArray<ServerProviderUsageWindow> | undefined,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | Path.Path
+> {
+  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  return yield* runClaudeCommand(
+    claudeSettings,
+    [
+      "--print",
+      "/usage",
+      "--output-format",
+      "json",
+      "--permission-mode",
+      "plan",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+    ],
+    {
+      ...(environment ?? process.env),
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    },
+    { closeStdin: true, ...(cwd ? { cwd } : {}) },
+  ).pipe(
+    Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
+    Effect.map(
+      Option.flatMap((result) => {
+        if (result.code !== 0) return Option.none();
+        const windows = parseClaudeUsageLimitsJson(result.stdout, checkedAt);
+        return windows.length > 0
+          ? Option.some(windows.map((entry) => entry.window))
+          : Option.none();
+      }),
+    ),
+    Effect.catchCause(() => Effect.succeed(Option.none())),
+    Effect.map(Option.getOrUndefined),
+  );
 });
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
@@ -735,6 +785,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
+  resolveUsage?: (
+    accountIdentity: string | undefined,
+  ) => Effect.Effect<ReadonlyArray<ServerProviderUsageWindow> | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -875,6 +928,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
+  const usage =
+    authMetadata?.type === "apiKey" || authMetadata?.type === "bedrock" || !resolveUsage
+      ? undefined
+      : yield* resolveUsage(capabilities.email?.trim() || undefined).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -882,6 +941,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     models,
     slashCommands: dedupedSlashCommands,
     skills,
+    ...(usage ? { usage } : {}),
     probe: {
       installed: true,
       version: parsedVersion,

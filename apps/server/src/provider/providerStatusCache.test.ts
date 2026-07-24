@@ -121,6 +121,38 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
     }),
   );
 
+  it.effect("does not persist volatile usage and cooldown telemetry", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-provider-cache-volatile-",
+      });
+      const cachePath = yield* resolveProviderStatusCachePath({
+        cacheDir: tempDir,
+        instanceId: defaultInstanceIdForDriver(CODEX_DRIVER),
+      });
+      const provider = makeProvider(CODEX_DRIVER, {
+        usage: [
+          {
+            id: "primary",
+            label: "5h",
+            usedPercent: 25,
+            resetsAt: "2030-03-17T17:46:40.000Z",
+          },
+        ],
+        recentlyLimited: true,
+        limitedUntil: "2030-03-17T17:46:40.000Z",
+      });
+
+      yield* writeProviderStatusCache({
+        filePath: cachePath,
+        provider,
+      });
+
+      assert.deepStrictEqual(yield* readProviderStatusCache(cachePath), makeProvider(CODEX_DRIVER));
+    }),
+  );
+
   it("hydrates cached provider status while preserving current settings-derived models", () => {
     const cachedCodex = makeProvider(CODEX_DRIVER, {
       checkedAt: "2026-04-10T12:00:00.000Z",
