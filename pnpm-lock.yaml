@@ -163,10 +163,10 @@ importers:
         version: 1.30.0
       msgpackr:
         specifier: ^2.0.1
-        version: 2.0.2
+        version: 2.0.4
       multipasta:
         specifier: ^0.2.7
-        version: 0.2.7
+        version: 0.2.8
       playwright-core:
         specifier: 1.60.0
         version: 1.60.0
@@ -178,10 +178,10 @@ importers:
         version: 0.1.44(react@19.2.6)
       toml:
         specifier: ^4.1.1
-        version: 4.1.1
+        version: 4.3.0
       uuid:
         specifier: ^14.0.0
-        version: 14.0.0
+        version: 14.0.1
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -6868,6 +6868,10 @@ packages:
     resolution: {integrity: sha512-GDhU9ntwuKyGXdZBUgTIe+vXnWj0fppUEtMDL0+idd5Sta8TGpHssn/eusA9mrPr9qNDym6SxAYZjNvCn/9RBg==}
     engines: {node: '>= 10.17.0'}
     hasBin: true
+
+  fast-check@4.8.0:
+    resolution: {integrity: sha512-GOJ158CUMnN6cSahsv4+ExARvIDuzzinFjkp0E9WtiBa5zcVeLozVkWaE4IzFcc+Y48Wp1EDlUZsXRyAztQcSg==}
+    engines: {node: '>=12.17.0'}
 
   fast-check@4.9.0:
     resolution: {integrity: sha512-7ms6T7SybUev/PQITciI0yLM2pOSFy5zpG8Ty7tQofcVaQUvrMXp6CBwqF6fThLCLOrfBtuHAtwq6Yu4XPCllg==}
@@ -17414,6 +17418,10 @@ snapshots:
       '@types/yauzl': 2.10.3
     transitivePeerDependencies:
       - supports-color
+
+  fast-check@4.8.0:
+    dependencies:
+      pure-rand: 8.4.0
 
   fast-check@4.9.0:
     dependencies:
