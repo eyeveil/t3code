@@ -20,6 +20,7 @@ import {
   resolveSendEnvMode,
   resolveThreadBannerError,
   shouldQueueMessageWhileBusy,
+  startNewThreadForProject,
   shouldShowBranchMismatchBanner,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
@@ -557,6 +558,33 @@ describe("resolveThreadBannerError", () => {
         dismissedLastError: null,
       }),
     ).toBe("[ede_diagnostic] result_type=user");
+  });
+});
+
+describe("startNewThreadForProject", () => {
+  it("starts a thread through the supplied shared handler for the active project", () => {
+    const calls: Array<{ environmentId: EnvironmentId; projectId: ProjectId }> = [];
+    const projectRef = { environmentId, projectId };
+
+    expect(
+      startNewThreadForProject(projectRef, (nextProjectRef) => {
+        calls.push(nextProjectRef);
+        return Promise.resolve();
+      }),
+    ).toBe(true);
+    expect(calls).toEqual([projectRef]);
+  });
+
+  it("does nothing when the active project is unavailable", () => {
+    let called = false;
+
+    expect(
+      startNewThreadForProject(null, () => {
+        called = true;
+        return Promise.resolve();
+      }),
+    ).toBe(false);
+    expect(called).toBe(false);
   });
 });
 
