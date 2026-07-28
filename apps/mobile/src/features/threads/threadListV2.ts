@@ -18,6 +18,33 @@ export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "
 export const THREAD_LIST_V2_SETTLED_INITIAL_COUNT = 10;
 export const THREAD_LIST_V2_SETTLED_PAGE_COUNT = 25;
 
+/** Eyeveil keeps Thread List v2 on by default for every app variant. */
+export function resolveThreadListV2Default(_appVariant: unknown): boolean {
+  return true;
+}
+
+/**
+ * Resolved Thread List v2 state: the device-local preference if the user has
+ * set one, otherwise Eyeveil's v2-on default. Preferences persist as
+ * sparse patches, so `undefined` genuinely means "never chosen".
+ *
+ * `preferencesLoaded` guards the startup window: preferences load
+ * asynchronously, and treating "still loading" as "never chosen" would mount
+ * v2 on a development build and then flip to v1 once a stored opt-out arrives,
+ * remounting the whole list. While loading, hold v1 — the state both variants
+ * already start from.
+ */
+export function resolveThreadListV2Enabled(input: {
+  readonly preference: boolean | undefined;
+  readonly preferencesLoaded: boolean;
+  readonly appVariant: unknown;
+}): boolean {
+  if (!input.preferencesLoaded) {
+    return false;
+  }
+  return input.preference ?? resolveThreadListV2Default(input.appVariant);
+}
+
 export function resolveThreadListV2Status(
   thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session">,
 ): ThreadListV2Status {

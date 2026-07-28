@@ -25,8 +25,8 @@ export interface Preferences {
   readonly projectGroupingEnabled?: boolean;
   /**
    * Device-local mirror of the web beta's `sidebarV2Enabled`. Mobile has no
-   * client-settings sync, so the flat v2 thread list can be opted out per
-   * device.
+   * client-settings sync. Eyeveil defaults the flat v2 list on across app
+   * variants, while an explicit device preference can still opt out.
    */
   readonly threadListV2Enabled?: boolean;
 }
