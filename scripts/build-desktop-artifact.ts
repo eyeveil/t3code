@@ -584,7 +584,20 @@ interface StagePackageJson {
 }
 
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
-export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
+export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
+export const DESKTOP_FILE_EXCLUSIONS = [
+  // T3 Code always passes the user's installed Claude executable to the SDK,
+  // so the SDK's optional platform packages (each a ~200MB bundled executable)
+  // are dead weight. The trailing dash keeps the SDK's own JS package.
+  "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
+] as const;
+// The WSL backend launches the server with plain `wsl.exe -- node`, which
+// cannot read inside an asar archive — and the server bundle externalizes its
+// runtime deps, so the whole node_modules tree must be unpacked, not just the
+// bundle (otherwise ERR_MODULE_NOT_FOUND: "Cannot find package 'effect'").
+// The Windows primary backend reads the same files through the asar redirect,
+// so nothing is duplicated.
+export const WINDOWS_ASAR_UNPACK = ["apps/server/dist/**", "**/node_modules/**"] as const;
 
 // Shared CommonJS body for the electron-builder hooks below. electron-builder
 // mis-collects pnpm's isolated node_modules when packing (deduped transitive
@@ -1474,6 +1487,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
+    electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
+    files: [...DESKTOP_FILE_EXCLUSIONS],
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -1481,21 +1496,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // into the asar (deduped leaves like ms/pure-rand dropped -> crash on
     // launch). Shipping the app unpacked lets the post-build step replace
     // node_modules with the complete staged tree so every dep resolves.
+    // Upstream's `files` exclusion still trims what gets packed.
     asar: false,
-    // The Windows primary backend runs the server bundle through
-    // ELECTRON_RUN_AS_NODE (asar-aware), so it reads bin.mjs straight out of
-    // app.asar. The WSL backend instead launches plain `wsl.exe -- node`, which
-    // cannot read inside an asar archive, so everything it loads must be on the
-    // real filesystem. The server bundle externalizes its runtime dependencies
-    // (effect, @effect/*, node-pty, ...) to node_modules rather than inlining
-    // them, so unpacking just the bundle + node-pty isn't enough — the Linux Node
-    // fails with ERR_MODULE_NOT_FOUND (e.g. "Cannot find package 'effect'") before
-    // it even reaches node-pty. Unpack the server bundle AND the whole
-    // node_modules tree so every import resolves (this also covers the fff native
-    // binaries in DESKTOP_ASAR_UNPACK). The Windows primary keeps reading the same
-    // files through the asar (transparently redirected to the unpacked copy), so
-    // there's no duplication.
-    asarUnpack: [...DESKTOP_ASAR_UNPACK, "apps/server/dist/**", "**/node_modules/**"],
+    // Kept in upstream's platform-conditional shape so re-enabling asar here is
+    // a one-line change: only the Windows WSL backend needs files outside the
+    // archive (see WINDOWS_ASAR_UNPACK) because `wsl.exe -- node` cannot read
+    // inside an asar and the server bundle externalizes its runtime deps.
+    ...(platform === "win" ? { asarUnpack: [...WINDOWS_ASAR_UNPACK] } : {}),
     // electron-builder's own file collection drops deduped transitive leaves out
     // of pnpm's isolated node_modules (ms, pure-rand, ...), so the packed app
     // crashes on launch with ERR_MODULE_NOT_FOUND. The hook (written into the

@@ -371,6 +371,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       <div
         className={cn(
           "workspace-topbar gap-1 pl-2",
+          !ownsDesktopTitleBar && "[--workspace-topbar-height:--spacing(11)]",
           // Reserve room for the absolutely-positioned titlebar control cluster
           // (maximize + 3 layout toggles = 124px) plus its 0.75rem right inset
           // and a 0.25rem gutter matching the inter-control gap: 8.75rem.

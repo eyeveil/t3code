@@ -359,10 +359,7 @@ export const resolveServerConfig = (
       () => (mode === "desktop" ? "127.0.0.1" : undefined),
     );
     const publicUrl = Option.getOrUndefined(
-      resolveOptionPrecedence(
-        normalizedFlags.publicUrl,
-        Option.fromUndefinedOr(env.publicUrl),
-      ),
+      resolveOptionPrecedence(normalizedFlags.publicUrl, Option.fromUndefinedOr(env.publicUrl)),
     );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
 

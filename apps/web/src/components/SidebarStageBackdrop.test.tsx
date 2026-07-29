@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
+  resolveEnvironmentIdentificationPillLabel,
   resolveSidebarStageBackdropVariant,
   StageBackdropArt,
   StageBackdropButtonArt,
@@ -10,6 +11,20 @@ import {
 describe("SidebarStageBackdrop", () => {
   it.each(["alpha", "latest"])("uses the nightly artwork for Eyeveil's %s label", (label) => {
     expect(resolveSidebarStageBackdropVariant(label)).toBe("nightly");
+  });
+
+  it("resolves stage artwork only when enabled", () => {
+    expect(resolveSidebarStageBackdropVariant("Dev")).toBe("dev");
+    expect(resolveSidebarStageBackdropVariant("Nightly")).toBe("nightly");
+    expect(resolveSidebarStageBackdropVariant("Dev", false)).toBeNull();
+    expect(resolveSidebarStageBackdropVariant("Alpha", false)).toBeNull();
+  });
+
+  it("resolves supported environment pill labels", () => {
+    expect(resolveEnvironmentIdentificationPillLabel("Dev")).toBe("Dev");
+    expect(resolveEnvironmentIdentificationPillLabel("nightly")).toBe("Nightly");
+    expect(resolveEnvironmentIdentificationPillLabel("Latest")).toBeNull();
+    expect(resolveEnvironmentIdentificationPillLabel("Alpha")).toBeNull();
   });
 
   it.each(["nightly", "dev"] as const)(
