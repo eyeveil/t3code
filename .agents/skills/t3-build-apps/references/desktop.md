@@ -70,3 +70,12 @@ pins both hook paths to absolute stage paths.
   start; supply `--wsl-prebuild <pty.node>` for the target arch, or rely on the
   native backend + remote envs.
 - Linux: `pnpm dist:desktop:linux` (AppImage, x64).
+
+## Rust toolchain (required since upstream ~2026-08, resource monitor)
+Desktop builds compile a native resource-monitor executable via `cargo build`
+(`native/resource-monitor/Cargo.toml`). Without cargo on PATH the build dies
+with `spawn cargo ENOENT`. One-time setup on the build Mac:
+
+```bash
+brew install rust   # provides cargo; rustup also works if you prefer toolchains
+```
