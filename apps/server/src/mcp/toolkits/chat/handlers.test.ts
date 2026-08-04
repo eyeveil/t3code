@@ -94,6 +94,7 @@ const projectionQueryStub = (
 ): ProjectionSnapshotQuery["Service"] => ({
   getCommandReadModel: () => Effect.die("unused"),
   getSnapshot: () => Effect.die("unused"),
+  searchThreads: () => Effect.die("unused"),
   getShellSnapshot: () => Effect.succeed(emptyShellSnapshot),
   getArchivedShellSnapshot: () => Effect.succeed(emptyShellSnapshot),
   getSnapshotSequence: () => Effect.die("unused"),

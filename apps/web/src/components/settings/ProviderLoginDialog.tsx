@@ -180,7 +180,6 @@ export function ProviderLoginDialog({
       fitAddonRef.current = null;
       terminal.dispose();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, environmentId, instanceId]);
 
   // Write output deltas to the terminal as they stream in.

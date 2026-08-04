@@ -10,7 +10,6 @@
 
 // ANSI/OSC control sequences the terminal emits around URLs; stripped so a URL
 // wrapped in escape codes still matches.
-// eslint-disable-next-line no-control-regex
 const ANSI_ESCAPE = /\[[0-9;?]*[ -/]*[@-~]|\][^]*(?:|\\)/g;
 
 // Trailing punctuation that commonly hugs a URL in prose but is not part of it.
