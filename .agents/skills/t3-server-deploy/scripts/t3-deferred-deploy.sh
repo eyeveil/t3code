@@ -142,7 +142,9 @@ start_serve() {
 }
 
 serve_up() {
-  for _ in $(seq 1 20); do
+  # 120s: first boot after a version bump can run DB migrations against a
+  # large state db; a 20s window false-negatives and can strand the rollback.
+  for _ in $(seq 1 120); do
     curl -fsS --max-time 5 -o /dev/null "$HEALTH_URL" 2>/dev/null && return 0
     sleep 1
   done
