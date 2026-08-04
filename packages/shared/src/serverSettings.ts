@@ -13,6 +13,12 @@ import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
 import { createModelSelection } from "./model.ts";
+import {
+  getBackgroundActivityBaseProfile,
+  normalizeBackgroundActivitySettings,
+  normalizeServerBackgroundActivitySettings,
+  resolveBackgroundActivitySettings,
+} from "./backgroundActivitySettings.ts";
 
 /**
  * Driver kinds whose per-instance config carries a `homePath` that isolates
@@ -187,10 +193,64 @@ export function applyServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
-  const { automaticGitFetchInterval, ...patchForMerge } = patch;
+  const {
+    automaticGitFetchInterval,
+    providerHealthRefreshInterval,
+    backgroundActivityProfile,
+    backgroundActivity,
+    ...patchForMerge
+  } = patch;
+  const currentBackgroundActivity = normalizeServerBackgroundActivitySettings(current);
+  const backgroundActivityPatch =
+    backgroundActivityProfile !== undefined
+      ? {
+          schemaVersion: 1 as const,
+          profile:
+            automaticGitFetchInterval !== undefined || providerHealthRefreshInterval !== undefined
+              ? ("custom" as const)
+              : backgroundActivityProfile,
+          ...(automaticGitFetchInterval !== undefined || providerHealthRefreshInterval !== undefined
+            ? { baseProfile: backgroundActivityProfile }
+            : {}),
+          overrides: {
+            ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+            ...(providerHealthRefreshInterval !== undefined
+              ? { providerHealthRefreshInterval }
+              : {}),
+          },
+        }
+      : automaticGitFetchInterval !== undefined || providerHealthRefreshInterval !== undefined
+        ? {
+            schemaVersion: 1 as const,
+            profile: "custom" as const,
+            baseProfile: getBackgroundActivityBaseProfile(currentBackgroundActivity),
+            overrides: {
+              ...(currentBackgroundActivity.profile === "custom"
+                ? currentBackgroundActivity.overrides
+                : {}),
+              ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+              ...(providerHealthRefreshInterval !== undefined
+                ? { providerHealthRefreshInterval }
+                : {}),
+            },
+          }
+        : undefined;
   const next = deepMerge(current, patchForMerge);
-  const nextWithReplacements = {
+  const nextWithReplacementsBase = {
     ...next,
+    ...(backgroundActivity !== undefined
+      ? {
+          backgroundActivity: {
+            ...deepMerge(currentBackgroundActivity, backgroundActivity),
+            ...(backgroundActivity.overrides !== undefined
+              ? { overrides: backgroundActivity.overrides }
+              : {}),
+          },
+        }
+      : { backgroundActivity: currentBackgroundActivity }),
+    ...(backgroundActivity === undefined && backgroundActivityPatch !== undefined
+      ? { backgroundActivity: backgroundActivityPatch }
+      : {}),
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
@@ -198,6 +258,20 @@ export function applyServerSettingsPatch(
       ? { sourceControlWriterModelSelection: patch.sourceControlWriterModelSelection }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+    ...(providerHealthRefreshInterval !== undefined ? { providerHealthRefreshInterval } : {}),
+  };
+  const normalizedBackgroundActivity = normalizeBackgroundActivitySettings(
+    nextWithReplacementsBase.backgroundActivity,
+  );
+  const resolvedBackgroundActivity = resolveBackgroundActivitySettings(
+    normalizedBackgroundActivity,
+  );
+  const nextWithReplacements = {
+    ...nextWithReplacementsBase,
+    backgroundActivity: normalizedBackgroundActivity,
+    automaticGitFetchInterval: resolvedBackgroundActivity.automaticGitFetchInterval,
+    providerHealthRefreshInterval: resolvedBackgroundActivity.providerHealthRefreshInterval,
+    backgroundActivityProfile: resolvedBackgroundActivity.profile,
   };
   if (!selectionPatch) {
     return nextWithReplacements;
