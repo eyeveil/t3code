@@ -1,13 +1,22 @@
 # Deploy internals & post-mortems
 
-## Why a dist swap, not a reinstall
+## Why a complete runtime swap, not a global reinstall
 
 `apps/server` uses pnpm `catalog:` deps that `npm` cannot resolve, and node-pty
 cannot gyp-rebuild on hosts without python. So `npm i -g <tarball>` fails. The
-server bundle externalizes its deps and the resolved dep set matches the
-installed package exactly — so swapping only `dist/` (keeping the installed
-`node_modules`) is both safe and required. `dist.old` is the rollback copy;
-`dist.failed` preserves a bad build for inspection.
+server bundle also externalizes its dependencies, which means swapping only
+`dist/` is unsafe whenever the workspace catalog changes. Stage a complete
+runtime with resolved dependencies and the already-built host node-pty module,
+then swap the package directory atomically. `<global package>.old` is the
+rollback copy and `<global package>.failed` preserves a rejected runtime.
+
+The 2026-08-04 rollback exposed both failure modes. The fresh build had been
+copied into an existing staging directory, leaving the new bundle under
+`dist/dist` and stale code at the actual entry point. A correctly laid-out new
+bundle also failed an isolated import against the old global dependencies:
+Effect beta.102 does not export `McpProtocol`, while the beta.103-built server
+imports it. Complete-runtime staging rejects both nested output and dependency
+skew before the live server is stopped.
 
 ## The idle signal
 

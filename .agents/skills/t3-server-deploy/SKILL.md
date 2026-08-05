@@ -23,6 +23,12 @@ foreground command of a tmux window (owner: session `main`, window `t3-`,
 `t3 serve --host 0.0.0.0`, `0.0.0.0:3773`, health `GET /.well-known/t3/environment`).
 The idle signal is read from `~/.t3/userdata/state.sqlite`.
 
+Deploy the complete package runtime, not only `dist/`. Server bundles
+externalize production dependencies, so a dependency bump such as Effect
+beta.102 → beta.103 makes a dist-only swap unloadable. The staged runtime
+contains the bundle, its resolved production dependencies, and the host-built
+`node-pty` native module; rollback swaps that whole unit together.
+
 New host? Do the one-time setup in `references/host-setup.md` first (npm-global
 install, systemd-user lingering, a sqlite3 binary).
 
@@ -40,10 +46,10 @@ npx vp run --filter t3 build
 #      grep -q "Bundled web app" <build output>   # or check dist/client mtime
 #    Do NOT stage a build you did not see finish cleanly.
 
-# 3. STAGE dist to the deferred-deploy staging dir.
-STAGE=~/.local/state/t3-deploy/dist
-rm -rf "$STAGE"; mkdir -p "$(dirname "$STAGE")"
-cp -r apps/server/dist "$STAGE"
+# 3. STAGE a self-contained runtime. This resolves workspace catalog specs,
+# installs matching production dependencies, reuses the host-built node-pty,
+# and imports the bundle as a preflight.
+node .agents/skills/t3-server-deploy/scripts/stage-t3-runtime.mjs
 # If prepareOutDir / cp fails on root-owned leftovers in a dist dir (NixOS):
 #   /run/wrappers/bin/sudo rm -rf <path>     # NixOS sudo lives in wrappers
 
@@ -57,18 +63,19 @@ systemd-run --user --unit=t3-deploy --description="t3 deferred deploy" \
 
 The script (`scripts/t3-deferred-deploy.sh`, all paths/hosts are `VARIABLES` at
 the top) then: waits for **3 consecutive idle polls** 20s apart (a settling turn
-can't fake idle), swaps `dist` → `dist.old`, recreates the serve window, and
-health-checks the real endpoint over ~20s. Rolls back to `dist.old` (bad build
-kept at `dist.failed`) if serve doesn't return.
+can't fake idle), copies and preflights the complete runtime, atomically swaps
+the package, recreates the verified serve window, and health-checks the real
+endpoint for up to 120s. It rolls the package and dependencies back together if
+serve does not return.
 
 ## Checking / rollback
 
 ```bash
 tail -f ~/.local/state/t3-deploy/deploy.log     # did it fire? what happened?
 systemctl --user status t3-deploy               # is the armed job still waiting?
-# Manual rollback: swap dist.old back and recreate the window:
+# Manual rollback: swap the complete previous package back and recreate the window:
 GP=~/.npm-global/lib/node_modules/t3
-mv "$GP/dist" "$GP/dist.bad" && mv "$GP/dist.old" "$GP/dist"
+mv "$GP" "$GP.bad" && mv "$GP.old" "$GP"
 tmux new-window -d -t main -n t3- 't3 serve --host 0.0.0.0'
 ```
 
@@ -84,8 +91,11 @@ tmux new-window -d -t main -n t3- 't3 serve --host 0.0.0.0'
   `pgrep` races startup → false "serve did not come back" → needless rollback).
 - **Root-owned leftovers in dist break prepareOutDir.** Fix with
   `/run/wrappers/bin/sudo` on NixOS (system sudo isn't on PATH).
-- **Dist swap only — never `npm i -g` a tarball.** pnpm `catalog:` deps don't
-  resolve under npm and node-pty can't gyp-rebuild without python.
+- **Stage the complete runtime — never hand-copy into an existing stage.** A
+  nested `dist/dist` silently leaves stale code at the package entry point.
+- **Never `npm i -g` a repository tarball.** pnpm `catalog:` deps do not resolve
+  under npm and node-pty cannot gyp-rebuild without a host toolchain. The stage
+  script resolves catalogs and copies the already-built host native module.
 
 Full rationale, the state.sqlite idle query, and the 2026-07-05 double-outage
 post-mortem: `references/deploy-internals.md`.
