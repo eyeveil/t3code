@@ -119,6 +119,10 @@
       "types": "./src/state/terminal.ts",
       "default": "./src/state/terminal.ts"
     },
+    "./state/provider-login": {
+      "types": "./src/state/providerLogin.ts",
+      "default": "./src/state/providerLogin.ts"
+    },
     "./state/threads": {
       "types": "./src/state/threads.ts",
       "default": "./src/state/threads.ts"
@@ -126,6 +130,14 @@
     "./state/subagentRuntime": {
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
+    },
+    "./state/thread-outbox-model": {
+      "types": "./src/state/threadOutboxModel.ts",
+      "default": "./src/state/threadOutboxModel.ts"
+    },
+    "./state/thread-outbox-manager": {
+      "types": "./src/state/threadOutboxManager.ts",
+      "default": "./src/state/threadOutboxManager.ts"
     },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
