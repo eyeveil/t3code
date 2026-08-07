@@ -37,11 +37,13 @@ const CURSOR_INSTANCE_ID = ProviderInstanceId.make("cursor");
 const OPENCODE_INSTANCE_ID = ProviderInstanceId.make("opencode");
 const encoder = new TextEncoder();
 
-// Pin a non-win32 platform so `resolveSpawnCommand` is a no-op and the raw
-// `{ command, args }` assertions below hold deterministically on any host
-// (including Windows). Windows-specific resolution is covered by the dedicated
-// win32 case at the end of this suite.
-const NonWindowsPlatform = Layer.succeed(HostProcessPlatform, "linux");
+// Pin a non-win32 platform and disable host executable lookup so the raw
+// `{ command, args }` assertions below hold deterministically on any host.
+// Executable resolution and Windows shims have dedicated cases in this suite.
+const NonWindowsPlatform = Layer.mergeAll(
+  Layer.succeed(HostProcessPlatform, "linux"),
+  Layer.succeed(SpawnExecutableResolution, () => undefined),
+);
 
 function lifecycleFor(provider: ProviderDriverKind): ProviderMaintenanceCapabilities {
   if (provider === CURSOR_DRIVER) {
@@ -239,6 +241,39 @@ describe("providerMaintenanceRunner", () => {
       Effect.provide(
         Layer.mergeAll(
           NonWindowsPlatform,
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer((command, args) => {
+            calls.push({ command, args });
+            return { stdout: "updated" };
+          }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("resolves a bare update executable before spawning on linux", () => {
+    const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(baseProvider);
+      const updater = yield* makeTestRunner(registry);
+
+      const result = yield* updater.updateProvider(CODEX_DRIVER);
+
+      assert.deepStrictEqual(calls, [
+        {
+          command: "/test/bin/npm",
+          args: ["install", "-g", "@openai/codex@latest"],
+        },
+      ]);
+      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(HostProcessPlatform, "linux"),
+          Layer.succeed(HostProcessEnvironment, { PATH: "/test/bin" }),
+          Layer.succeed(SpawnExecutableResolution, (command) =>
+            command === "npm" ? "/test/bin/npm" : undefined,
+          ),
           latestVersionHttpClient("0.0.0"),
           mockSpawnerLayer((command, args) => {
             calls.push({ command, args });

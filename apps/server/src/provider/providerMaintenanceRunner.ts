@@ -7,7 +7,8 @@ import {
   type ServerProviderUpdatedPayload,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { resolveSpawnCommand, SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -76,12 +77,24 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
   }) {
     const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
       function* () {
+        // Resolve bare commands to an absolute executable before spawning.
+        // The Effect child-process spawner does not consistently perform PATH
+        // lookup for maintenance commands on every host, which can otherwise
+        // fail before npm has a chance to initialize or write its debug log.
+        const platform = yield* HostProcessPlatform;
+        const hostEnvironment = yield* HostProcessEnvironment;
+        const resolveExecutable = yield* SpawnExecutableResolution;
+        const executable =
+          resolveExecutable(input.command, platform, hostEnvironment) ?? input.command;
+
         // Resolve the executable for the host platform before spawning. On
         // Windows the update tools are batch shims (e.g. `npm` -> `npm.cmd`),
         // which a bare ChildProcess.spawn cannot launch (spawn npm ENOENT);
         // resolveSpawnCommand finds the real `.cmd` and routes it through the
-        // shell. On Linux/macOS (incl. the WSL backend) this is a no-op.
-        const resolved = yield* resolveSpawnCommand(input.command, input.args);
+        // shell.
+        const resolved = yield* resolveSpawnCommand(executable, input.args, {
+          env: hostEnvironment,
+        });
         const child = yield* input.spawner
           .spawn(ChildProcess.make(resolved.command, resolved.args, { shell: resolved.shell }))
           .pipe(
@@ -382,6 +395,11 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
           function* (cause: Cause.Cause<unknown>) {
             const failure = Cause.squash(cause);
             const startedAt = yield* Ref.get(startedAtRef);
+            yield* Effect.logWarning("Provider update command failed", {
+              provider,
+              instanceId,
+              cause: Cause.pretty(cause),
+            });
             return yield* finish(
               makeUpdateState({
                 status: "failed",
