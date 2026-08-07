@@ -4,16 +4,13 @@ import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { CheckIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
-  type EnvironmentId,
   ProviderInstanceId,
   ProviderDriverKind,
+  type EnvironmentId,
   type ProviderInstanceConfig,
 } from "@t3tools/contracts";
 
-import { useAtomValue } from "@effect/atom-react";
-
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
-import { serverEnvironment } from "../../state/server";
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
@@ -74,18 +71,6 @@ const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const DEFAULT_DRIVER_OPTION = DRIVER_OPTIONS[0]!;
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
-
-/**
- * Drivers whose new instances get an auto-isolated home (kept in sync with the
- * server's `PROVIDER_DRIVERS_WITH_ISOLATED_HOME`).
- */
-const DRIVERS_WITH_ISOLATED_HOME = new Set<string>(["codex", "claudeAgent"]);
-
-/** Join the provider-homes base dir with an instance id, matching server path semantics. */
-function joinProviderHome(baseDir: string, instanceId: string): string {
-  const separator = baseDir.includes("\\") && !baseDir.includes("/") ? "\\" : "/";
-  return `${baseDir.replace(/[/\\]+$/, "")}${separator}${instanceId}`;
-}
 interface ComingSoonDriverOption {
   readonly value: ProviderDriverKind;
   readonly label: string;
@@ -131,16 +116,17 @@ function validateInstanceId(id: string, existing: ReadonlySet<string>): string |
 }
 
 interface AddProviderInstanceDialogProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  /** Instances are persisted in this environment's server settings. */
-  environmentId: EnvironmentId;
+  readonly open: boolean;
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly onOpenChange: (open: boolean) => void;
 }
 
 export function AddProviderInstanceDialog({
   open,
-  onOpenChange,
   environmentId,
+  environmentLabel,
+  onOpenChange,
 }: AddProviderInstanceDialogProps) {
   const settings = useEnvironmentSettings(environmentId);
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
@@ -185,24 +171,6 @@ export function AddProviderInstanceDialog({
       return next;
     });
   };
-
-  // Pre-fill the isolated home for a brand-new instance of a home-aware driver,
-  // so it is visible and editable before saving. The server injects the same
-  // default at persist time if the user leaves it untouched.
-  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
-  const providerHomesDir = serverConfig?.providerHomesDir ?? null;
-  const defaultHomePath = useMemo(() => {
-    if (!providerHomesDir) return null;
-    if (!DRIVERS_WITH_ISOLATED_HOME.has(String(driver))) return null;
-    if (!instanceId || instanceIdError !== null) return null;
-    return joinProviderHome(providerHomesDir, instanceId);
-  }, [providerHomesDir, driver, instanceId, instanceIdError]);
-  const configDraftForForm = useMemo(() => {
-    if (!defaultHomePath) return configDraft;
-    const current = configDraft.homePath;
-    if (typeof current === "string" && current.trim().length > 0) return configDraft;
-    return { ...configDraft, homePath: defaultHomePath };
-  }, [configDraft, defaultHomePath]);
 
   const applyWizardNavigation = (navigation: WizardNavigation) => {
     if (navigation.kind === "blocked") {
@@ -267,8 +235,8 @@ export function AddProviderInstanceDialog({
           <DialogHeader>
             <DialogTitle>Add provider instance</DialogTitle>
             <DialogDescription>
-              Configure an additional provider instance — for example, a second Codex install
-              pointed at a different workspace.
+              Configure an additional provider instance on {environmentLabel} — for example, a
+              second Codex install pointed at a different workspace.
             </DialogDescription>
             <AddProviderInstanceWizardSteps
               currentStep={wizardStep}
@@ -430,7 +398,7 @@ export function AddProviderInstanceDialog({
                 <div className={cn("grid gap-4", wizardStep !== 2 && "hidden")}>
                   <ProviderSettingsForm
                     definition={driverOption}
-                    value={configDraftForForm}
+                    value={configDraft}
                     idPrefix={`add-provider-${driver}`}
                     variant="dialog"
                     onChange={setConfigDraft}

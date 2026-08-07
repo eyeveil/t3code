@@ -91,7 +91,6 @@ import {
   openUrlInPreview,
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
-import { streamingMarkdownRenderDelay } from "./ChatMarkdown.logic";
 
 interface ChatMarkdownProps {
   text: string;
@@ -128,33 +127,6 @@ const highlightedCodeCache = new LRUCache<string>(
   MAX_HIGHLIGHT_CACHE_ENTRIES,
   MAX_HIGHLIGHT_CACHE_MEMORY_BYTES,
 );
-
-function useStreamingMarkdownText(text: string, isStreaming: boolean): string {
-  const [renderedText, setRenderedText] = useState(text);
-  const lastRenderedAtRef = useRef(Date.now());
-
-  useEffect(() => {
-    if (!isStreaming) {
-      lastRenderedAtRef.current = Date.now();
-      setRenderedText((current) => (current === text ? current : text));
-      return;
-    }
-
-    const delay = streamingMarkdownRenderDelay({
-      lastRenderedAt: lastRenderedAtRef.current,
-      now: Date.now(),
-    });
-    const timeout = setTimeout(() => {
-      lastRenderedAtRef.current = Date.now();
-      setRenderedText(text);
-    }, delay);
-    return () => {
-      clearTimeout(timeout);
-    };
-  }, [isStreaming, text]);
-
-  return isStreaming ? renderedText : text;
-}
 
 function findTaskListMarkerOffset(markdown: string, listItemStart: number): number | null {
   const firstLineEnd = markdown.indexOf("\n", listItemStart);
@@ -1289,7 +1261,6 @@ function ChatMarkdown({
   className,
   lineBreaks = false,
 }: ChatMarkdownProps) {
-  const renderedText = useStreamingMarkdownText(text, isStreaming);
   const { resolvedTheme } = useTheme();
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
@@ -1310,7 +1281,7 @@ function ChatMarkdown({
       string,
       NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>
     >();
-    for (const href of extractMarkdownLinkHrefs(renderedText)) {
+    for (const href of extractMarkdownLinkHrefs(text)) {
       const normalizedHref = normalizeMarkdownLinkHrefKey(href);
       if (metaByHref.has(normalizedHref)) continue;
       const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd);
@@ -1319,10 +1290,10 @@ function ChatMarkdown({
       }
     }
     return metaByHref;
-  }, [cwd, renderedText]);
+  }, [cwd, text]);
   const inlineCodeFileLinkMetaByText = useMemo(() => {
     const metaByText = new Map<string, MarkdownFileLinkMeta>();
-    for (const span of extractInlineCodeSpans(renderedText)) {
+    for (const span of extractInlineCodeSpans(text)) {
       if (metaByText.has(span)) continue;
       const meta = resolveInlineCodeFileLinkMeta(span, cwd);
       if (meta) {
@@ -1330,7 +1301,7 @@ function ChatMarkdown({
       }
     }
     return metaByText;
-  }, [cwd, renderedText]);
+  }, [cwd, text]);
   const fileLinkParentSuffixByPath = useMemo(() => {
     const filePaths = [
       ...[...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
@@ -1341,14 +1312,6 @@ function ChatMarkdown({
   const markdownUrlTransform = useCallback((href: string) => {
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   }, []);
-  const renderedTextRef = useRef(renderedText);
-  const markdownFileLinkMetaByHrefRef = useRef(markdownFileLinkMetaByHref);
-  const fileLinkParentSuffixByPathRef = useRef(fileLinkParentSuffixByPath);
-  const inlineCodeFileLinkMetaByTextRef = useRef(inlineCodeFileLinkMetaByText);
-  renderedTextRef.current = renderedText;
-  markdownFileLinkMetaByHrefRef.current = markdownFileLinkMetaByHref;
-  fileLinkParentSuffixByPathRef.current = fileLinkParentSuffixByPath;
-  inlineCodeFileLinkMetaByTextRef.current = inlineCodeFileLinkMetaByText;
   // Re-emit highlighted content as markdown so copying out of the rendered
   // view keeps links, emphasis, lists, and code fences intact.
   const handleCopy = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -1400,17 +1363,16 @@ function ChatMarkdown({
     },
     [createAssetUrl, openPreview, preparedConnection, threadRef],
   );
-  // oxlint-disable react/no-unstable-nested-components -- ReactMarkdown requires a component map;
-  // this one is deliberately memoized and changes only when its actual render inputs change.
+  /* eslint-disable react/no-unstable-nested-components -- ReactMarkdown requires component
+   * renderers that close over this message's metadata. useMemo keeps them stable until that
+   * metadata changes. */
   const markdownComponents = useMemo<Components>(() => {
     const fileLinkChip = (
       fileLinkMeta: MarkdownFileLinkMeta,
       copyMarkdown: string,
       className?: string,
     ) => {
-      // Read through the ref so the component map stays stable while streaming
-      // text keeps rebuilding the suffix map.
-      const parentSuffix = fileLinkParentSuffixByPathRef.current.get(fileLinkMeta.filePath);
+      const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
       const labelParts = [fileLinkMeta.basename];
       if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
         labelParts.push(parentSuffix);
@@ -1453,9 +1415,7 @@ function ChatMarkdown({
       li({ node, children, ...props }) {
         const listItemStart = node?.position?.start.offset;
         const markerOffset =
-          typeof listItemStart === "number"
-            ? findTaskListMarkerOffset(renderedTextRef.current, listItemStart)
-            : null;
+          typeof listItemStart === "number" ? findTaskListMarkerOffset(text, listItemStart) : null;
         return (
           <li {...props} data-task-marker-offset={markerOffset ?? undefined}>
             {renderSkillInlineMarkdownChildren(children, skills)}
@@ -1493,9 +1453,7 @@ function ChatMarkdown({
       },
       a({ node, href, children, ...props }) {
         const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
-        const fileLinkMeta = normalizedHref
-          ? markdownFileLinkMetaByHrefRef.current.get(normalizedHref)
-          : null;
+        const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
         if (!fileLinkMeta) {
           const faviconHost = resolveExternalWebLinkHost(href);
           const isSameDocumentLink = href?.startsWith("#") ?? false;
@@ -1575,7 +1533,7 @@ function ChatMarkdown({
         if (node?.properties?.dataInlineCode != null) {
           const codeText = nodeToPlainText(children);
           const fileLinkMeta =
-            inlineCodeFileLinkMetaByTextRef.current.get(codeText.trim()) ??
+            inlineCodeFileLinkMetaByText.get(codeText.trim()) ??
             resolveInlineCodeFileLinkMeta(codeText, cwd);
           if (fileLinkMeta) {
             return fileLinkChip(fileLinkMeta, `\`${codeText}\``);
@@ -1625,31 +1583,20 @@ function ChatMarkdown({
   }, [
     cwd,
     diffThemeName,
+    fileLinkParentSuffixByPath,
+    inlineCodeFileLinkMetaByText,
     isStreaming,
+    markdownFileLinkMetaByHref,
     onTaskListChange,
     openInPreferredEditor,
     openExternalLinkInPreview,
     openMarkdownFileInPreview,
     resolvedTheme,
     skills,
+    text,
     threadRef,
   ]);
-  // oxlint-enable react/no-unstable-nested-components
-  const renderedMarkdown = useMemo(
-    () => (
-      <ReactMarkdown
-        remarkPlugins={
-          lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS
-        }
-        rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
-        components={markdownComponents}
-        urlTransform={markdownUrlTransform}
-      >
-        {renderedText}
-      </ReactMarkdown>
-    ),
-    [lineBreaks, markdownComponents, markdownUrlTransform, renderedText],
-  );
+  /* eslint-enable react/no-unstable-nested-components */
 
   return (
     <div
@@ -1659,7 +1606,16 @@ function ChatMarkdown({
       )}
       onCopy={handleCopy}
     >
-      {renderedMarkdown}
+      <ReactMarkdown
+        remarkPlugins={
+          lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS
+        }
+        rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
+        components={markdownComponents}
+        urlTransform={markdownUrlTransform}
+      >
+        {text}
+      </ReactMarkdown>
     </div>
   );
 }

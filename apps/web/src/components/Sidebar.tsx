@@ -7,7 +7,6 @@ import {
   FolderPlusIcon,
   Globe2Icon,
   LoaderIcon,
-  MonitorIcon,
   SearchIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -178,7 +177,6 @@ import {
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
-  resolveThreadActivityTimestamp,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
@@ -204,8 +202,6 @@ import type { SidebarThreadSummary } from "../types";
 import {
   buildPhysicalToLogicalProjectKeyMap,
   buildSidebarProjectSnapshots,
-  groupProjectsByEnvironment,
-  type SidebarProjectEnvironmentGroup,
   type SidebarProjectGroupMember,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
@@ -229,7 +225,7 @@ const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> =
   separate: "Keep separate",
 };
 const SIDEBAR_ICON_ACTION_BUTTON_CLASS =
-  "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring";
+  "inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-icon-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring";
 
 function SidebarThreadDetailPrewarmer({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
   useEnvironmentThread(threadRef.environmentId, threadRef.threadId);
@@ -861,12 +857,12 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                 ) : (
                   <span
                     className={`text-[10px] tabular-nums ${
-                      isHighlighted
-                        ? "text-foreground/72 dark:text-foreground/82"
-                        : "text-muted-foreground/40"
+                      isHighlighted ? "text-foreground" : "text-secondary-label"
                     }`}
                   >
-                    {formatRelativeTimeLabel(resolveThreadActivityTimestamp(thread))}
+                    {formatRelativeTimeLabel(
+                      thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+                    )}
                   </span>
                 )}
               </span>
@@ -1111,8 +1107,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
-  // All projects (not just this group's members) feed the move-to-project submenu.
-  const allProjects = useProjects();
   const updateSettings = useUpdateClientSettings();
   const sidebarThreadPreviewCount = useClientSettings<SidebarThreadPreviewCount>(
     (settings) => settings.sidebarThreadPreviewCount,
@@ -2115,28 +2109,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
       const threadWorkspacePath =
         thread.worktreePath ?? threadProject?.workspaceRoot ?? project.workspaceRoot ?? null;
-      const moveTargets = allProjects.filter(
-        (candidate) =>
-          candidate.environmentId === thread.environmentId && candidate.id !== thread.projectId,
-      );
       const clicked = await api.contextMenu.show(
         [
           ...(thread.branch
             ? [{ id: "new-thread-on-branch", label: `New thread on ${thread.branch}` }]
             : []),
           { id: "rename", label: "Rename thread" },
-          ...(moveTargets.length > 0
-            ? [
-                {
-                  id: "move",
-                  label: "Move to project",
-                  children: moveTargets.map((target) => ({
-                    id: `move:${target.id}`,
-                    label: target.title,
-                  })),
-                },
-              ]
-            : []),
           { id: "mark-unread", label: "Mark unread" },
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
@@ -2171,28 +2149,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
       if (clicked === "rename") {
         startThreadRename(threadKey, thread.title);
-        return;
-      }
-
-      if (clicked !== null && clicked.startsWith("move:")) {
-        const targetProjectId = ProjectId.make(clicked.slice("move:".length));
-        const result = await updateThreadMetadata({
-          environmentId: threadRef.environmentId,
-          input: {
-            threadId: threadRef.threadId,
-            projectId: targetProjectId,
-          },
-        });
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to move thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
         return;
       }
 
@@ -2243,7 +2199,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
     },
     [
-      allProjects,
       appSettingsConfirmThreadDelete,
       copyPathToClipboard,
       copyThreadIdToClipboard,
@@ -2253,7 +2208,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       memberProjectByScopedKey,
       project.workspaceRoot,
       startThreadRename,
-      updateThreadMetadata,
     ],
   );
 
@@ -2289,7 +2243,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                     }`}
                   />
                 </span>
-                <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
+                <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-icon-muted opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
               </TooltipTrigger>
               <TooltipPopup side="top">{projectStatus.label}</TooltipPopup>
             </Tooltip>
@@ -2306,15 +2260,42 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               {project.displayName}
             </span>
             {project.groupedProjectCount > 1 ? (
-              <span className="shrink-0 text-[10px] text-muted-foreground/60">
+              <span className="shrink-0 text-secondary-label text-[10px]">
                 {project.groupedProjectCount} projects
               </span>
             ) : null}
           </span>
         </SidebarMenuButton>
-        {/* The per-environment section header (see SidebarEnvironmentGroupHeader)
-            now carries the local/sandbox/remote differentiation that used to live
-            in a per-project cloud/container glyph here, so no per-row badge. */}
+        {/* Environment badge – visible by default, crossfades with the
+            "new thread" button on hover using the same pointer-events +
+            opacity pattern as the thread row archive/timestamp swap. */}
+        {project.environmentPresence === "remote-only" && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  aria-label={
+                    project.allRemoteMembersAreDesktopLocal
+                      ? "Local sandbox project"
+                      : "Remote project"
+                  }
+                  className="pointer-events-none absolute top-1 right-1.5 inline-flex size-5 items-center justify-center rounded-md text-icon-muted transition-opacity duration-150 max-sm:right-7 group-hover/project-header:opacity-0 group-focus-within/project-header:opacity-0 max-sm:group-hover/project-header:opacity-100 max-sm:group-focus-within/project-header:opacity-100"
+                />
+              }
+            >
+              {project.allRemoteMembersAreDesktopLocal ? (
+                <ContainerIcon className="size-3" />
+              ) : (
+                <CloudIcon className="size-3" />
+              )}
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {project.allRemoteMembersAreDesktopLocal
+                ? `Local sandbox: ${project.remoteEnvironmentLabels.join(", ")}`
+                : `Remote environment: ${project.remoteEnvironmentLabels.join(", ")}`}
+            </TooltipPopup>
+          </Tooltip>
+        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -2617,7 +2598,7 @@ function ProjectSortMenu({
       <Tooltip>
         <TooltipTrigger
           render={
-            <MenuTrigger className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground" />
+            <MenuTrigger className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-icon-muted transition-colors hover:bg-accent hover:text-foreground" />
           }
         >
           <ArrowUpDownIcon className="size-3.5" />
@@ -2761,7 +2742,7 @@ interface SidebarProjectsContentProps {
   handleNewThread: ReturnType<typeof useNewThreadHandler>;
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
-  projectGroups: readonly SidebarProjectEnvironmentGroup[];
+  sortedProjects: readonly SidebarProjectSnapshot[];
   expandedThreadListsByProject: ReadonlySet<string>;
   activeRouteProjectKey: string | null;
   routeThreadKey: string | null;
@@ -2777,36 +2758,6 @@ interface SidebarProjectsContentProps {
   attachProjectListAutoAnimateRef: (node: HTMLElement | null) => void;
   projectsLength: number;
 }
-
-// Quiet per-environment section header for the PROJECTS list. Typography echoes
-// the "PROJECTS" section label (uppercase, xs, muted) but subordinate to it, and
-// the kind icon (monitor for the local machine, container for a local sandbox,
-// cloud for a real remote) carries the environment differentiation that used to
-// live in a per-project cloud glyph.
-const SidebarEnvironmentGroupHeader = memo(function SidebarEnvironmentGroupHeader({
-  group,
-}: {
-  group: SidebarProjectEnvironmentGroup;
-}) {
-  const Icon =
-    group.kind === "local"
-      ? MonitorIcon
-      : group.kind === "desktop-local"
-        ? ContainerIcon
-        : CloudIcon;
-  return (
-    <li
-      data-sidebar="environment-group-header"
-      data-testid={`sidebar-environment-group-${group.environmentId}`}
-      className="mt-1.5 flex items-center gap-1.5 px-2 pt-1 pb-0.5 first:mt-0 first:pt-0.5"
-    >
-      <Icon className="size-3 shrink-0 text-muted-foreground/40" />
-      <span className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground/45">
-        {group.label}
-      </span>
-    </li>
-  );
-});
 
 const SidebarProjectsContent = memo(function SidebarProjectsContent(
   props: SidebarProjectsContentProps,
@@ -2831,7 +2782,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     handleNewThread,
     archiveThread,
     deleteThread,
-    projectGroups,
+    sortedProjects,
     expandedThreadListsByProject,
     activeRouteProjectKey,
     routeThreadKey,
@@ -2866,20 +2817,14 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     },
     [updateSettings],
   );
-  // Flattened top-to-bottom render order (matches the DnD SortableContext item
-  // order). Section headers are only worth showing once there is more than one
-  // environment — a single-environment desktop keeps its original flat list.
-  const flatProjects = useMemo(
-    () => projectGroups.flatMap((group) => group.projects),
-    [projectGroups],
-  );
-  const showGroupHeaders = projectGroups.length > 1;
 
   return (
     <SidebarContent
       className="gap-0"
       fixedHeader={
-        <SidebarGroup className="px-2 pt-2 pb-1">
+        // Lifted above the stage backdrop, whose fade bleeds below the
+        // header and would otherwise paint across the search row's outline.
+        <SidebarGroup className="relative z-[1] px-2 pt-2 pb-1">
           <SidebarMenu>
             <SidebarMenuItem>
               <CommandDialogTrigger
@@ -2946,7 +2891,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                     type="button"
                     aria-label="Add project"
                     data-testid="sidebar-add-project-trigger"
-                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                    className="inline-flex h-6 min-w-6 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-icon-muted transition-colors hover:bg-accent hover:text-foreground"
                     onClick={openAddProject}
                   />
                 }
@@ -2969,84 +2914,70 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           >
             <SidebarMenu>
               <SortableContext
-                items={flatProjects.map((project) => project.projectKey)}
+                items={sortedProjects.map((project) => project.projectKey)}
                 strategy={verticalListSortingStrategy}
               >
-                {projectGroups.map((group) => (
-                  <React.Fragment key={group.environmentId}>
-                    {showGroupHeaders ? <SidebarEnvironmentGroupHeader group={group} /> : null}
-                    {group.projects.map((project) => (
-                      <SortableProjectItem key={project.projectKey} projectId={project.projectKey}>
-                        {(dragHandleProps) => (
-                          <SidebarProjectItem
-                            project={project}
-                            isThreadListExpanded={expandedThreadListsByProject.has(
-                              project.projectKey,
-                            )}
-                            activeRouteThreadKey={
-                              activeRouteProjectKey === project.projectKey ? routeThreadKey : null
-                            }
-                            newThreadShortcutLabel={newThreadShortcutLabel}
-                            handleNewThread={handleNewThread}
-                            archiveThread={archiveThread}
-                            deleteThread={deleteThread}
-                            threadJumpLabelByKey={threadJumpLabelByKey}
-                            attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
-                            expandThreadListForProject={expandThreadListForProject}
-                            collapseThreadListForProject={collapseThreadListForProject}
-                            dragInProgressRef={dragInProgressRef}
-                            suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
-                            suppressProjectClickForContextMenuRef={
-                              suppressProjectClickForContextMenuRef
-                            }
-                            isManualProjectSorting={isManualProjectSorting}
-                            dragHandleProps={dragHandleProps}
-                          />
-                        )}
-                      </SortableProjectItem>
-                    ))}
-                  </React.Fragment>
+                {sortedProjects.map((project) => (
+                  <SortableProjectItem key={project.projectKey} projectId={project.projectKey}>
+                    {(dragHandleProps) => (
+                      <SidebarProjectItem
+                        project={project}
+                        isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
+                        activeRouteThreadKey={
+                          activeRouteProjectKey === project.projectKey ? routeThreadKey : null
+                        }
+                        newThreadShortcutLabel={newThreadShortcutLabel}
+                        handleNewThread={handleNewThread}
+                        archiveThread={archiveThread}
+                        deleteThread={deleteThread}
+                        threadJumpLabelByKey={threadJumpLabelByKey}
+                        attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
+                        expandThreadListForProject={expandThreadListForProject}
+                        collapseThreadListForProject={collapseThreadListForProject}
+                        dragInProgressRef={dragInProgressRef}
+                        suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
+                        suppressProjectClickForContextMenuRef={
+                          suppressProjectClickForContextMenuRef
+                        }
+                        isManualProjectSorting={isManualProjectSorting}
+                        dragHandleProps={dragHandleProps}
+                      />
+                    )}
+                  </SortableProjectItem>
                 ))}
               </SortableContext>
             </SidebarMenu>
           </DndContext>
         ) : (
           <SidebarMenu ref={attachProjectListAutoAnimateRef}>
-            {projectGroups.map((group) => (
-              <React.Fragment key={group.environmentId}>
-                {showGroupHeaders ? <SidebarEnvironmentGroupHeader group={group} /> : null}
-                {group.projects.map((project) => (
-                  <SidebarProjectListRow
-                    key={project.projectKey}
-                    project={project}
-                    isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
-                    activeRouteThreadKey={
-                      activeRouteProjectKey === project.projectKey ? routeThreadKey : null
-                    }
-                    newThreadShortcutLabel={newThreadShortcutLabel}
-                    handleNewThread={handleNewThread}
-                    archiveThread={archiveThread}
-                    deleteThread={deleteThread}
-                    threadJumpLabelByKey={threadJumpLabelByKey}
-                    attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
-                    expandThreadListForProject={expandThreadListForProject}
-                    collapseThreadListForProject={collapseThreadListForProject}
-                    dragInProgressRef={dragInProgressRef}
-                    suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
-                    suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
-                    isManualProjectSorting={isManualProjectSorting}
-                    dragHandleProps={null}
-                  />
-                ))}
-              </React.Fragment>
+            {sortedProjects.map((project) => (
+              <SidebarProjectListRow
+                key={project.projectKey}
+                project={project}
+                isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
+                activeRouteThreadKey={
+                  activeRouteProjectKey === project.projectKey ? routeThreadKey : null
+                }
+                newThreadShortcutLabel={newThreadShortcutLabel}
+                handleNewThread={handleNewThread}
+                archiveThread={archiveThread}
+                deleteThread={deleteThread}
+                threadJumpLabelByKey={threadJumpLabelByKey}
+                attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
+                expandThreadListForProject={expandThreadListForProject}
+                collapseThreadListForProject={collapseThreadListForProject}
+                dragInProgressRef={dragInProgressRef}
+                suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
+                suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
+                isManualProjectSorting={isManualProjectSorting}
+                dragHandleProps={null}
+              />
             ))}
           </SidebarMenu>
         )}
 
         {projectsLength === 0 && (
-          <div className="px-2 pt-4 text-center text-xs text-muted-foreground/60">
-            No projects yet
-          </div>
+          <div className="px-2 pt-4 text-center text-secondary-label text-xs">No projects yet</div>
         )}
       </SidebarGroup>
     </SidebarContent>
@@ -3362,30 +3293,9 @@ export default function Sidebar() {
     visibleThreads,
   ]);
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
-  // Partition the sorted project list into per-environment groups so the sidebar
-  // can render a quiet section header per environment (local machine vs each
-  // server) instead of a per-row cloud glyph. Group order matches the flattened
-  // render order below, keeping the DnD SortableContext item order consistent.
-  const projectGroups = useMemo(
-    () =>
-      groupProjectsByEnvironment({
-        projects: sortedProjects,
-        primaryEnvironmentId,
-        resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
-        isDesktopLocalEnvironment: (environmentId) => desktopLocalEnvironmentIds.has(environmentId),
-      }),
-    [sortedProjects, primaryEnvironmentId, environmentLabelById, desktopLocalEnvironmentIds],
-  );
-  // Flattened grouped order — the actual top-to-bottom render order once section
-  // headers are interleaved. Used for keyboard jump-badge numbering so the badges
-  // match the visual order rather than the pre-grouping sort order.
-  const groupedProjects = useMemo(
-    () => projectGroups.flatMap((group) => group.projects),
-    [projectGroups],
-  );
   const visibleSidebarThreadKeys = useMemo(
     () =>
-      groupedProjects.flatMap((project) => {
+      sortedProjects.flatMap((project) => {
         const projectThreads = sortThreads(
           (threadsByProjectKey.get(project.projectKey) ?? []).filter(
             (thread) => thread.archivedAt === null,
@@ -3426,7 +3336,7 @@ export default function Sidebar() {
       expandedThreadListsByProject,
       projectExpandedById,
       routeThreadKey,
-      groupedProjects,
+      sortedProjects,
       threadsByProjectKey,
     ],
   );
@@ -3702,7 +3612,7 @@ export default function Sidebar() {
             handleNewThread={handleNewThread}
             archiveThread={archiveThread}
             deleteThread={deleteThread}
-            projectGroups={projectGroups}
+            sortedProjects={sortedProjects}
             expandedThreadListsByProject={expandedThreadListsByProject}
             activeRouteProjectKey={activeRouteProjectKey}
             routeThreadKey={routeThreadKey}

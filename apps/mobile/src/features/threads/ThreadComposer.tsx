@@ -21,6 +21,7 @@ import {
   Image,
   Platform,
   Pressable,
+  StyleSheet,
   useColorScheme,
   View,
   type ViewStyle,
@@ -74,13 +75,13 @@ import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerComm
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
  * Exported so the parent can compute feed overlap / content insets.
  */
-export const COMPOSER_COLLAPSED_CHROME = Platform.OS === "android" ? 50 : 60;
+export const COMPOSER_COLLAPSED_CHROME = 60;
 
 /**
  * Height of the expanded composer (card + toolbar + vertical padding, excluding safe-area inset).
  * Used by the parent to compute the larger feed bottom inset when the composer is focused.
  */
-export const COMPOSER_EXPANDED_CHROME = Platform.OS === "android" ? 138 : 174;
+export const COMPOSER_EXPANDED_CHROME = 174;
 
 export interface ThreadComposerProps {
   readonly draftMessage: string;
@@ -136,16 +137,11 @@ export function ComposerSurface(props: {
   readonly style: ViewStyle;
   readonly isDarkMode: boolean;
 }) {
-  const shadowColor = useThemeColor("--color-drawer-shadow");
-  const surfaceColor = useThemeColor("--color-card-translucent");
-  const composerSurface = useThemeColor("--color-composer-surface");
-  const borderColor = useThemeColor("--color-border");
-
   // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
   // (needed to clip content to the pill shape) would clip the shadow on iOS.
   const shadowStyle: ViewStyle = {
     borderRadius: props.style.borderRadius,
-    shadowColor,
+    shadowColor: "#000000",
     shadowOpacity: props.isDarkMode ? 0.35 : 0.12,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 6 },
@@ -167,31 +163,15 @@ export function ComposerSurface(props: {
     );
   }
 
-  if (Platform.OS === "android") {
-    const materialShadowStyle: ViewStyle = {
-      borderRadius: props.style.borderRadius,
-      shadowColor,
-      shadowOpacity: props.isDarkMode ? 0.22 : 0.06,
-      shadowRadius: 3,
-      shadowOffset: { width: 0, height: 1 },
-      elevation: 2,
-    };
-    return (
-      <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={materialShadowStyle}>
-        <View style={[props.style, { backgroundColor: composerSurface }]}>{props.children}</View>
-      </Animated.View>
-    );
-  }
-
   return (
     <Animated.View layout={COMPOSER_LAYOUT_TRANSITION} style={shadowStyle}>
       <View
         style={[
           props.style,
           {
-            backgroundColor: surfaceColor,
+            backgroundColor: props.isDarkMode ? "rgba(44,44,46,0.96)" : "rgba(255,255,255,0.96)",
             borderWidth: 1,
-            borderColor,
+            borderColor: props.isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
           },
         ]}
       >
@@ -288,8 +268,6 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
   const isDarkMode = useColorScheme() === "dark";
-  const isAndroid = Platform.OS === "android";
-  const collapsedOuterPadding = isAndroid ? 3 : 6;
   const foregroundColor = useThemeColor("--color-foreground");
   const bodyText = useScaledTextRole("body");
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
@@ -719,13 +697,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       className="px-4"
       layout={COMPOSER_LAYOUT_TRANSITION}
       style={{
-        paddingTop: isExpanded ? 8 : collapsedOuterPadding,
-        paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : collapsedOuterPadding),
-        experimental_backgroundImage: isDarkMode
-          ? "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.9) 100%)"
-          : "linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 55%, rgba(255,255,255,0.9) 100%)",
+        paddingTop: isExpanded ? 8 : 6,
+        paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
       }}
     >
+      {/* The backdrop gradient lives on a plain View: Reanimated's Animated.View
+          silently drops experimental_backgroundImage on Android, which left this
+          strip fully transparent and the feed text legible through the composer. */}
+      <View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            experimental_backgroundImage: isDarkMode
+              ? "linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.6) 55%, rgba(0,0,0,0.9) 100%)"
+              : "linear-gradient(to bottom, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 55%, rgba(255,255,255,0.9) 100%)",
+          },
+        ]}
+      />
       <Animated.View
         className="relative w-full self-center"
         layout={COMPOSER_LAYOUT_TRANSITION}
@@ -754,19 +743,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           style={
             isExpanded
               ? {
-                  borderRadius: isAndroid ? 14 : 20,
+                  borderRadius: 20,
                   overflow: "hidden" as const,
-                  paddingHorizontal: isAndroid ? 12 : 14,
-                  paddingVertical: isAndroid ? 8 : 12,
+                  paddingHorizontal: 14,
+                  paddingVertical: 12,
                 }
               : {
-                  borderRadius: isAndroid ? 20 : 999,
+                  borderRadius: 999,
                   overflow: "hidden" as const,
                   flexDirection: "row" as const,
                   alignItems: "center" as const,
-                  paddingLeft: isAndroid ? 14 : 18,
+                  paddingLeft: 18,
                   paddingRight: 5,
-                  paddingVertical: isAndroid ? 2 : 5,
+                  paddingVertical: 5,
                 }
           }
         >
@@ -807,8 +796,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               style={
                 isExpanded
                   ? {
-                      minHeight: isAndroid ? 46 : 80,
-                      maxHeight: isAndroid ? 140 : 160,
+                      minHeight: 80,
+                      maxHeight: 160,
                       paddingHorizontal: 4,
                       paddingVertical: 4,
                     }
@@ -845,17 +834,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           {!isExpanded ? (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
               {showStopAction ? (
-                <ControlPill
-                  icon="stop.fill"
-                  variant="danger"
-                  compact={isAndroid}
-                  onPress={props.onStopThread}
-                />
+                <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
               ) : (
                 <ControlPill
                   icon="arrow.up"
                   variant="primary"
-                  compact={isAndroid}
                   disabled={!canSend}
                   onPress={handleSend}
                 />

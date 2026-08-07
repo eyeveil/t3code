@@ -1,4 +1,5 @@
 import {
+  classifyTaskAgentKind,
   EventId,
   MessageId,
   ThreadId,
@@ -10,17 +11,12 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  deriveTurnPlans,
   derivePendingApprovals,
   derivePendingUserInputs,
-  deriveSubagentPanelItems,
-  deriveSubagentRailItems,
   deriveTimelineEntries,
   deriveWorkLogEntries,
-  detectExternalAgentInvocation,
-  externalAgentMonitorCommand,
-  type WorkLogEntry,
   findLatestProposedPlan,
-  findSidebarProposedPlan,
   hasActionableProposedPlan,
   isLatestTurnSettled,
   workEntryIndicatesToolFailure,
@@ -40,7 +36,19 @@ function makeActivity(overrides: {
   turnId?: string;
   sequence?: number;
 }): OrchestrationThreadActivity {
-  const payload = overrides.payload ?? {};
+  // Fixtures model post-ingestion rows: ingestion stamps agentKind on every
+  // task.* payload. Pass an explicit agentKind to model legacy rows.
+  const rawPayload = overrides.payload ?? {};
+  const payload =
+    overrides.kind?.startsWith("task.") && !("agentKind" in rawPayload)
+      ? {
+          ...rawPayload,
+          agentKind: classifyTaskAgentKind({
+            taskType: typeof rawPayload.taskType === "string" ? rawPayload.taskType : undefined,
+            agentId: typeof rawPayload.agentId === "string" ? rawPayload.agentId : undefined,
+          }),
+        }
+      : rawPayload;
   return {
     id: EventId.make(overrides.id ?? `activity-${nextActivityId++}`),
     createdAt: overrides.createdAt ?? "2026-02-23T00:00:00.000Z",
@@ -118,6 +126,32 @@ describe("derivePendingApprovals", () => {
         requestKind: "command",
         createdAt: "2026-02-23T00:00:01.000Z",
         detail: "pwd",
+      },
+    ]);
+  });
+
+  it("derives dynamic tool requests as actionable generic approvals", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-dynamic-tool",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-dynamic-tool",
+          requestType: "dynamic_tool_call",
+          detail: "Search the web",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-dynamic-tool",
+        requestKind: "command",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        detail: "Search the web",
       },
     ]);
   });
@@ -376,6 +410,95 @@ describe("deriveActivePlanState", () => {
   });
 });
 
+describe("deriveTurnPlans", () => {
+  it("keeps one entry per turn, anchored at the first snapshot with the latest steps", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "plan-1a",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          plan: [{ step: "Inspect code", status: "inProgress" }],
+        },
+      }),
+      makeActivity({
+        id: "plan-1b",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          plan: [{ step: "Inspect code", status: "completed" }],
+        },
+      }),
+      makeActivity({
+        id: "plan-2a",
+        createdAt: "2026-02-23T00:01:00.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-2",
+        payload: {
+          plan: [{ step: "Ship it", status: "pending" }],
+        },
+      }),
+    ];
+
+    const turnPlans = deriveTurnPlans(activities);
+    expect(turnPlans).toHaveLength(2);
+    expect(turnPlans[0]).toMatchObject({
+      id: "turn-plan:turn-1",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      turnId: "turn-1",
+    });
+    expect(turnPlans[0]?.plan.steps).toEqual([{ step: "Inspect code", status: "completed" }]);
+    expect(turnPlans[1]?.plan.steps).toEqual([{ step: "Ship it", status: "pending" }]);
+  });
+
+  it("skips activities without parseable steps", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "plan-bad",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { plan: [] },
+      }),
+    ];
+    expect(deriveTurnPlans(activities)).toEqual([]);
+  });
+
+  it("drops a turn's chip when a later snapshot clears the plan", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "plan-set",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { plan: [{ step: "Inspect code", status: "inProgress" }] },
+      }),
+      makeActivity({
+        id: "plan-clear",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { plan: [] },
+      }),
+    ];
+    expect(deriveTurnPlans(activities)).toEqual([]);
+  });
+});
+
 describe("findLatestProposedPlan", () => {
   it("prefers the latest proposed plan for the active turn", () => {
     expect(
@@ -478,103 +601,6 @@ describe("hasActionableProposedPlan", () => {
         updatedAt: "2026-02-23T00:00:02.000Z",
       }),
     ).toBe(false);
-  });
-});
-
-describe("findSidebarProposedPlan", () => {
-  it("prefers the running turn source proposed plan when available on the same thread", () => {
-    expect(
-      findSidebarProposedPlan({
-        threads: [
-          {
-            id: ThreadId.make("thread-1"),
-            proposedPlans: [
-              {
-                id: "plan-1",
-                turnId: TurnId.make("turn-plan"),
-                planMarkdown: "# Source plan",
-                implementedAt: "2026-02-23T00:00:03.000Z",
-                implementationThreadId: ThreadId.make("thread-2"),
-                createdAt: "2026-02-23T00:00:01.000Z",
-                updatedAt: "2026-02-23T00:00:02.000Z",
-              },
-            ],
-          },
-          {
-            id: ThreadId.make("thread-2"),
-            proposedPlans: [
-              {
-                id: "plan-2",
-                turnId: TurnId.make("turn-other"),
-                planMarkdown: "# Latest elsewhere",
-                implementedAt: null,
-                implementationThreadId: null,
-                createdAt: "2026-02-23T00:00:04.000Z",
-                updatedAt: "2026-02-23T00:00:05.000Z",
-              },
-            ],
-          },
-        ],
-        latestTurn: {
-          turnId: TurnId.make("turn-implementation"),
-          sourceProposedPlan: {
-            threadId: ThreadId.make("thread-1"),
-            planId: "plan-1",
-          },
-        },
-        latestTurnSettled: false,
-        threadId: ThreadId.make("thread-1"),
-      }),
-    ).toEqual({
-      id: "plan-1",
-      turnId: "turn-plan",
-      planMarkdown: "# Source plan",
-      implementedAt: "2026-02-23T00:00:03.000Z",
-      implementationThreadId: "thread-2",
-      createdAt: "2026-02-23T00:00:01.000Z",
-      updatedAt: "2026-02-23T00:00:02.000Z",
-    });
-  });
-
-  it("falls back to the latest proposed plan once the turn is settled", () => {
-    expect(
-      findSidebarProposedPlan({
-        threads: [
-          {
-            id: ThreadId.make("thread-1"),
-            proposedPlans: [
-              {
-                id: "plan-1",
-                turnId: TurnId.make("turn-plan"),
-                planMarkdown: "# Older",
-                implementedAt: null,
-                implementationThreadId: null,
-                createdAt: "2026-02-23T00:00:01.000Z",
-                updatedAt: "2026-02-23T00:00:02.000Z",
-              },
-              {
-                id: "plan-2",
-                turnId: TurnId.make("turn-latest"),
-                planMarkdown: "# Latest",
-                implementedAt: null,
-                implementationThreadId: null,
-                createdAt: "2026-02-23T00:00:03.000Z",
-                updatedAt: "2026-02-23T00:00:04.000Z",
-              },
-            ],
-          },
-        ],
-        latestTurn: {
-          turnId: TurnId.make("turn-implementation"),
-          sourceProposedPlan: {
-            threadId: ThreadId.make("thread-1"),
-            planId: "plan-1",
-          },
-        },
-        latestTurnSettled: true,
-        threadId: ThreadId.make("thread-1"),
-      })?.planMarkdown,
-    ).toBe("# Latest");
   });
 });
 
@@ -696,7 +722,7 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("keeps tool started entries and collapses them into their completion", () => {
+  it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "tool-complete",
@@ -713,255 +739,7 @@ describe("deriveWorkLogEntries", () => {
     ];
 
     const entries = deriveWorkLogEntries(activities);
-    // The merged row keeps its first appearance (stable id) but carries the
-    // terminal lifecycle status.
-    expect(entries.map((entry) => entry.id)).toEqual(["tool-start"]);
-    expect(entries[0]?.toolLifecycleStatus).toBe("completed");
-  });
-
-  it("drops an identity-less tool.started that can never collapse (noise)", () => {
-    const activities: OrchestrationThreadActivity[] = [
-      // Empty payload + empty summary → no toolCallId/title/detail/itemType, so
-      // no collapse key. It can never merge, so it must not render as a row.
-      makeActivity({
-        id: "empty-start",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "tool.started",
-        summary: "",
-        payload: {},
-      }),
-      makeActivity({
-        id: "real-complete",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "tool.completed",
-        summary: "Ran command",
-        payload: { itemType: "command_execution", data: { item: { command: "ls" } } },
-      }),
-    ];
-
-    const entries = deriveWorkLogEntries(activities);
-    expect(entries.map((entry) => entry.id)).toEqual(["real-complete"]);
-  });
-
-  it("keeps an identity-bearing tool.started and merges it into its completion", () => {
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({
-        id: "id-start",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "tool.started",
-        summary: "Ran command",
-        payload: { itemType: "command_execution", data: { toolCallId: "call-x" } },
-      }),
-      makeActivity({
-        id: "id-complete",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "tool.completed",
-        summary: "Ran command",
-        payload: {
-          itemType: "command_execution",
-          data: {
-            toolCallId: "call-x",
-            item: { command: "echo hi" },
-            rawOutput: { stdout: "hi\n" },
-          },
-        },
-      }),
-    ];
-
-    const entries = deriveWorkLogEntries(activities);
-    expect(entries.map((entry) => entry.id)).toEqual(["id-start"]);
-    expect(entries[0]?.toolLifecycleStatus).toBe("completed");
-  });
-
-  it("drops a braces-only command tool.started but keeps the real updated row", () => {
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({
-        id: "cmd-start",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "tool.started",
-        summary: "Command run started",
-        // Args haven't streamed yet: braces-only placeholder, no toolCallId.
-        payload: { itemType: "command_execution", detail: "Bash: {}" },
-      }),
-      makeActivity({
-        id: "cmd-updated",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "tool.updated",
-        summary: "Command run",
-        payload: {
-          itemType: "command_execution",
-          status: "inProgress",
-          detail: "Bash: ls -la",
-          data: { toolName: "Bash", input: { command: "ls -la" } },
-        },
-      }),
-    ];
-
-    const entries = deriveWorkLogEntries(activities);
-    expect(entries.map((entry) => entry.id)).toEqual(["cmd-updated"]);
-    expect(entries[0]?.toolLifecycleStatus).toBe("inProgress");
-  });
-
-  it("drops a braces-only collab agent tool.started (no phantom subagent)", () => {
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({
-        id: "agent-start",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "tool.started",
-        summary: "Agent run started",
-        payload: { itemType: "collab_agent_tool_call", detail: "Agent: {}" },
-      }),
-      makeActivity({
-        id: "agent-updated",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        kind: "tool.updated",
-        summary: "Agent run",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          status: "inProgress",
-          detail: "Explore: Map the pipeline",
-          data: { toolName: "Agent", input: { subagent_type: "Explore", prompt: "Explore…" } },
-        },
-      }),
-    ];
-
-    const entries = deriveWorkLogEntries(activities);
-    expect(entries.map((entry) => entry.id)).toEqual(["agent-updated"]);
-  });
-
-  it("drops braces-only started placeholders regardless of label or whitespace", () => {
-    for (const detail of ["{}", "  {}  ", "Bash: {}", "Agent: { }", "general-purpose: {}"]) {
-      const entries = deriveWorkLogEntries([
-        makeActivity({
-          id: "placeholder-start",
-          kind: "tool.started",
-          summary: "Tool started",
-          payload: { itemType: "command_execution", detail },
-        }),
-      ]);
-      expect(entries).toEqual([]);
-    }
-  });
-
-  it("drops anonymous collab lifecycle shells for every tool status", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "anonymous-agent-start",
-        kind: "tool.started",
-        summary: "Tool started",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          status: "inProgress",
-          data: { toolCallId: "agent-shell", input: {} },
-        },
-      }),
-      makeActivity({
-        id: "anonymous-agent-done",
-        kind: "tool.completed",
-        summary: "Tool",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          status: "completed",
-          data: { toolCallId: "agent-shell", input: {} },
-        },
-      }),
-    ]);
-
-    expect(entries).toEqual([]);
-  });
-
-  it("keeps a collab lifecycle item once dispatch input arrives", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "identified-agent",
-        kind: "tool.updated",
-        summary: "Tool",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          status: "inProgress",
-          data: {
-            toolCallId: "identified-agent",
-            input: { task_name: "reviewer", prompt: "Review the database migration." },
-          },
-        },
-      }),
-    ]);
-
-    expect(entries.map((entry) => entry.id)).toEqual(["identified-agent"]);
-  });
-
-  it("keeps a tool.started whose args already streamed (real detail, no toolCallId)", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "real-start",
-        kind: "tool.started",
-        summary: "Command run",
-        payload: { itemType: "command_execution", detail: "Bash: ls -la" },
-      }),
-    ]);
-    expect(entries.map((entry) => entry.id)).toEqual(["real-start"]);
-  });
-
-  it("captures collab agent input as toolData and links its background task id", () => {
-    const entries = deriveWorkLogEntries([
-      makeActivity({
-        id: "collab-done",
-        kind: "tool.completed",
-        summary: "Agent run",
-        payload: {
-          itemType: "collab_agent_tool_call",
-          detail: "Explore: Map the pipeline",
-          data: {
-            toolName: "Agent",
-            input: {
-              subagent_type: "Explore",
-              model: "sonnet",
-              description: "Map the pipeline",
-              prompt: "Explore the repo end to end.",
-            },
-            result: {
-              text: "Async agent launched successfully.\nagentId: aceae07ac3dc67b16 (internal ID)",
-            },
-          },
-        },
-      }),
-    ]);
-
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.toolData).toEqual({
-      subagent_type: "Explore",
-      model: "sonnet",
-      description: "Map the pipeline",
-      prompt: "Explore the repo end to end.",
-    });
-    expect(entries[0]?.subagentTaskId).toBe("aceae07ac3dc67b16");
-  });
-
-  it("surfaces a completed command's stdout as detail and keeps the command once", () => {
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({
-        id: "cmd-with-output",
-        kind: "tool.completed",
-        summary: "Ran command",
-        payload: {
-          itemType: "command_execution",
-          title: "Ran command",
-          // Some providers (codex) put the command — not stdout — in `detail`.
-          detail: "echo hello",
-          data: {
-            item: { command: "echo hello" },
-            rawOutput: { stdout: "hello world\n" },
-          },
-        },
-      }),
-    ];
-
-    const [entry] = deriveWorkLogEntries(activities);
-    expect(entry?.command).toBe("echo hello");
-    // The detail now carries the command's output, not a copy of the command,
-    // so the expanded body reads command-line then output (command shown once).
-    expect(entry?.detail).toBe("hello world");
-    expect(entry?.detail).not.toBe(entry?.command);
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {
@@ -1460,7 +1238,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "grep-update",
+      id: "grep-complete",
       toolTitle: "grep",
       detail: "19 files",
       itemType: "web_search",
@@ -1509,7 +1287,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "read-update",
+      id: "read-complete",
       toolTitle: "Read File",
       detail: 'import * as Effect from "effect/Effect"',
       itemType: "dynamic_tool_call",
@@ -1585,7 +1363,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "legacy-read-update",
+      id: "legacy-read-complete",
       toolTitle: "Read File",
       itemType: "dynamic_tool_call",
     });
@@ -1638,8 +1416,8 @@ describe("deriveWorkLogEntries", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "tool-update-1",
-      createdAt: "2026-02-23T00:00:01.000Z",
+      id: "tool-complete",
+      createdAt: "2026-02-23T00:00:03.000Z",
       label: "Tool call completed",
       detail: 'Read: {"file_path":"/tmp/app.ts"}',
       command: "sed -n 1,40p /tmp/app.ts",
@@ -1698,7 +1476,7 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
 
-    expect(entries.map((entry) => entry.id)).toEqual(["tool-1-update", "tool-2-update"]);
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-1-complete", "tool-2-complete"]);
   });
 
   it("collapses same-timestamp lifecycle rows even when completed sorts before updated by id", () => {
@@ -1741,7 +1519,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
 
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.id).toBe("z-update-earlier");
+    expect(entries[0]?.id).toBe("a-complete-same-timestamp");
   });
 });
 
@@ -1940,483 +1718,214 @@ describe("deriveActiveWorkStartedAt", () => {
   });
 });
 
-describe("deriveSubagentRailItems", () => {
-  const turnId = TurnId.make("turn-rail");
+describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
+  it("N concurrent subagents produce exactly N lifecycle rows, zero attributed tool rows", () => {
+    const activities: OrchestrationThreadActivity[] = [];
+    for (let agent = 0; agent < 5; agent += 1) {
+      const taskId = `task-${agent}`;
+      // Progress ticks (several per agent) + attributed tool rows.
+      for (let tick = 0; tick < 4; tick += 1) {
+        activities.push(
+          makeActivity({
+            kind: "task.progress",
+            summary: `agent ${agent} tick ${tick}`,
+            tone: "info",
+            payload: { taskId, summary: `working ${tick}`, role: "explorer" },
+            turnId: "turn-batch",
+            sequence: agent * 20 + tick,
+          }),
+        );
+        activities.push(
+          makeActivity({
+            kind: "tool.completed",
+            summary: "Read",
+            payload: { itemType: "dynamic_tool_call", agentId: taskId },
+            sequence: agent * 20 + 10 + tick,
+          }),
+        );
+      }
+      activities.push(
+        makeActivity({
+          kind: "task.completed",
+          summary: "Task completed",
+          tone: "info",
+          payload: {
+            taskId,
+            status: "completed",
+            summary: `agent ${agent} done`,
+            role: "explorer",
+          },
+          turnId: "turn-batch",
+          sequence: agent * 20 + 19,
+        }),
+      );
+    }
 
-  function makeRailEntry(overrides: Partial<WorkLogEntry> & { id: string }): WorkLogEntry {
-    return {
-      createdAt: "2026-02-23T00:00:01.000Z",
-      turnId,
-      label: "Task",
-      tone: "tool",
-      itemType: "collab_agent_tool_call",
-      ...overrides,
-    };
-  }
-
-  it("returns collab agent calls for the active turn with parsed names and statuses", () => {
-    const entries: WorkLogEntry[] = [
-      makeRailEntry({
-        id: "agent-1",
-        detail: "Explore: map the activity pipeline",
-        toolLifecycleStatus: "inProgress",
-      }),
-      makeRailEntry({
-        id: "agent-2",
-        detail: "general-purpose: implement the mobile queue",
-        toolLifecycleStatus: "completed",
-      }),
-      makeRailEntry({
-        id: "agent-3",
-        detail: "no separator here at all really nothing to split on for names",
-        toolTitle: "Task",
-        toolLifecycleStatus: "failed",
-      }),
-      // Ignored: other turn, or not a collab agent call.
-      makeRailEntry({ id: "other-turn", turnId: TurnId.make("turn-other") }),
-      makeRailEntry({ id: "not-agent", itemType: "command_execution" }),
-    ];
-
-    expect(deriveSubagentRailItems(entries, turnId)).toEqual([
-      {
-        id: "agent-1",
-        name: "Explore",
-        detail: "map the activity pipeline",
-        status: "running",
-        createdAt: "2026-02-23T00:00:01.000Z",
-      },
-      {
-        id: "agent-2",
-        name: "general-purpose",
-        detail: "implement the mobile queue",
-        status: "completed",
-        createdAt: "2026-02-23T00:00:01.000Z",
-      },
-      {
-        id: "agent-3",
-        name: "Task",
-        detail: "no separator here at all really nothing to split on for names",
-        status: "failed",
-        createdAt: "2026-02-23T00:00:01.000Z",
-      },
-    ]);
+    const entries = deriveWorkLogEntries(activities);
+    // A1 CTA design: all direct spawns in one turn collapse into ONE
+    // call-to-action row carrying the batch's agent ids.
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows).toHaveLength(1);
+    expect(spawnRows[0]!.agentSpawn!.agentTaskIds).toHaveLength(5);
+    expect(spawnRows[0]!.agentSpawn!.workflowId).toBeNull();
+    // No agent-attributed tool rows leak into the main log.
+    expect(entries.some((entry) => entry.sourceActivityKind?.startsWith("tool."))).toBe(false);
   });
 
-  it("returns nothing without an active turn", () => {
-    const entries = [makeRailEntry({ id: "agent-1", toolLifecycleStatus: "inProgress" })];
-    expect(deriveSubagentRailItems(entries, null)).toEqual([]);
-  });
-
-  it("orders running subagents ahead of finished ones (stable within a group)", () => {
-    const entries: WorkLogEntry[] = [
-      makeRailEntry({
-        id: "done-1",
-        detail: "Explore: first task",
-        toolLifecycleStatus: "completed",
-      }),
-      makeRailEntry({
-        id: "run-1",
-        detail: "Explore: second task",
-        toolLifecycleStatus: "inProgress",
-      }),
-      makeRailEntry({ id: "done-2", detail: "Explore: third task", toolLifecycleStatus: "failed" }),
-      makeRailEntry({
-        id: "run-2",
-        detail: "Explore: fourth task",
-        toolLifecycleStatus: "inProgress",
-      }),
-    ];
-
-    expect(deriveSubagentRailItems(entries, turnId).map((item) => item.id)).toEqual([
-      "run-1",
-      "run-2",
-      "done-1",
-      "done-2",
-    ]);
-  });
-
-  it("never surfaces a braces-only or empty payload as an agent task", () => {
-    const entries: WorkLogEntry[] = [
-      makeRailEntry({
-        id: "empty-agent",
-        detail: "{}",
-        toolTitle: "Task",
-        toolLifecycleStatus: "inProgress",
-      }),
-    ];
-
-    expect(deriveSubagentRailItems(entries, turnId)).toEqual([]);
-  });
-});
-
-describe("deriveSubagentPanelItems", () => {
-  const turnId = TurnId.make("turn-panel");
-
-  function makePanelEntry(overrides: Partial<WorkLogEntry> & { id: string }): WorkLogEntry {
-    return {
-      createdAt: "2026-02-23T00:00:01.000Z",
-      turnId,
-      label: "Task",
-      tone: "tool",
-      itemType: "collab_agent_tool_call",
-      ...overrides,
-    };
-  }
-
-  it("collects subagents across every turn, running-first then most-recent-first", () => {
-    const entries: WorkLogEntry[] = [
-      makePanelEntry({
-        id: "done-1",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        detail: "Explore: first task",
-        toolLifecycleStatus: "completed",
-      }),
-      makePanelEntry({
-        id: "run-1",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        detail: "general-purpose: second task",
-        toolLifecycleStatus: "inProgress",
-      }),
-      makePanelEntry({
-        id: "failed-1",
-        createdAt: "2026-02-23T00:00:03.000Z",
-        detail: "Explore: third task",
-        toolLifecycleStatus: "failed",
-      }),
-      // A different turn — included (session-scoped, unlike the live-turn rail).
-      makePanelEntry({
-        id: "other-turn",
-        createdAt: "2026-02-23T00:00:04.000Z",
-        turnId: TurnId.make("turn-other"),
-        detail: "Explore: fourth task",
-        toolLifecycleStatus: "inProgress",
-      }),
-      // Ignored: not a collab agent call.
-      makePanelEntry({ id: "not-agent", itemType: "command_execution" }),
-    ];
-
-    const items = deriveSubagentPanelItems(entries, []);
-    expect(items.map((item) => item.id)).toEqual(["other-turn", "run-1", "failed-1", "done-1"]);
-    expect(items.map((item) => item.status)).toEqual(["running", "running", "failed", "completed"]);
-  });
-
-  it("keeps completed agents reviewable after the session goes idle", () => {
-    const entries = [
-      makePanelEntry({
-        id: "done-only",
-        detail: "Explore: reviewed the change",
-        toolLifecycleStatus: "completed",
-      }),
-    ];
-    expect(deriveSubagentPanelItems(entries, []).map((item) => item.id)).toEqual(["done-only"]);
-  });
-
-  it("treats a linked background agent as running while its task streams progress", () => {
-    const entries: WorkLogEntry[] = [
-      makePanelEntry({
-        id: "bg-agent",
-        detail: "Explore: long background job",
-        // The collab tool call already returned, so the lifecycle reads completed…
-        toolLifecycleStatus: "completed",
-        subagentTaskId: "aceae07ac3dc67b16",
-      }),
-    ];
-    const activities: OrchestrationThreadActivity[] = [
+  it("a workflow run and its members collapse into one CTA row keyed to the coordinator", () => {
+    const entries = deriveWorkLogEntries([
       makeActivity({
-        id: "p1",
         kind: "task.progress",
-        createdAt: "2026-02-23T00:00:05.000Z",
-        payload: { taskId: "aceae07ac3dc67b16", detail: "Reading MessagesTimeline.tsx" },
+        summary: "coordinator",
+        tone: "info",
+        payload: { taskId: "wf-1", taskType: "local_workflow", workflowName: "math-check" },
+        sequence: 1,
       }),
       makeActivity({
-        id: "p2",
         kind: "task.progress",
-        createdAt: "2026-02-23T00:00:06.000Z",
-        payload: { taskId: "aceae07ac3dc67b16", detail: "Running tests" },
-      }),
-    ];
-
-    const [item] = deriveSubagentPanelItems(entries, activities);
-    // …but the task lifecycle proves it is still working.
-    expect(item?.status).toBe("running");
-    // The live status line is the latest task.progress detail.
-    expect(item?.detail).toBe("Running tests");
-  });
-
-  it("marks a linked background agent completed once its task terminates", () => {
-    const entries = [
-      makePanelEntry({
-        id: "bg-agent",
-        detail: "Explore: background job",
-        toolLifecycleStatus: "completed",
-        subagentTaskId: "t1",
-      }),
-    ];
-    const activities: OrchestrationThreadActivity[] = [
-      makeActivity({
-        id: "p1",
-        kind: "task.progress",
-        createdAt: "2026-02-23T00:00:05.000Z",
-        payload: { taskId: "t1", detail: "Working" },
+        summary: "member",
+        tone: "info",
+        payload: { taskId: "wf-1:wf:0", status: "running", parentAgentId: "wf-1" },
+        sequence: 2,
       }),
       makeActivity({
-        id: "c1",
         kind: "task.completed",
-        createdAt: "2026-02-23T00:00:07.000Z",
-        payload: {
-          taskId: "t1",
-          status: "completed",
-          detail: "Final report — do not show as status.",
-        },
+        summary: "member done",
+        tone: "info",
+        payload: { taskId: "wf-1:wf:1", status: "completed", parentAgentId: "wf-1" },
+        sequence: 3,
       }),
-    ];
-
-    const [item] = deriveSubagentPanelItems(entries, activities);
-    expect(item?.status).toBe("completed");
-    // Detail stays the task label, never the giant final report from task.completed.
-    expect(item?.detail).toBe("background job");
-  });
-
-  it("falls back to the tool lifecycle when no background task is linked", () => {
-    const entries = [
-      makePanelEntry({
-        id: "sync",
-        detail: "Explore: quick task",
-        toolLifecycleStatus: "completed",
-      }),
-    ];
-    expect(deriveSubagentPanelItems(entries, [])[0]?.status).toBe("completed");
-  });
-
-  it("returns nothing when there are no subagents", () => {
-    expect(deriveSubagentPanelItems([], [])).toEqual([]);
-  });
-
-  it("does not list anonymous collab lifecycle shells", () => {
-    const entries = [
-      makePanelEntry({
-        id: "anonymous-agent",
-        label: "Tool",
-        toolLifecycleStatus: "completed",
-        toolData: {},
-      }),
-    ];
-
-    expect(deriveSubagentPanelItems(entries, [])).toEqual([]);
-  });
-
-  // Mirrors the real pipeline: `externalAgent` is populated at entry-build time
-  // from the command, so tests derive it the same way from `rawCommand`.
-  function makeExternalEntry(overrides: Partial<WorkLogEntry> & { id: string }): WorkLogEntry {
-    const rawCommand = overrides.rawCommand ?? overrides.command;
-    const detected = rawCommand ? detectExternalAgentInvocation(rawCommand) : null;
-    return {
-      createdAt: "2026-02-23T00:00:01.000Z",
-      turnId,
-      label: "Bash",
-      tone: "tool",
-      itemType: "command_execution",
-      ...(detected ? { externalAgent: detected } : {}),
-      ...overrides,
-    };
-  }
-
-  it("surfaces a foreground codex exec as a running external row", () => {
-    const entries = [
-      makeExternalEntry({
-        id: "codex-fg",
-        rawCommand: 'codex exec "refactor the auth module"',
-        toolLifecycleStatus: "inProgress",
-      }),
-    ];
-    const [item] = deriveSubagentPanelItems(entries, []);
-    expect(item?.name).toBe("codex (exec)");
-    expect(item?.status).toBe("running");
-    expect(item?.detail).toBe("refactor the auth module");
-    expect(item?.external?.tool).toBe("codex");
-    expect(item?.external?.detached).toBe(false);
-  });
-
-  it("marks a completed detached launch as detached, never running or completed", () => {
-    const entries = [
-      makeExternalEntry({
-        id: "omp-detached",
-        rawCommand: "nohup omp -p --model fable @prompt.md > /tmp/run.log 2>&1 &",
-        // The launch shell returned immediately…
-        toolLifecycleStatus: "completed",
-      }),
-    ];
-    const [item] = deriveSubagentPanelItems(entries, []);
-    expect(item?.name).toBe("omp (-p)");
-    // …but the worker outlives it, so the row stays honest.
-    expect(item?.status).toBe("detached");
-    expect(item?.external?.detached).toBe(true);
-    expect(item?.external?.monitorCommand).toBe("tail -f -n 200 /tmp/run.log");
-  });
-
-  it("maps a finished foreground exec straight from its lifecycle", () => {
-    const entries = [
-      makeExternalEntry({
-        id: "claude-fg-done",
-        rawCommand: 'claude -p "summarize the diff"',
-        toolLifecycleStatus: "completed",
-      }),
-    ];
-    expect(deriveSubagentPanelItems(entries, [])[0]?.status).toBe("completed");
-  });
-
-  it("orders running, then detached, then done", () => {
-    const entries = [
-      makeExternalEntry({
-        id: "done",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        rawCommand: 'claude -p "x"',
-        toolLifecycleStatus: "completed",
-      }),
-      makeExternalEntry({
-        id: "detached",
-        createdAt: "2026-02-23T00:00:02.000Z",
-        rawCommand: "nohup pi -p @plan.md &",
-        toolLifecycleStatus: "completed",
-      }),
-      makeExternalEntry({
-        id: "running",
-        createdAt: "2026-02-23T00:00:03.000Z",
-        rawCommand: "codex exec go",
-        toolLifecycleStatus: "inProgress",
-      }),
-    ];
-    expect(deriveSubagentPanelItems(entries, []).map((i) => i.id)).toEqual([
-      "running",
-      "detached",
-      "done",
     ]);
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows).toHaveLength(1);
+    expect(spawnRows[0]!.agentSpawn!.workflowId).toBe("wf-1");
+    expect(spawnRows[0]!.agentSpawn!.agentTaskIds).toEqual(
+      expect.arrayContaining(["wf-1", "wf-1:wf:0", "wf-1:wf:1"]),
+    );
   });
 
-  it("provides a tmux attach monitor command when a target was launched", () => {
-    const entries = [
-      makeExternalEntry({
-        id: "tmux-launch",
-        rawCommand: "tmux new-window -n build -t work 'codex exec build the app'",
-        toolLifecycleStatus: "completed",
+  it("keeps unattributed tool rows (over-hiding loses the only signal)", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "tool.completed",
+        summary: "Bash",
+        payload: { itemType: "command_execution", command: "ls" },
       }),
-    ];
-    const [item] = deriveSubagentPanelItems(entries, []);
-    expect(item?.status).toBe("detached");
-    expect(item?.external?.monitorCommand).toBe("tmux attach -t work");
+    ]);
+    expect(entries).toHaveLength(1);
   });
 
-  it("ignores command_execution rows that are not agent launches", () => {
-    const entries = [
-      makeExternalEntry({ id: "plain-ls", rawCommand: "ls -la", toolLifecycleStatus: "completed" }),
-      makeExternalEntry({
-        id: "codex-login",
-        rawCommand: "codex login",
-        toolLifecycleStatus: "completed",
+  it("folds timelineBypass agent rows into one CTA (Codex children, workflow members)", () => {
+    // Codex children carry their parent's spawn turn (spawnTurnId stamping),
+    // which is what batches a fleet into one CTA.
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.progress",
+        summary: "child work",
+        tone: "info",
+        payload: { taskId: "child-1", timelineBypass: true },
+        turnId: "turn-spawn",
       }),
-    ];
-    expect(deriveSubagentPanelItems(entries, [])).toEqual([]);
+      makeActivity({
+        kind: "task.progress",
+        summary: "child work again",
+        tone: "info",
+        payload: { taskId: "child-2", timelineBypass: true },
+        turnId: "turn-spawn",
+      }),
+    ]);
+    // Not suppressed outright (a Codex fleet's rows are ALL bypassed and
+    // still need a CTA anchor) — but never more than the batch's single row.
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.agentSpawn?.agentTaskIds).toEqual(["child-1", "child-2"]);
+  });
+
+  it("timelineBypass non-agent rows (background shells) stay suppressed", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.progress",
+        summary: "stall",
+        tone: "info",
+        payload: { taskId: "sh-1", taskType: "local_bash", timelineBypass: true },
+      }),
+    ]);
+    expect(entries).toHaveLength(0);
+  });
+
+  it("drops task.updated and tool.progress from the work log (fold input only)", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.updated",
+        summary: "Task running",
+        tone: "info",
+        payload: { taskId: "task-1", status: "running" },
+      }),
+      makeActivity({
+        kind: "tool.progress",
+        summary: "Read",
+        tone: "info",
+        payload: { taskId: "task-1", toolName: "Read" },
+      }),
+    ]);
+    expect(entries).toHaveLength(0);
   });
 });
 
-describe("detectExternalAgentInvocation", () => {
-  it("recognizes each supported CLI's non-interactive form", () => {
-    expect(detectExternalAgentInvocation("codex exec do stuff")?.tool).toBe("codex");
-    expect(detectExternalAgentInvocation("codex e do stuff")?.tool).toBe("codex");
-    expect(detectExternalAgentInvocation("omp -p @plan.md")?.tool).toBe("omp");
-    expect(detectExternalAgentInvocation("omp --print hi")?.tool).toBe("omp");
-    expect(detectExternalAgentInvocation('claude -p "go"')?.tool).toBe("claude");
-    expect(detectExternalAgentInvocation("pi -p @x.md")?.tool).toBe("pi");
-  });
-
-  it("sees through nohup / tmux / shell -c / env / pipe / & wrapping", () => {
-    expect(
-      detectExternalAgentInvocation("nohup codex exec 'build' > /tmp/a.log 2>&1 &")?.tool,
-    ).toBe("codex");
-    expect(
-      detectExternalAgentInvocation("tmux send-keys -t s:1 'omp -p @plan.md' Enter")?.tool,
-    ).toBe("omp");
-    expect(detectExternalAgentInvocation('bash -c "claude -p \\"hey\\""')?.tool).toBe("claude");
-    expect(detectExternalAgentInvocation("FOO=bar codex exec go")?.tool).toBe("codex");
-    expect(detectExternalAgentInvocation("cat notes | omp -p")?.tool).toBe("omp");
-  });
-
-  it("does NOT match non-agent or interactive invocations", () => {
-    expect(detectExternalAgentInvocation("codex login")).toBeNull();
-    // `-p` on codex is --profile, not a prompt — not a non-interactive run.
-    expect(detectExternalAgentInvocation("codex -p work")).toBeNull();
-    expect(detectExternalAgentInvocation("codex exec-server start")).toBeNull();
-    expect(detectExternalAgentInvocation("codex")).toBeNull();
-    // Bare interactive assistants (no -p/--print).
-    expect(detectExternalAgentInvocation("omp")).toBeNull();
-    expect(detectExternalAgentInvocation("claude")).toBeNull();
-    expect(detectExternalAgentInvocation("pip install requests")).toBeNull();
-    expect(detectExternalAgentInvocation("ls -la")).toBeNull();
-    expect(detectExternalAgentInvocation("")).toBeNull();
-  });
-
-  it("does not let a -p in a separate command segment count as print mode", () => {
-    // The `-p` belongs to mkdir, in a segment after the `;` — omp here is bare.
-    expect(detectExternalAgentInvocation("omp; mkdir -p out")).toBeNull();
-  });
-
-  it("extracts a @promptfile basename as the label", () => {
-    expect(detectExternalAgentInvocation("omp -p @prompts/deep/plan.md")?.label).toBe("plan.md");
-  });
-
-  it("falls back to the inline quoted prompt, then --model", () => {
-    expect(detectExternalAgentInvocation('codex exec "fix the flaky test"')?.label).toBe(
-      "fix the flaky test",
-    );
-    expect(detectExternalAgentInvocation("codex exec --model gpt-5.5 go")?.label).toBe("gpt-5.5");
-  });
-
-  it("extracts a log path from a redirect, preferring it over /dev/null", () => {
-    const inv = detectExternalAgentInvocation("nohup codex exec go 2>/dev/null > /tmp/run.log &");
-    expect(inv?.logPath).toBe("/tmp/run.log");
-    expect(inv?.detached).toBe(true);
-  });
-
-  it("extracts a log path from codex --output-last-message", () => {
-    expect(
-      detectExternalAgentInvocation("codex exec go --output-last-message /tmp/last.txt")?.logPath,
-    ).toBe("/tmp/last.txt");
-  });
-
-  it("extracts a tmux target and window name", () => {
-    const inv = detectExternalAgentInvocation("tmux new-window -n worker -t main 'codex exec go'");
-    expect(inv?.tmuxTarget).toBe("main");
-    expect(inv?.detached).toBe(true);
-  });
-
-  it("builds a monitor command preferring a log path over a tmux target", () => {
-    const withLog = detectExternalAgentInvocation("codex exec go > /tmp/a.log");
-    expect(withLog && externalAgentMonitorCommand(withLog)).toBe("tail -f -n 200 /tmp/a.log");
-    const withTmux = detectExternalAgentInvocation("tmux send-keys -t s:0 'omp -p @x.md' Enter");
-    expect(withTmux && externalAgentMonitorCommand(withTmux)).toBe("tmux attach -t s:0");
-    const bare = detectExternalAgentInvocation("codex exec go");
-    expect(bare && externalAgentMonitorCommand(bare)).toBeNull();
-  });
-
-  it("populates externalAgent end-to-end from a command_execution activity", () => {
-    const activities: OrchestrationThreadActivity[] = [
+describe("rerun workflows", () => {
+  it("turn-less direct spawns do not collapse into one global batch", () => {
+    // Rows that lost their turn id (defensive path) group per task, so two
+    // unrelated turn-less spawns never merge into one immortal CTA.
+    const entries = deriveWorkLogEntries([
       makeActivity({
-        id: "ext-cmd",
-        createdAt: "2026-02-23T00:00:01.000Z",
-        kind: "tool.started",
-        summary: "Ran command",
-        payload: {
-          itemType: "command_execution",
-          status: "inProgress",
-          data: { item: { command: "codex exec 'ship the feature'" } },
-        },
+        kind: "task.started",
+        summary: "Task started",
+        payload: { taskId: "loose-1", taskType: "local_agent", role: "a" },
+        sequence: 1,
       }),
-    ];
-    const [entry] = deriveWorkLogEntries(activities);
-    expect(entry?.externalAgent?.tool).toBe("codex");
-    const [row] = deriveSubagentPanelItems(entry ? [entry] : [], []);
-    expect(row?.name).toBe("codex (exec)");
-    expect(row?.status).toBe("running");
-    expect(row?.detail).toBe("ship the feature");
+      makeActivity({
+        kind: "task.started",
+        summary: "Task started",
+        payload: { taskId: "loose-2", taskType: "local_agent", role: "b" },
+        sequence: 2,
+      }),
+    ]);
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows).toHaveLength(2);
+    expect(spawnRows.map((row) => row.agentSpawn!.agentTaskIds)).toEqual([
+      ["loose-1"],
+      ["loose-2"],
+    ]);
+  });
+
+  it("each workflow run gets its own CTA row (distinct coordinator ids)", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.progress",
+        summary: "run 1",
+        tone: "info",
+        payload: { taskId: "wf-run1", taskType: "local_workflow", workflowName: "math-check" },
+        turnId: "turn-1",
+        sequence: 1,
+      }),
+      makeActivity({
+        kind: "task.completed",
+        summary: "run 1 done",
+        tone: "info",
+        payload: { taskId: "wf-run1", status: "completed", taskType: "local_workflow" },
+        turnId: "turn-1",
+        sequence: 2,
+      }),
+      makeActivity({
+        kind: "task.progress",
+        summary: "run 2",
+        tone: "info",
+        payload: { taskId: "wf-run2", taskType: "local_workflow", workflowName: "math-check" },
+        turnId: "turn-2",
+        sequence: 3,
+      }),
+    ]);
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows.map((row) => row.agentSpawn!.workflowId)).toEqual(["wf-run1", "wf-run2"]);
+    expect(spawnRows.map((row) => row.turnId)).toEqual(["turn-1", "turn-2"]);
   });
 });

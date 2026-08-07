@@ -1,5 +1,6 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
+import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -78,27 +79,30 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
-  /** Provider tool-call identity — groups lifecycle events of one call. */
-  toolCallId?: string;
+  /** Grouping key for subagent lifecycle rows (one row per agent). */
+  taskId?: string;
+  /** Agent role (subagent_type) for labeled timeline rows. */
+  agentRole?: string;
   /**
-   * For background/async collab agents: the linked task id (equals the `agentId`
-   * reported in the launch result). Background agents' collab tool call returns
-   * immediately, so the panel tracks their true liveness via `task.*` activities
-   * keyed by this id rather than the (instantly "completed") tool lifecycle.
+   * Present on agent-spawn CTA rows: one per workflow run or per-turn batch
+   * of direct spawns. The row renders as a call-to-action ("Kicked off N
+   * subagents") whose live status is derived from the agent panel model at
+   * render time; clicking opens the Agents panel.
    */
-  subagentTaskId?: string;
-  /**
-   * For `command_execution` rows that shell out to an agent CLI (`codex exec`,
-   * `omp -p`, `claude -p`, `pi -p`, incl. nohup/tmux/shell-wrapped forms): the
-   * parsed invocation, so the Subagents panel can surface the worker even though
-   * t3 only recorded an ordinary command. Detected once at entry-build time.
-   */
-  externalAgent?: ExternalAgentInvocation;
+  agentSpawn?: {
+    /** Workflow coordinator taskId, or null for a direct-spawn batch. */
+    workflowId: string | null;
+    agentTaskIds: ReadonlyArray<string>;
+  };
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
+  toolCallId?: string;
+  isWorkflowCoordinator?: boolean;
+  /** Shell/monitor/plan tasks: ordinary work-log rows, never spawn CTAs. */
+  isBackgroundTask?: boolean;
 }
 
 export interface PendingApproval {
@@ -146,6 +150,12 @@ export type TimelineEntry =
       kind: "proposed-plan";
       createdAt: string;
       proposedPlan: ProposedPlan;
+    }
+  | {
+      id: string;
+      kind: "turn-plan";
+      createdAt: string;
+      turnPlan: TurnPlanEntry;
     }
   | {
       id: string;
@@ -265,6 +275,12 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
 
 /** Tool-like row with neither clear success nor failure (empty, incomplete, in progress, etc.). */
 export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolean {
+  // Spawn CTA rows are never neutral-hidden: mid-run they derive from
+  // task.progress (tone "thinking") and the neutral filter was swallowing
+  // them exactly while the fleet ran — the one moment they matter most.
+  if (entry.agentSpawn !== undefined) {
+    return false;
+  }
   if (!workLogEntryIsToolLike(entry)) {
     return false;
   }
@@ -522,26 +538,10 @@ export function derivePendingUserInputs(
   );
 }
 
-export function deriveActivePlanState(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-  latestTurnId: TurnId | undefined,
-): ActivePlanState | null {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
-  const allPlanActivities = ordered.filter((activity) => activity.kind === "turn.plan.updated");
-  // Prefer plan from the current turn; fall back to the most recent plan from any turn
-  // so that TodoWrite tasks persist across follow-up messages.
-  const latest = Option.firstSomeOf([
-    ...(latestTurnId
-      ? Arr.findLast(allPlanActivities, (activity) => activity.turnId === latestTurnId)
-      : Option.none()),
-    Arr.last(allPlanActivities),
-  ]).pipe(Option.getOrNull);
-  if (!latest) {
-    return null;
-  }
+function planStateFromActivity(activity: OrchestrationThreadActivity): ActivePlanState | null {
   const payload =
-    latest.payload && typeof latest.payload === "object"
-      ? (latest.payload as Record<string, unknown>)
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
       : null;
   const rawPlan = payload?.plan;
   if (!Array.isArray(rawPlan)) {
@@ -570,13 +570,79 @@ export function deriveActivePlanState(
     return null;
   }
   return {
-    createdAt: latest.createdAt,
-    turnId: latest.turnId,
+    createdAt: activity.createdAt,
+    turnId: activity.turnId,
     ...(payload && "explanation" in payload
       ? { explanation: payload.explanation as string | null }
       : {}),
     steps,
   };
+}
+
+export function deriveActivePlanState(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId: TurnId | undefined,
+): ActivePlanState | null {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const allPlanActivities = ordered.filter((activity) => activity.kind === "turn.plan.updated");
+  // Prefer plan from the current turn; fall back to the most recent plan from any turn
+  // so that TodoWrite tasks persist across follow-up messages.
+  const latest = Option.firstSomeOf([
+    ...(latestTurnId
+      ? Arr.findLast(allPlanActivities, (activity) => activity.turnId === latestTurnId)
+      : Option.none()),
+    Arr.last(allPlanActivities),
+  ]).pipe(Option.getOrNull);
+  if (!latest) {
+    return null;
+  }
+  return planStateFromActivity(latest);
+}
+
+export interface TurnPlanEntry {
+  /** Stable per-turn row id (plans rewrite constantly; the row must not churn). */
+  id: string;
+  /** Anchor timestamp: the turn's FIRST plan activity, so the chip renders where planning began. */
+  createdAt: string;
+  turnId: TurnId | null;
+  plan: ActivePlanState;
+}
+
+/**
+ * One inline plan chip per turn that produced plan/todo steps: the latest
+ * snapshot for the turn, anchored at the first snapshot's timestamp. Turn-less
+ * plan activities collapse into a single chip keyed by thread order.
+ */
+export function deriveTurnPlans(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): TurnPlanEntry[] {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const byTurn = new Map<string, TurnPlanEntry>();
+  for (const activity of ordered) {
+    if (activity.kind !== "turn.plan.updated") {
+      continue;
+    }
+    const plan = planStateFromActivity(activity);
+    const key = activity.turnId ?? "no-turn";
+    if (!plan) {
+      // A later snapshot with no steps clears the turn's plan; keeping the
+      // stale entry would freeze the chip on a withdrawn plan.
+      byTurn.delete(key);
+      continue;
+    }
+    const existing = byTurn.get(key);
+    if (existing) {
+      existing.plan = plan;
+    } else {
+      byTurn.set(key, {
+        id: `turn-plan:${key}`,
+        createdAt: activity.createdAt,
+        turnId: activity.turnId,
+        plan,
+      });
+    }
+  }
+  return [...byTurn.values()];
 }
 
 export function findLatestProposedPlan(
@@ -609,34 +675,71 @@ export function findLatestProposedPlan(
   return toLatestProposedPlanState(latestPlan);
 }
 
-export function findSidebarProposedPlan(input: {
-  threads: ReadonlyArray<Pick<Thread, "id" | "proposedPlans">>;
-  latestTurn: Pick<OrchestrationLatestTurn, "turnId" | "sourceProposedPlan"> | null;
-  latestTurnSettled: boolean;
-  threadId: ThreadId | string | null | undefined;
-}): LatestProposedPlanState | null {
-  const activeThreadPlans =
-    input.threads.find((thread) => thread.id === input.threadId)?.proposedPlans ?? [];
-
-  if (!input.latestTurnSettled) {
-    const sourceProposedPlan = input.latestTurn?.sourceProposedPlan;
-    if (sourceProposedPlan) {
-      const sourcePlan = input.threads
-        .find((thread) => thread.id === sourceProposedPlan.threadId)
-        ?.proposedPlans.find((plan) => plan.id === sourceProposedPlan.planId);
-      if (sourcePlan) {
-        return toLatestProposedPlanState(sourcePlan);
-      }
-    }
-  }
-
-  return findLatestProposedPlan(activeThreadPlans, input.latestTurn?.turnId ?? null);
-}
-
 export function hasActionableProposedPlan(
   proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null,
 ): boolean {
   return proposedPlan !== null && proposedPlan.implementedAt === null;
+}
+
+/**
+ * Quiet-timeline guarantee: the work log carries the parent's narrative plus
+ * at most one row per agent. Everything an agent does internally lives in the
+ * Agents surface:
+ * - timelineBypass rows (Codex children, workflow members) never render here;
+ * - tool rows attributed to an owning agent (payload.agentId) are re-homed;
+ * - task.progress ticks collapse into one row per taskId;
+ * - task.updated is fold input only (status patches are not narrative).
+ * Unattributed rows always stay: over-hiding loses the only terminal signal.
+ */
+/** Agent (non-background) task.started rows seed spawn CTA batches. */
+function isAgentTaskStartedActivity(activity: OrchestrationThreadActivity): boolean {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  if (!payload || typeof payload.taskId !== "string") {
+    return false;
+  }
+  return !isBackgroundTaskActivity(payload);
+}
+
+function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  if (!payload) {
+    return false;
+  }
+  const isTaskRow =
+    activity.kind === "task.started" ||
+    activity.kind === "task.progress" ||
+    activity.kind === "task.updated" ||
+    activity.kind === "task.completed";
+  // Task rows classify by the server stamp: a subagent's own background
+  // shell (agentId + "background") is agent-internal, but a nested AGENT
+  // (agentId + "agent") stays visible so its rows can anchor a spawn CTA
+  // (review finding: hiding on agentId alone removed nested agents and
+  // their anchors). Bypassed agent lifecycle rows also pass — collapse
+  // folds every such row into its batch's single CTA row, which is how
+  // Codex children (whose rows are ALL bypassed) get an anchor at the
+  // spawn point.
+  if (isTaskRow) {
+    const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+    if (ownedByAgent || payload.timelineBypass === true) {
+      const isAgentTaskRow =
+        activity.kind !== "task.updated" &&
+        typeof payload.taskId === "string" &&
+        !isBackgroundTaskActivity(payload);
+      return !isAgentTaskRow;
+    }
+    return false;
+  }
+  if (payload.timelineBypass === true) {
+    return true;
+  }
+  // Non-task rows (attributed tool activity) owned by an agent are internal.
+  return typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
 }
 
 export function deriveWorkLogEntries(
@@ -645,526 +748,24 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
-    // tool.started is kept so long-running tools are visible while they run;
-    // lifecycle collapsing merges it into the eventual updated/completed row.
-    if (activity.kind === "task.started") continue;
+    if (activity.kind === "tool.started") continue;
+    // Agent task.started rows are CTA seeds: they carry the true spawn turn,
+    // which is the batch key (completions of background subagents arrive
+    // under later synthetic turns and must not start new batches). They
+    // collapse into the batch's single CTA row, never render standalone.
+    if (activity.kind === "task.started" && !isAgentTaskStartedActivity(activity)) continue;
+    if (activity.kind === "task.updated") continue;
+    if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
-    const entry = toDerivedWorkLogEntry(activity);
-    // A few provider streams announce collab-agent lifecycle items before they
-    // include any dispatch input, task text, or agent id. Those anonymous rows
-    // are not actionable and otherwise render as the alarming-looking pair
-    // "Tool started" / "Tool — No task recorded". A later lifecycle event with
-    // real input is still retained and becomes the visible subagent row.
-    if (entry.itemType === "collab_agent_tool_call" && !hasMeaningfulSubagentIdentity(entry)) {
-      continue;
-    }
-    if (activity.kind === "tool.started") {
-      // Some providers (e.g. codex) emit tool.started with an empty payload — no
-      // toolCallId, title, command, or detail — which derives a collapseKey of
-      // undefined. Such a row can never merge into its later updated/completed
-      // event, so keeping it only produces standalone noise ("… started {}").
-      if (entry.collapseKey === undefined) continue;
-      // Args stream in *after* the start event: providers emit the started row
-      // with a braces-only placeholder detail — bare "{}" or "<Tool>: {}"
-      // (e.g. "Bash: {}", "Agent: {}") — and no toolCallId, so it shares no
-      // collapse key with its later updated/completed event and would linger as a
-      // phantom "… started {}" row (and, for collab agents, a stuck subagent).
-      // The tool.updated event moments later (full args + status:"inProgress") is
-      // the visible running row, so drop the placeholder. Identity-bearing starts
-      // (real toolCallId or real args) are kept and collapse as before.
-      if (entry.toolCallId === undefined && hasBracesOnlyStartedArgs(activity.payload)) {
-        continue;
-      }
-    }
-    entries.push(entry);
+    if (isAgentInternalActivity(activity)) continue;
+    entries.push(toDerivedWorkLogEntry(activity));
   }
   return collapseDerivedWorkLogEntries(entries).map((entry) => {
     const { activityKind, collapseKey: _collapseKey, ...rest } = entry;
     return Object.assign(rest, { sourceActivityKind: activityKind });
   });
-}
-
-/** Braces-only args placeholder: bare "{}" or "<Label>: {}" (whitespace tolerant). */
-const BRACES_ONLY_ARGS_DETAIL = /^(?:[^\n{}]*:\s*)?\{\s*\}$/;
-
-/** True when a tool.started payload's detail is a braces-only args placeholder. */
-function hasBracesOnlyStartedArgs(payload: OrchestrationThreadActivity["payload"]): boolean {
-  const detail = asRecord(payload)?.detail;
-  if (typeof detail !== "string") {
-    return false;
-  }
-  const trimmed = detail.trim();
-  return trimmed.length > 0 && BRACES_ONLY_ARGS_DETAIL.test(trimmed);
-}
-
-/**
- * `detached` is a status unique to externally-spawned agents: the launching
- * `command_execution` completed (nohup/tmux/`&` returns immediately) while the
- * worker keeps running out-of-band, so its true state is unknowable — we refuse
- * to fake "running".
- */
-export type SubagentRailStatus = "running" | "completed" | "failed" | "detached";
-
-export interface SubagentRailItem {
-  id: string;
-  name: string;
-  detail: string | null;
-  status: SubagentRailStatus;
-  createdAt: string;
-  /**
-   * Present only for rows derived from a shelled-out agent CLI (not a provider
-   * collab agent). Carries what the row needs to badge itself and offer a
-   * "monitor in terminal" action.
-   */
-  external?: ExternalAgentRowInfo;
-}
-
-export interface ExternalAgentRowInfo {
-  tool: ExternalAgentTool;
-  detached: boolean;
-  /** Full launching command, for the expanded mono view. */
-  command: string;
-  /** `tail -f`/`tmux attach` command a terminal can run to watch the worker, or
-   * null when neither a log path nor a tmux target was extracted. */
-  monitorCommand: string | null;
-}
-
-// ---------------------------------------------------------------------------
-// External agent-CLI detection
-//
-// Sessions frequently spawn workers by SHELLING OUT — `codex exec` in a tmux
-// window, `omp -p --model … @prompt.md`, `claude -p`, `pi -p` — which t3 records
-// as ordinary `command_execution` tool calls, invisible in the Subagents panel.
-// These pure helpers recognise such invocations from a command string (through
-// nohup / tmux / `bash -c` / env-prefix / pipe / `&` wrapping) and extract a
-// best-effort label plus monitor artifacts.
-// ---------------------------------------------------------------------------
-
-export type ExternalAgentTool = "codex" | "omp" | "claude" | "pi";
-
-export interface ExternalAgentInvocation {
-  tool: ExternalAgentTool;
-  /** Row display name, e.g. `codex (exec)` / `omp (-p)`. */
-  displayName: string;
-  /** Best-effort task label, or null when nothing usable was found. */
-  label: string | null;
-  /** Launched to run in the background (nohup / tmux / trailing `&` / disown / setsid). */
-  detached: boolean;
-  /** Log file to tail, from a `>`/`>>` redirect or `--output`/`-o` flag. */
-  logPath: string | null;
-  /** tmux attach target (`-t sess:win`), when present. */
-  tmuxTarget: string | null;
-}
-
-interface ExternalAgentSignature {
-  tool: ExternalAgentTool;
-  /** Row-name suffix describing the non-interactive mode (`exec` / `-p`). */
-  mode: string;
-  /**
-   * Matches the CLI's non-interactive invocation ANYWHERE in the command.
-   * Whole-string scanning (rather than argv parsing) is deliberate: it sees
-   * through nesting like `tmux send-keys 'codex exec …'` or `bash -c "omp -p …"`
-   * since the wrappers only add surrounding characters. The tradeoff is that an
-   * agent-CLI signature buried inside an unrelated quoted string (e.g. a commit
-   * message literally containing "codex exec") can false-positive — an
-   * acceptable, low-harm miss for a realistic command corpus.
-   */
-  match: RegExp;
-}
-
-const EXTERNAL_AGENT_SIGNATURES: ReadonlyArray<ExternalAgentSignature> = [
-  // `codex exec` (alias `codex e`) is Codex's non-interactive form. NOT matched:
-  // `codex -p` (that flag is --profile, not a prompt), `codex login`,
-  // `codex exec-server`, or bare interactive `codex`.
-  { tool: "codex", mode: "exec", match: /\bcodex\s+(?:exec|e)(?![\w-])/ },
-  // Print/non-interactive mode for the assistant CLIs: require a `-p`/`--print`
-  // flag within the same command segment (no `|`/`;`/`&` separator crossed), so
-  // bare interactive `omp`/`claude`/`pi` do not match.
-  { tool: "omp", mode: "-p", match: /\bomp\b(?=[^\n|;&]*?\s(?:-p|--print)(?![\w-]))/ },
-  { tool: "claude", mode: "-p", match: /\bclaude\b(?=[^\n|;&]*?\s(?:-p|--print)(?![\w-]))/ },
-  { tool: "pi", mode: "-p", match: /\bpi\b(?=[^\n|;&]*?\s(?:-p|--print)(?![\w-]))/ },
-];
-
-/** Background-launch markers: the command returns while the worker keeps going. */
-function isDetachedLaunch(command: string): boolean {
-  if (/\bnohup\b/.test(command)) return true;
-  if (/\b(?:disown|setsid)\b/.test(command)) return true;
-  if (/\btmux\s+(?:new-window|neww|new-session|new|send-keys)\b/.test(command)) return true;
-  // A trailing single `&` (job control) — not `&&`.
-  if (/(?:^|[^&])&\s*$/.test(command)) return true;
-  return false;
-}
-
-/** First `@promptfile` argument's basename (e.g. `@prompts/plan.md` → `plan.md`). */
-function extractPromptFileLabel(command: string): string | null {
-  const match = /(?:^|[\s"'=(])@([^\s"'&|;]+)/.exec(command);
-  const path = match?.[1];
-  if (!path) return null;
-  const base = path.split("/").pop();
-  return base && base.length > 0 ? base : path;
-}
-
-/** `--model <v>` / `-m <v>` value. */
-function extractModelLabel(command: string): string | null {
-  const match = /(?:--model|(?:^|\s)-m)[=\s]\s*["']?([^\s"']+)/.exec(command);
-  return match?.[1] ?? null;
-}
-
-/** tmux window name from `-n <name>`. */
-function extractTmuxWindowName(command: string): string | null {
-  const match = /(?:^|\s)-n\s+["']?([^\s"']+)/.exec(command);
-  return match?.[1] ?? null;
-}
-
-/** Longest quoted sentence-like argument — the inline prompt in the common case. */
-function extractInlinePromptLabel(command: string): string | null {
-  const re = /"([^"]{6,})"|'([^']{6,})'/g;
-  let best: string | null = null;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(command)) !== null) {
-    const value = (match[1] ?? match[2] ?? "").trim();
-    // Skip flag values, paths and @files — they identify config, not the task.
-    if (value.length === 0 || /^[-/@]/.test(value)) continue;
-    if (!/[A-Za-z]/.test(value)) continue;
-    if (best === null || value.length > best.length) best = value;
-  }
-  if (best === null) return null;
-  const words = best.split(/\s+/).slice(0, 10).join(" ");
-  return words.length > 80 ? `${words.slice(0, 79)}…` : words;
-}
-
-/** `tmux ... -t <sess[:win]>` attach/send target. */
-function extractTmuxTarget(command: string): string | null {
-  const match = /(?:^|\s)-t\s+["']?([^\s"']+)/.exec(command);
-  return match?.[1] ?? null;
-}
-
-/** Output-log path from a redirect (`>`/`>>`/`&>`) or `--output`/`-o` flag. */
-function extractLogPath(command: string): string | null {
-  const flag = /(?:--output(?:-last-message)?|(?:^|\s)-o)[=\s]\s*["']?([^\s"'&|;]+)/.exec(command);
-  if (flag?.[1]) return flag[1];
-  // Redirects: take the last one so a trailing `> run.log` wins over `2>/dev/null`.
-  const redirect = /(?:^|\s)(?:[12]?>>?|&>)\s*["']?([^\s"'&|;]+)/g;
-  let path: string | null = null;
-  let match: RegExpExecArray | null;
-  while ((match = redirect.exec(command)) !== null) {
-    const value = match[1];
-    if (value && value !== "/dev/null") path = value;
-  }
-  return path;
-}
-
-/**
- * Recognise an externally-spawned agent-CLI invocation inside a command string
- * (typically a `command_execution` entry's `rawCommand ?? command`). Returns the
- * matched tool, a best-effort task label and optional monitor artifacts, or null
- * when the command is not an agent launch.
- *
- * Label priority: `@promptfile` basename, then the longest quoted inline prompt,
- * then `--model`, then the tmux `-n` window name. (Unquoted inline prompts are
- * not mined — quoted prompts cover the common `claude -p "…"` shape.)
- */
-export function detectExternalAgentInvocation(command: string): ExternalAgentInvocation | null {
-  if (typeof command !== "string" || command.trim().length === 0) return null;
-  for (const sig of EXTERNAL_AGENT_SIGNATURES) {
-    if (!sig.match.test(command)) continue;
-    const label =
-      extractPromptFileLabel(command) ??
-      extractInlinePromptLabel(command) ??
-      extractModelLabel(command) ??
-      extractTmuxWindowName(command);
-    return {
-      tool: sig.tool,
-      displayName: `${sig.tool} (${sig.mode})`,
-      label,
-      detached: isDetachedLaunch(command),
-      logPath: extractLogPath(command),
-      tmuxTarget: extractTmuxTarget(command),
-    };
-  }
-  return null;
-}
-
-/** Wrap a path/target in single quotes when it contains shell-significant chars. */
-function shellQuoteArg(value: string): string {
-  if (/^[\w@%+=:,./-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
- * The command a thread terminal can run to watch an external worker: `tail -f`
- * its log when a log path was found, else `tmux attach` its target. Null when we
- * have no handle to monitor — the row then offers no "Open in terminal" action.
- */
-export function externalAgentMonitorCommand(inv: ExternalAgentInvocation): string | null {
-  if (inv.logPath) return `tail -f -n 200 ${shellQuoteArg(inv.logPath)}`;
-  if (inv.tmuxTarget) return `tmux attach -t ${shellQuoteArg(inv.tmuxTarget)}`;
-  return null;
-}
-
-/**
- * Live subagent overview for the running turn. Provider adapters label collab
- * agent tool calls with a "<subagent-type>: <description>" detail — the type
- * becomes the display name when present.
- */
-export function deriveSubagentRailItems(
-  entries: ReadonlyArray<WorkLogEntry>,
-  activeTurnId: TurnId | null,
-): SubagentRailItem[] {
-  return collectTurnSubagents(entries, activeTurnId);
-}
-
-/** Keep long sessions bounded: the panel shows running agents plus the most
- * recent finished ones, which is all a reviewer needs. */
-const MAX_PANEL_SUBAGENTS = 50;
-
-/**
- * Subagents for the whole session — backs the toggleable Subagents right-panel.
- * Unlike the floating rail (which only tracks the live turn and vanishes once it
- * settles), the panel is session-scoped: agents dispatched in an earlier turn
- * keep working while later turns start, so scoping to a single turn would show
- * "no subagents" while agents demonstrably run. Rows are ordered running-first
- * then most-recent-first, and capped to the most recent {@link
- * MAX_PANEL_SUBAGENTS}.
- *
- * Background/async agents return their collab tool call immediately (the launch
- * succeeds in seconds) yet keep working for minutes, so the tool lifecycle would
- * read "completed" while they run. When a collab agent is linked to a background
- * task (its launch result carries an `agentId`), the panel trusts the `task.*`
- * activity lifecycle keyed by that id instead: running while `task.progress`
- * events arrive with no `task.completed`, and surfacing the latest progress
- * detail as the row's live status line.
- */
-export function deriveSubagentPanelItems(
-  entries: ReadonlyArray<WorkLogEntry>,
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): SubagentRailItem[] {
-  return collectSessionSubagents(entries, activities);
-}
-
-/** Map a tool lifecycle status to the coarse subagent rail/panel status. */
-function subagentStatusFromLifecycle(
-  status: WorkLogToolLifecycleStatus | undefined,
-): SubagentRailStatus {
-  if (status === "failed" || status === "declined") {
-    return "failed";
-  }
-  if (status === "completed" || status === "stopped") {
-    return "completed";
-  }
-  return "running";
-}
-
-function collectTurnSubagents(
-  entries: ReadonlyArray<WorkLogEntry>,
-  turnId: TurnId | null,
-): SubagentRailItem[] {
-  if (turnId === null) {
-    return [];
-  }
-  const items: SubagentRailItem[] = [];
-  for (const entry of entries) {
-    if (entry.itemType !== "collab_agent_tool_call") continue;
-    if (entry.turnId !== turnId) continue;
-    if (!hasMeaningfulSubagentIdentity(entry)) continue;
-    const status = subagentStatusFromLifecycle(entry.toolLifecycleStatus);
-    const { name, detail } = parseSubagentName(entry);
-    items.push({ id: entry.id, name, detail, status, createdAt: entry.createdAt });
-  }
-  // Surface still-running subagents first — they're the live, actionable rows —
-  // while keeping each group in dispatch order (stable sort).
-  return items
-    .map((item, index) => ({ item, index }))
-    .toSorted((left, right) => {
-      const leftRank = left.item.status === "running" ? 0 : 1;
-      const rightRank = right.item.status === "running" ? 0 : 1;
-      return leftRank - rightRank || left.index - right.index;
-    })
-    .map(({ item }) => item);
-}
-
-interface TaskLiveness {
-  hasProgress: boolean;
-  latestProgressDetail: string | null;
-  latestProgressAt: string;
-  /** Terminal status once `task.completed` fires; null while still running. */
-  terminalStatus: SubagentRailStatus | null;
-}
-
-/**
- * Index the background-task lifecycle by task id. `task.completed` is a real
- * terminal event (carries `status`), and `task.progress` events stream a live
- * `detail` string ("Reading …", "Running …") while the task runs — this is the
- * most truthful liveness signal for background agents.
- */
-function indexTaskLiveness(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): Map<string, TaskLiveness> {
-  const byTaskId = new Map<string, TaskLiveness>();
-  for (const activity of activities) {
-    if (activity.kind !== "task.progress" && activity.kind !== "task.completed") {
-      continue;
-    }
-    const payload = asRecord(activity.payload);
-    const taskId = asTrimmedString(payload?.taskId);
-    if (!taskId) continue;
-    const liveness = byTaskId.get(taskId) ?? {
-      hasProgress: false,
-      latestProgressDetail: null,
-      latestProgressAt: "",
-      terminalStatus: null,
-    };
-    if (activity.kind === "task.progress") {
-      liveness.hasProgress = true;
-      const detail = asTrimmedString(payload?.detail);
-      if (detail && activity.createdAt >= liveness.latestProgressAt) {
-        liveness.latestProgressDetail = detail;
-        liveness.latestProgressAt = activity.createdAt;
-      }
-    } else {
-      // task.completed detail is the agent's final report — never a status line,
-      // so only the terminal status matters here.
-      liveness.terminalStatus = subagentStatusFromLifecycle(
-        extractWorkLogToolLifecycleStatus(payload),
-      );
-    }
-    byTaskId.set(taskId, liveness);
-  }
-  return byTaskId;
-}
-
-function collectSessionSubagents(
-  entries: ReadonlyArray<WorkLogEntry>,
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): SubagentRailItem[] {
-  const taskLiveness = indexTaskLiveness(activities);
-  const items: SubagentRailItem[] = [];
-  for (const entry of entries) {
-    if (entry.itemType === "collab_agent_tool_call") {
-      if (!hasMeaningfulSubagentIdentity(entry)) continue;
-      const { name, detail } = parseSubagentName(entry);
-      const live = entry.subagentTaskId ? taskLiveness.get(entry.subagentTaskId) : undefined;
-      let status: SubagentRailStatus;
-      let statusDetail = detail;
-      if (live && live.terminalStatus === null && live.hasProgress) {
-        // Background agent still working: its collab tool call already reads
-        // "completed", but the task lifecycle proves otherwise. Show it running
-        // with its latest live activity as the detail line.
-        status = "running";
-        statusDetail = live.latestProgressDetail ?? detail;
-      } else if (live?.terminalStatus) {
-        status = live.terminalStatus;
-      } else {
-        status = subagentStatusFromLifecycle(entry.toolLifecycleStatus);
-      }
-      items.push({ id: entry.id, name, detail: statusDetail, status, createdAt: entry.createdAt });
-      continue;
-    }
-    if (entry.itemType === "command_execution" && entry.externalAgent) {
-      items.push(externalAgentSubagentRow(entry, entry.externalAgent));
-    }
-  }
-  // Running agents first (live and actionable), then detached workers we can no
-  // longer track, then finished ones; within a group, most-recent-first, stable
-  // for equal timestamps.
-  return items
-    .map((item, index) => ({ item, index }))
-    .toSorted((left, right) => {
-      const rankDelta =
-        subagentStatusRank(left.item.status) - subagentStatusRank(right.item.status);
-      if (rankDelta !== 0) {
-        return rankDelta;
-      }
-      const byRecency = right.item.createdAt.localeCompare(left.item.createdAt);
-      return byRecency !== 0 ? byRecency : left.index - right.index;
-    })
-    .map(({ item }) => item)
-    .slice(0, MAX_PANEL_SUBAGENTS);
-}
-
-/** Panel ordering: live work first, then untrackable detached launches, then done. */
-function subagentStatusRank(status: SubagentRailStatus): number {
-  if (status === "running") return 0;
-  if (status === "detached") return 1;
-  return 2;
-}
-
-/**
- * Build a panel row for a shelled-out agent CLI. Status is honest about what we
- * can know: a still-running `command_execution` (foreground exec) is `running`;
- * a finished one that was a detached launch (nohup/tmux/`&`) is `detached` — the
- * worker outlives the command, so we refuse to fake "running" OR "completed"; a
- * finished foreground exec maps straight from its lifecycle.
- */
-function externalAgentSubagentRow(
-  entry: WorkLogEntry,
-  inv: ExternalAgentInvocation,
-): SubagentRailItem {
-  const lifecycle = entry.toolLifecycleStatus;
-  let status: SubagentRailStatus;
-  if (lifecycle === undefined || lifecycle === "inProgress") {
-    status = "running";
-  } else if (inv.detached) {
-    status = "detached";
-  } else {
-    status = subagentStatusFromLifecycle(lifecycle);
-  }
-  return {
-    id: entry.id,
-    name: inv.displayName,
-    detail: inv.label,
-    status,
-    createdAt: entry.createdAt,
-    external: {
-      tool: inv.tool,
-      detached: inv.detached,
-      command: entry.rawCommand ?? entry.command ?? "",
-      monitorCommand: externalAgentMonitorCommand(inv),
-    },
-  };
-}
-
-/** Braces-only / empty payloads (e.g. an unstarted `Agent: {}`) carry no task text. */
-function isEmptySubagentDetail(raw: string): boolean {
-  return raw.length === 0 || BRACES_ONLY_ARGS_DETAIL.test(raw);
-}
-
-/** Whether an agent dispatch input contains any usable textual identity/task field. */
-function hasMeaningfulSubagentToolData(value: unknown, depth = 0): boolean {
-  if (depth > 3) return false;
-  if (typeof value === "string") return value.trim().length > 0;
-  if (Array.isArray(value)) {
-    return value.some((item) => hasMeaningfulSubagentToolData(item, depth + 1));
-  }
-  const record = asRecord(value);
-  if (!record) return false;
-  return Object.values(record).some((item) => hasMeaningfulSubagentToolData(item, depth + 1));
-}
-
-/** Anonymous lifecycle shells are not subagents until task/identity data arrives. */
-function hasMeaningfulSubagentIdentity(entry: WorkLogEntry): boolean {
-  const detail = entry.detail?.trim() ?? "";
-  return (
-    !isEmptySubagentDetail(detail) ||
-    hasMeaningfulSubagentToolData(entry.toolData) ||
-    entry.subagentTaskId !== undefined
-  );
-}
-
-function parseSubagentName(entry: WorkLogEntry): { name: string; detail: string | null } {
-  const rawDetail = entry.detail?.trim() ?? "";
-  const raw = isEmptySubagentDetail(rawDetail) ? "" : rawDetail;
-  const separatorIndex = raw.indexOf(": ");
-  if (separatorIndex > 0 && separatorIndex <= 40 && !raw.slice(0, separatorIndex).includes("\n")) {
-    return {
-      name: raw.slice(0, separatorIndex),
-      detail: raw.slice(separatorIndex + 2) || null,
-    };
-  }
-  const fallback = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
-  return { name: fallback, detail: raw.length > 0 && raw !== fallback ? raw : null };
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
@@ -1206,7 +807,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
   const title = extractToolTitle(payload);
-  const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
+  const isTaskActivity =
+    activity.kind === "task.started" ||
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed";
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
       ? payload.summary
@@ -1226,7 +830,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       payload.detail.length > 0
       ? stripTrailingExitCode(payload.detail).output
       : null
-    : extractToolDetail(payload, title ?? activity.summary, commandPreview.command);
+    : extractToolDetail(payload, title ?? activity.summary);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
@@ -1252,13 +856,6 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (commandPreview.rawCommand) {
     entry.rawCommand = commandPreview.rawCommand;
   }
-  if (itemType === "command_execution") {
-    const source = commandPreview.rawCommand ?? commandPreview.command;
-    const external = source ? detectExternalAgentInvocation(source) : null;
-    if (external) {
-      entry.externalAgent = external;
-    }
-  }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
   }
@@ -1269,20 +866,6 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     const data = asRecord(payload?.data);
     if (data?.item !== undefined) {
       entry.toolData = data.item;
-    }
-  } else if (itemType === "collab_agent_tool_call") {
-    const data = asRecord(payload?.data);
-    // Carry the dispatch input (subagent_type, model, prompt, …) so the Subagents
-    // panel can show a useful expanded view instead of echoing the row's label.
-    if (data?.input !== undefined) {
-      entry.toolData = data.input;
-    }
-    // Background agents report an `agentId` in their launch result — this is the
-    // task id that the `task.*` lifecycle is keyed by, so the panel can track the
-    // agent's true liveness after the collab tool call returns.
-    const taskId = extractCollabAgentTaskId(data);
-    if (taskId) {
-      entry.subagentTaskId = taskId;
     }
   }
   if (itemType) {
@@ -1298,11 +881,24 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (!toolLifecycleStatus && activity.kind === "tool.completed") {
     toolLifecycleStatus = "completed";
   }
-  if (!toolLifecycleStatus && activity.kind === "tool.started") {
-    toolLifecycleStatus = "inProgress";
-  }
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
+  }
+  if (isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0) {
+    entry.taskId = payload.taskId;
+  }
+  if (isTaskActivity && typeof payload?.role === "string" && payload.role.length > 0) {
+    entry.agentRole = payload.role;
+  }
+  if (
+    isTaskActivity &&
+    (payload?.taskType === "local_workflow" ||
+      (typeof payload?.workflowName === "string" && payload.workflowName.length > 0))
+  ) {
+    entry.isWorkflowCoordinator = true;
+  }
+  if (isTaskActivity && payload && isBackgroundTaskActivity(payload)) {
+    entry.isBackgroundTask = true;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
@@ -1311,23 +907,91 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   return entry;
 }
 
+/**
+ * Spawn-group key for a subagent lifecycle row. Workflow members and their
+ * coordinator share the coordinator's group; direct spawns batch per turn.
+ * One CTA row per group (A1 design): "Kicked off N subagents".
+ */
+function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
+  const taskId = entry.taskId ?? "";
+  const workflowSlot = taskId.indexOf(":wf:");
+  if (workflowSlot !== -1) {
+    return `wf:${taskId.slice(0, workflowSlot)}`;
+  }
+  if (entry.agentSpawn?.workflowId) {
+    return `wf:${entry.agentSpawn.workflowId}`;
+  }
+  if (entry.isWorkflowCoordinator) {
+    return `wf:${taskId}`;
+  }
+  // No turn id means no batch signal at all: fall back to one group per
+  // task. Unrelated turn-less spawns (separate fleets whose rows lost their
+  // turn) must not collapse into one immortal "direct:no-turn" CTA
+  // accumulating every agent the thread ever ran (review finding). Adapters
+  // stamp spawn turns (Codex spawnTurnId; Claude rows ride real turns), so
+  // this path is defensive.
+  return entry.turnId ? `direct:${entry.turnId}` : `direct:task:${taskId}`;
+}
+
 function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
-  // Lifecycle events of one tool call are rarely adjacent while other tools
-  // run in between — merge by collapse key in place so a long-running call
-  // stays a single row that updates where it first appeared.
-  const indexByCollapseKey = new Map<string, number>();
+  // Subagent rows collapse by spawn group, not adjacency: a workflow run (or
+  // a turn's batch of direct spawns) is ONE narrative event in the chat — a
+  // CTA row that opens the Agents panel — no matter how many agents it
+  // contains or how their progress rows interleave (quiet-timeline
+  // guarantee).
+  const spawnRowIndex = new Map<string, number>();
+  // Batch membership is decided once, at the FIRST row seen for a taskId.
+  // Claude background subagents settle between turns, so their completion
+  // rows carry fresh synthetic turn ids (or none) — keying each row by its
+  // own turn splintered one batch into a stream of "Kicked off N subagents"
+  // rows (live-test finding, thread 7ac7ef05).
+  const groupKeyByTaskId = new Map<string, string>();
   for (const entry of entries) {
-    const keyedIndex =
-      entry.collapseKey !== undefined ? indexByCollapseKey.get(entry.collapseKey) : undefined;
-    if (keyedIndex !== undefined) {
-      const existing = collapsed[keyedIndex];
-      if (existing && shouldCollapseToolLifecycleEntries(existing, entry)) {
-        collapsed[keyedIndex] = mergeDerivedWorkLogEntries(existing, entry);
+    const isTaskRow =
+      entry.taskId !== undefined &&
+      !entry.isBackgroundTask &&
+      (entry.activityKind === "task.started" ||
+        entry.activityKind === "task.progress" ||
+        entry.activityKind === "task.completed");
+    if (isTaskRow && entry.taskId !== undefined) {
+      const rememberedKey = groupKeyByTaskId.get(entry.taskId);
+      const groupKey = rememberedKey ?? agentSpawnGroupKey(entry);
+      if (rememberedKey === undefined) {
+        groupKeyByTaskId.set(entry.taskId, groupKey);
+      }
+      const workflowId = groupKey.startsWith("wf:") ? groupKey.slice(3) : null;
+      const existingIndex = spawnRowIndex.get(groupKey);
+      if (existingIndex !== undefined) {
+        const existing = collapsed[existingIndex]!;
+        const agentTaskIds = existing.agentSpawn?.agentTaskIds.includes(entry.taskId)
+          ? existing.agentSpawn.agentTaskIds
+          : [...(existing.agentSpawn?.agentTaskIds ?? []), entry.taskId];
+        collapsed[existingIndex] = {
+          ...mergeDerivedWorkLogEntries(existing, entry),
+          // The CTA row keeps the group's ANCHOR identity, not the last
+          // agent's: id/createdAt/turnId stay pinned to the spawn point so
+          // the row renders where the run launched instead of drifting to
+          // the newest progress tick (mid-run it drifted below the whole
+          // conversation, reading as "no visualization"), and the stable id
+          // keeps React state/virtualization sane.
+          id: existing.id,
+          createdAt: existing.createdAt,
+          turnId: existing.turnId ?? null,
+          ...(existing.taskId !== undefined ? { taskId: existing.taskId } : {}),
+          label: existing.label,
+          agentSpawn: { workflowId, agentTaskIds },
+        };
         continue;
       }
+      spawnRowIndex.set(groupKey, collapsed.length);
+      collapsed.push({
+        ...entry,
+        agentSpawn: { workflowId, agentTaskIds: [entry.taskId] },
+      });
+      continue;
     }
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
@@ -1335,11 +999,6 @@ function collapseDerivedWorkLogEntries(
       continue;
     }
     collapsed.push(entry);
-    if (entry.collapseKey !== undefined) {
-      // Latest entry wins the key: a repeated identical call must merge its
-      // lifecycle into the new row, not the earlier completed one.
-      indexByCollapseKey.set(entry.collapseKey, collapsed.length - 1);
-    }
   }
   return collapsed;
 }
@@ -1348,11 +1007,7 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (
-    previous.activityKind !== "tool.started" &&
-    previous.activityKind !== "tool.updated" &&
-    previous.activityKind !== "tool.completed"
-  ) {
+  if (previous.activityKind !== "tool.updated" && previous.activityKind !== "tool.completed") {
     return false;
   }
   if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
@@ -1388,15 +1043,9 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
-  const subagentTaskId = next.subagentTaskId ?? previous.subagentTaskId;
-  const externalAgent = next.externalAgent ?? previous.externalAgent;
   return {
     ...previous,
     ...next,
-    // The merged row keeps its first appearance: stable id avoids re-keying,
-    // and the original createdAt keeps it ordered where the tool call began.
-    id: previous.id,
-    createdAt: previous.createdAt,
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
@@ -1408,8 +1057,6 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
-    ...(subagentTaskId ? { subagentTaskId } : {}),
-    ...(externalAgent ? { externalAgent } : {}),
   };
 }
 
@@ -1425,11 +1072,15 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
+  // Subagent lifecycle rows collapse by agent identity: one row per agent,
+  // progress ticks fold into it, the terminal row wins the label.
   if (
-    entry.activityKind !== "tool.started" &&
-    entry.activityKind !== "tool.updated" &&
-    entry.activityKind !== "tool.completed"
+    entry.taskId &&
+    (entry.activityKind === "task.progress" || entry.activityKind === "task.completed")
   ) {
+    return `task${entry.taskId}`;
+  }
+  if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
     return undefined;
   }
   if (entry.toolCallId) {
@@ -1668,18 +1319,6 @@ function extractToolCallId(payload: Record<string, unknown> | null): string | nu
   return asTrimmedString(data?.toolCallId);
 }
 
-/** Async agent launches report `agentId: <id>` in their tool result text — that
- * id is the task id used by the `task.*` liveness lifecycle. */
-function extractCollabAgentTaskId(data: Record<string, unknown> | null): string | null {
-  const result = asRecord(data?.result);
-  const text = asTrimmedString(result?.text);
-  if (!text) {
-    return null;
-  }
-  const match = /agentId:\s*([A-Za-z0-9_-]+)/.exec(text);
-  return match?.[1] ?? null;
-}
-
 function normalizeInlinePreview(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -1758,44 +1397,17 @@ function isCommandToolDetail(payload: Record<string, unknown> | null, heading: s
 function extractToolDetail(
   payload: Record<string, unknown> | null,
   heading: string,
-  command: string | null,
 ): string | null {
   const rawDetail = asTrimmedString(payload?.detail);
   const detail = rawDetail ? stripTrailingExitCode(rawDetail).output : null;
   const normalizedHeading = normalizePreviewForComparison(heading);
   const normalizedDetail = normalizePreviewForComparison(detail);
-  const normalizedCommand = normalizePreviewForComparison(command);
 
-  // A command execution whose `detail` merely repeats the command line carries
-  // no extra information — the command already renders via the entry's
-  // `command` field, so echoing it as detail duplicates the row. Skip it here
-  // and fall through to surface the command's stdout instead.
-  const detailRepeatsCommand =
-    normalizedCommand !== null &&
-    normalizedDetail !== null &&
-    normalizedDetail === normalizedCommand;
-
-  if (detail && normalizedHeading !== normalizedDetail && !detailRepeatsCommand) {
+  if (detail && normalizedHeading !== normalizedDetail) {
     return detail;
   }
 
   if (isCommandToolDetail(payload, heading)) {
-    // Without a known command, bare stdout is misleading (which command ran?),
-    // so show nothing. With a command, repurpose the detail to show its output
-    // so a completed command surfaces stdout beneath the command line.
-    if (!command) {
-      return null;
-    }
-    const rawOutputSummary = summarizeToolRawOutput(payload);
-    if (rawOutputSummary) {
-      const normalizedRawOutputSummary = normalizePreviewForComparison(rawOutputSummary);
-      if (
-        normalizedRawOutputSummary !== normalizedHeading &&
-        normalizedRawOutputSummary !== normalizedCommand
-      ) {
-        return rawOutputSummary;
-      }
-    }
     return null;
   }
 
@@ -1962,6 +1574,7 @@ export function deriveTimelineEntries(
   messages: ReadonlyArray<ChatMessage>,
   proposedPlans: ReadonlyArray<ProposedPlan>,
   workEntries: ReadonlyArray<WorkLogEntry>,
+  turnPlans: ReadonlyArray<TurnPlanEntry> = [],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages.map((message) => ({
     id: message.id,
@@ -1975,13 +1588,19 @@ export function deriveTimelineEntries(
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
+  const turnPlanRows: TimelineEntry[] = turnPlans.map((turnPlan) => ({
+    id: turnPlan.id,
+    kind: "turn-plan",
+    createdAt: turnPlan.createdAt,
+    turnPlan,
+  }));
   const workRows: TimelineEntry[] = workEntries.map((entry) => ({
     id: entry.id,
     kind: "work",
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
+  return [...messageRows, ...proposedPlanRows, ...turnPlanRows, ...workRows].toSorted((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );
 }

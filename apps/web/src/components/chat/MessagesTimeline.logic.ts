@@ -4,14 +4,13 @@ import {
   workEntryIndicatesToolNeutralStatus,
   workLogEntryIsToolLike,
   type TimelineEntry,
+  type TurnPlanEntry,
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
-/** Verbose mode keeps a live tail of the running turn's tool calls on screen. */
-export const MAX_VISIBLE_ACTIVE_WORK_LOG_ENTRIES = 8;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
@@ -20,11 +19,37 @@ export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
 
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
-  readonly isNearEnd?: boolean;
+  readonly contentLength?: number;
+  readonly scroll?: number;
+  readonly scrollLength?: number;
 }
 
-export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
-  return state?.isNearEnd ?? state?.isAtEnd;
+/**
+ * Follow re-arm band above the hard bottom. Strict on purpose: LegendList's
+ * isNearEnd fires within half a viewport, which re-armed live-follow while the
+ * user was reading history and yanked them back down on the next stream chunk.
+ * A small pixel band (instead of the 1px isAtEnd epsilon alone) keeps re-arming
+ * reliable while streaming content is still growing under the viewport.
+ */
+export const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
+
+export function resolveTimelineIsAtEnd(
+  state: TimelineEndState | undefined,
+  endInset = 0,
+): boolean | undefined {
+  if (!state) {
+    return undefined;
+  }
+  if (state.isAtEnd) {
+    return true;
+  }
+  const { contentLength, scroll, scrollLength } = state;
+  if (contentLength === undefined || scroll === undefined || scrollLength === undefined) {
+    return state.isAtEnd;
+  }
+  // contentLength includes the end inset (composer overlay), so subtract it to
+  // measure the distance to the real content bottom.
+  return contentLength - scroll - scrollLength - endInset <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
 }
 
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
@@ -141,8 +166,6 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
-      /** Verbose live view: render in-progress (neutral) tool entries too. */
-      showInProgressEntries: boolean;
     }
   | {
       kind: "work-toggle";
@@ -178,6 +201,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       proposedPlan: ProposedPlan;
+    }
+  | {
+      kind: "turn-plan";
+      id: string;
+      createdAt: string;
+      turnPlan: TurnPlanEntry;
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
@@ -356,9 +385,16 @@ function deriveTurnFolds(input: {
     }
     const hiddenEntryIds = new Set<string>();
     for (const entry of group.entries) {
-      if (entry.id !== group.terminalEntry?.id) {
-        hiddenEntryIds.add(entry.id);
+      if (entry.id === group.terminalEntry?.id) {
+        continue;
       }
+      // Agent-spawn CTA rows never fold: workflows outlive their launching
+      // turn (dynamic spawns, background execution), and folding the CTA
+      // when the turn settles makes a still-running fleet invisible.
+      if (entry.kind === "work" && entry.entry.agentSpawn !== undefined) {
+        continue;
+      }
+      hiddenEntryIds.add(entry.id);
     }
     if (hiddenEntryIds.size === 0) {
       continue;
@@ -413,10 +449,6 @@ export function deriveMessagesTimelineRows(input: {
   expandedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
-  /** Catch-up in progress after a login after absence: suppress the live
-   *  "working" indicator so a stale base snapshot does not flap it on open. */
-  isHydrating?: boolean;
-  verboseWorkLog?: boolean;
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
@@ -483,34 +515,35 @@ export function deriveMessagesTimelineRows(input: {
         groupedEntries.push(nextEntry.entry);
         cursor += 1;
       }
-      // Verbose live view: the running turn keeps its in-progress tool calls
-      // visible and shows a longer tail, instead of the bare working shimmer.
-      const groupTurnId = groupedEntries.find((entry) => entry.turnId != null)?.turnId ?? null;
-      const isVerboseActiveGroup =
-        (input.verboseWorkLog ?? false) &&
-        unsettledTurnId !== null &&
-        groupTurnId === unsettledTurnId;
-      const visibleGroupedEntries = isVerboseActiveGroup
-        ? groupedEntries
-        : groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry));
-      const maxVisibleEntries = isVerboseActiveGroup
-        ? MAX_VISIBLE_ACTIVE_WORK_LOG_ENTRIES
-        : MAX_VISIBLE_WORK_LOG_ENTRIES;
+      const visibleGroupedEntries = groupedEntries.filter(
+        (entry) => !workEntryIndicatesToolNeutralStatus(entry),
+      );
       if (visibleGroupedEntries.length > 0) {
-        if (visibleGroupedEntries.length <= maxVisibleEntries) {
+        if (visibleGroupedEntries.length <= MAX_VISIBLE_WORK_LOG_ENTRIES) {
           nextRows.push({
             kind: "work",
             id: timelineEntry.id,
             createdAt: timelineEntry.createdAt,
             groupedEntries: visibleGroupedEntries,
-            showInProgressEntries: isVerboseActiveGroup,
           });
         } else {
           const groupId = `work-group:${timelineEntry.id}`;
           const expanded = input.expandedWorkGroupIds?.has(groupId) ?? false;
-          const hiddenEntries = visibleGroupedEntries.slice(0, -maxVisibleEntries);
-          const visibleEntries = visibleGroupedEntries.slice(-maxVisibleEntries);
-          const renderedEntries = expanded ? [...hiddenEntries, ...visibleEntries] : visibleEntries;
+          // Agent-spawn CTA rows are always visible: a running fleet must
+          // never hide behind a "+N tool calls" toggle. Selection is by
+          // membership (spawn OR recent-tail), preserving the group's
+          // chronological order in both collapsed and expanded states
+          // (review finding: concatenating two filtered lists moved a
+          // mid-group spawn row above earlier tool rows).
+          const overflowCandidates = visibleGroupedEntries.filter(
+            (entry) => entry.agentSpawn === undefined,
+          );
+          const hiddenEntries = overflowCandidates.slice(0, -MAX_VISIBLE_WORK_LOG_ENTRIES);
+          const hiddenIds = new Set(hiddenEntries.map((entry) => entry.id));
+          const visibleEntries = visibleGroupedEntries.filter(
+            (entry) => entry.agentSpawn !== undefined || !hiddenIds.has(entry.id),
+          );
+          const renderedEntries = expanded ? visibleGroupedEntries : visibleEntries;
 
           for (const workEntry of renderedEntries) {
             nextRows.push({
@@ -518,19 +551,22 @@ export function deriveMessagesTimelineRows(input: {
               id: workEntry.id,
               createdAt: workEntry.createdAt,
               groupedEntries: [workEntry],
-              showInProgressEntries: isVerboseActiveGroup,
             });
           }
 
-          nextRows.push({
-            kind: "work-toggle",
-            id: `work-toggle:${timelineEntry.id}`,
-            createdAt: timelineEntry.createdAt,
-            groupId,
-            hiddenCount: hiddenEntries.length,
-            expanded,
-            onlyToolEntries: visibleGroupedEntries.every((entry) => workLogEntryIsToolLike(entry)),
-          });
+          if (hiddenEntries.length > 0) {
+            nextRows.push({
+              kind: "work-toggle",
+              id: `work-toggle:${timelineEntry.id}`,
+              createdAt: timelineEntry.createdAt,
+              groupId,
+              hiddenCount: hiddenEntries.length,
+              expanded,
+              onlyToolEntries: visibleGroupedEntries.every((entry) =>
+                workLogEntryIsToolLike(entry),
+              ),
+            });
+          }
         }
       }
       index = cursor - 1;
@@ -543,6 +579,16 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         proposedPlan: timelineEntry.proposedPlan,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "turn-plan") {
+      nextRows.push({
+        kind: "turn-plan",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        turnPlan: timelineEntry.turnPlan,
       });
       continue;
     }
@@ -583,7 +629,7 @@ export function deriveMessagesTimelineRows(input: {
     });
   }
 
-  if (input.isWorking && !input.isHydrating) {
+  if (input.isWorking) {
     nextRows.push({
       kind: "working",
       id: "working-indicator-row",
@@ -630,13 +676,15 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
-    case "work": {
-      const bw = b as typeof a;
-      return (
-        a.showInProgressEntries === bw.showInProgressEntries &&
-        Equal.equals(a.groupedEntries, bw.groupedEntries)
-      );
+    case "turn-plan": {
+      const bp = b as typeof a;
+      // Plans rewrite in place: compare the snapshot's identity fields so an
+      // unchanged plan keeps its row reference (virtualization stability).
+      return a.createdAt === bp.createdAt && a.turnPlan.plan === bp.turnPlan.plan;
     }
+
+    case "work":
+      return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);
 
     case "work-toggle": {
       const bw = b as typeof a;
