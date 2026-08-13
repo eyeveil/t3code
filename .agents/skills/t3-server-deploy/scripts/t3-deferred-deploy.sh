@@ -28,6 +28,23 @@ notify() {
   curl --fail -s --max-time 10 -H "Title: $1" -H "Tags: $2" -d "$3" "$NTFY_URL" >/dev/null || true
 }
 
+# The user systemd manager has a deliberately small PATH on NixOS. sqlite3 may
+# still be installed in the Nix store even when it is absent from that PATH.
+if ! command -v "$SQLITE" >/dev/null 2>&1; then
+  for candidate in /nix/store/*-sqlite-*-bin/bin/sqlite3; do
+    if [ -x "$candidate" ]; then
+      SQLITE=$candidate
+      break
+    fi
+  done
+fi
+
+if ! command -v "$SQLITE" >/dev/null 2>&1; then
+  say "FAIL: sqlite3 is unavailable; cannot determine whether sessions are idle"
+  notify "t3 deploy misconfigured" "x,warning" "sqlite3 is unavailable; nothing deployed."
+  exit 1
+fi
+
 busy_sessions() {
   "$SQLITE" -readonly "$DB" \
     "SELECT count(*) FROM projection_thread_sessions WHERE status IN ('running','starting');" \
