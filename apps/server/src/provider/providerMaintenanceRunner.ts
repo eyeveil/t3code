@@ -31,6 +31,8 @@ const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
+// npm can propagate the numeric EACCES errno (-13), which POSIX wraps to 243.
+const NPM_POSIX_EACCES_EXIT_CODE = 243;
 
 export interface ProviderMaintenanceCommandResult {
   readonly stdout: string;
@@ -180,9 +182,21 @@ function commandOutput(result: ProviderMaintenanceCommandResult): string | null 
   return truncateText(output, UPDATE_OUTPUT_MAX_BYTES);
 }
 
-function failureMessage(result: ProviderMaintenanceCommandResult): string {
+function isNpmCommand(command: string): boolean {
+  const commandName = command.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase();
+  return commandName === "npm" || commandName === "npm.cmd";
+}
+
+function failureMessage(result: ProviderMaintenanceCommandResult, command: string): string {
   if (result.timedOut) {
     return "Update timed out.";
+  }
+  const output = [result.stderr, result.stdout].filter(Boolean).join("\n");
+  if (
+    /\bEACCES\b|permission denied/i.test(output) ||
+    (isNpmCommand(command) && result.exitCode === NPM_POSIX_EACCES_EXIT_CODE)
+  ) {
+    return "Update command could not access the provider installation (permission denied).";
   }
   if (result.exitCode !== null && result.exitCode !== 0) {
     return `Update command exited with code ${result.exitCode}.`;
@@ -192,6 +206,13 @@ function failureMessage(result: ProviderMaintenanceCommandResult): string {
 
 function isOutdatedProvider(provider: ServerProvider | undefined): boolean {
   return provider?.versionAdvisory?.status === "behind_latest";
+}
+
+function areProvidersVerifiedCurrent(providers: ReadonlyArray<ServerProvider>): boolean {
+  return (
+    providers.length > 0 &&
+    providers.every((provider) => provider.versionAdvisory?.status === "current")
+  );
 }
 
 function makeUpdateState(input: {
@@ -354,23 +375,27 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
 
             const result = yield* runMaintenanceCommand(update.executable, update.args);
             const finishedAt = yield* nowIso;
-            if (result.timedOut || result.exitCode !== 0) {
-              return yield* finish(
-                makeUpdateState({
-                  status: "failed",
-                  startedAt,
-                  finishedAt,
-                  message: failureMessage(result),
-                  output: commandOutput(result),
-                }),
-              );
-            }
-
+            const commandFailed = result.timedOut || result.exitCode !== 0;
+            // An installer can replace the provider successfully and then fail
+            // during cleanup. Trust that postcondition only when a fresh probe
+            // affirmatively reports every targeted provider as current.
             const { verifiedProviders } = yield* verifyRefreshedProvider(
               provider,
               capabilities,
               instanceId,
             );
+            if (commandFailed && !areProvidersVerifiedCurrent(verifiedProviders)) {
+              return yield* finish(
+                makeUpdateState({
+                  status: "failed",
+                  startedAt,
+                  finishedAt,
+                  message: failureMessage(result, update.executable),
+                  output: commandOutput(result),
+                }),
+              );
+            }
+
             const couldNotVerify = verifiedProviders.length === 0;
             const stillOutdated =
               couldNotVerify ||
@@ -380,11 +405,13 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 status: stillOutdated ? "unchanged" : "succeeded",
                 startedAt,
                 finishedAt,
-                message: couldNotVerify
-                  ? "Update command completed, but T3 Code could not verify the provider version."
-                  : stillOutdated
-                    ? "Update command completed, but T3 Code still detects an outdated provider version."
-                    : "Provider updated.",
+                message: commandFailed
+                  ? "Provider is up to date despite the update command reporting a failure."
+                  : couldNotVerify
+                    ? "Update command completed, but T3 Code could not verify the provider version."
+                    : stillOutdated
+                      ? "Update command completed, but T3 Code still detects an outdated provider version."
+                      : "Provider updated.",
                 output: commandOutput(result),
               }),
             );

@@ -199,6 +199,7 @@ function makeRegistry(
 
     return {
       registry,
+      providersRef,
       updateStatesRef,
     };
   });
@@ -447,7 +448,10 @@ describe("providerMaintenanceRunner", () => {
       const updateState = result.providers[0]?.updateState;
 
       assert.strictEqual(updateState?.status, "failed");
-      assert.strictEqual(updateState?.message, "Update command exited with code 1.");
+      assert.strictEqual(
+        updateState?.message,
+        "Update command could not access the provider installation (permission denied).",
+      );
       assert.include(updateState?.output ?? "", "permission denied");
     }).pipe(
       Effect.provide(
@@ -455,6 +459,74 @@ describe("providerMaintenanceRunner", () => {
           NonWindowsPlatform,
           latestVersionHttpClient("0.0.0"),
           mockSpawnerLayer(() => ({ stderr: "permission denied", code: 1 })),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("accepts a verified update when npm reports a permission failure", () =>
+    Effect.gen(function* () {
+      const { registry, providersRef } = yield* makeRegistry({
+        ...baseProvider,
+        version: "0.146.0",
+        versionAdvisory: {
+          status: "behind_latest",
+          currentVersion: "0.146.0",
+          latestVersion: "0.147.0",
+          updateCommand: "npm install -g @openai/codex@latest",
+          canUpdate: true,
+          checkedAt: "2026-08-08T10:00:00.000Z",
+          message: "Update available.",
+        },
+      });
+      const updater = yield* makeTestRunner({
+        ...registry,
+        refreshInstance: () =>
+          Ref.updateAndGet(providersRef, (providers) =>
+            providers.map((provider) => ({
+              ...provider,
+              version: "0.147.0",
+            })),
+          ),
+      });
+
+      const result = yield* updater.updateProvider(CODEX_DRIVER);
+      const updateState = result.providers[0]?.updateState;
+
+      assert.strictEqual(updateState?.status, "succeeded");
+      assert.strictEqual(
+        updateState?.message,
+        "Provider is up to date despite the update command reporting a failure.",
+      );
+      assert.include(updateState?.output ?? "", "EACCES");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NonWindowsPlatform,
+          latestVersionHttpClient("0.147.0"),
+          mockSpawnerLayer(() => ({ stderr: "npm error code EACCES", code: 243 })),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("explains npm exit 243 as a permission failure when no output is available", () =>
+    Effect.gen(function* () {
+      const { registry } = yield* makeRegistry();
+      const updater = yield* makeTestRunner(registry);
+
+      const result = yield* updater.updateProvider(CODEX_DRIVER);
+
+      assert.strictEqual(
+        result.providers[0]?.updateState?.message,
+        "Update command could not access the provider installation (permission denied).",
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NonWindowsPlatform,
+          latestVersionHttpClient("0.147.0"),
+          mockSpawnerLayer(() => ({ code: 243 })),
         ),
       ),
     ),
