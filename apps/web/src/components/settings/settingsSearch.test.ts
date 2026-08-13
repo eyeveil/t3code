@@ -48,6 +48,8 @@ describe("searchSettings", () => {
     // "work" is a substring match, not a fuzzy one: it must never surface
     // "Word wrap" (only genuine "work" titles, e.g. the work log setting).
     expect(searchSettings("work").map((item) => item.id)).not.toContain("word-wrap");
+    expect(searchSettings("glass").map((item) => item.id)).toEqual(["setting-glass-opacity"]);
+    expect(searchSettings("xyzzy")).toEqual([]);
   });
 
   it("keeps catalog order for multiple title matches", () => {

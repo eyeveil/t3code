@@ -5,8 +5,8 @@ import { mobilePreferencesAtom } from "../../state/preferences";
 import { resolveThreadListV2Enabled } from "./threadListV2";
 
 /**
- * Resolved Thread List v2 state: the device-local preference if the user has
- * set one, otherwise the default (on). Every consumer must read through this
+ * Resolved Thread List v2 state: on unless the device opted into the legacy
+ * grouped list (Settings → Legacy). Every consumer must read through this
  * rather than the raw preference, which is undefined until explicitly chosen.
  *
  * Kept out of `state/preferences.ts` so that module stays importable from node
@@ -16,7 +16,7 @@ export function useThreadListV2Enabled(): boolean {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const loaded = AsyncResult.isSuccess(preferencesResult);
   return resolveThreadListV2Enabled({
-    preference: loaded ? preferencesResult.value.threadListV2Enabled : undefined,
+    legacyPreference: loaded ? preferencesResult.value.legacyThreadListEnabled : undefined,
     preferencesLoaded: loaded,
   });
 }

@@ -6,6 +6,7 @@ import {
   type ComponentProps,
   type ReactElement,
   type ReactNode,
+  useRef,
 } from "react";
 import { Platform, Pressable, useColorScheme, View } from "react-native";
 import { useThemeColor } from "../lib/useThemeColor";
@@ -21,13 +22,42 @@ export function ControlPill(props: {
   readonly label?: string;
   readonly accessibilityLabel?: string;
   readonly onPress?: () => void;
+  readonly activateOnPressIn?: boolean;
   readonly variant?: "circle" | "pill" | "primary" | "danger";
   readonly disabled?: boolean;
   /** Tighter Material composer control on Android. */
   readonly compact?: boolean;
+  readonly className?: string;
 }) {
   const variant = props.variant ?? "circle";
   const isAndroid = Platform.OS === "android";
+  const activatedOnPressInRef = useRef(false);
+
+  const invokeOnPress = () => {
+    if (!props.onPress) return;
+    if (isAndroid) {
+      void Haptics.selectionAsync();
+    }
+    props.onPress();
+  };
+
+  const handlePressIn = () => {
+    activatedOnPressInRef.current = true;
+    invokeOnPress();
+  };
+  const handlePressOut = () => {
+    // Pressability invokes onPressOut immediately before onPress on release.
+    // Defer the reset so onPress can identify the same physical gesture.
+    setTimeout(() => {
+      activatedOnPressInRef.current = false;
+    }, 0);
+  };
+  const handlePress = () => {
+    if (activatedOnPressInRef.current) {
+      return;
+    }
+    invokeOnPress();
+  };
 
   const iconColor = useThemeColor("--color-icon");
   const iconSubtle = useThemeColor("--color-icon-subtle");
@@ -64,6 +94,7 @@ export function ControlPill(props: {
       : variant === "danger"
         ? "bg-danger"
         : "bg-subtle",
+    props.className,
   );
   const labelClassName = cn(
     "text-center text-xs font-t3-bold",
@@ -80,16 +111,9 @@ export function ControlPill(props: {
     <Pressable
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       accessibilityRole="button"
-      onPress={
-        props.onPress
-          ? () => {
-              if (isAndroid) {
-                void Haptics.selectionAsync();
-              }
-              props.onPress?.();
-            }
-          : undefined
-      }
+      onPress={props.activateOnPressIn ? handlePress : props.onPress ? invokeOnPress : undefined}
+      onPressIn={props.activateOnPressIn ? handlePressIn : undefined}
+      onPressOut={props.activateOnPressIn ? handlePressOut : undefined}
       disabled={props.disabled}
       className={containerClassName}
     >
@@ -154,9 +178,25 @@ export function ControlPillMenu(
   }
 
   const { className: _className, ...menuProps } = props;
+  let children = menuProps.children;
+  // In long-press mode the wrapped pressable still receives the touch (the
+  // patched MenuView button is touch-transparent) and RN's Fabric touch
+  // handler is never cancelled by the in-tree UIContextMenuInteraction, so a
+  // bare onPress would fire on finger-up even after the menu opened — and
+  // also on a long press released just under the menu threshold. A dispatched
+  // onLongPress makes Pressability swallow the release, so holds past 350ms
+  // (below the ~500ms context-menu threshold) can only open the menu, never
+  // tap through.
+  if (props.shouldOpenOnLongPress && isValidElement(children)) {
+    const child = children as ReactElement<{ onLongPress?: () => void; delayLongPress?: number }>;
+    children = cloneElement(child, {
+      onLongPress: child.props.onLongPress ?? (() => undefined),
+      delayLongPress: child.props.delayLongPress ?? 350,
+    });
+  }
   return (
     <MenuView {...menuProps} themeVariant={isDarkMode ? "dark" : "light"}>
-      {menuProps.children}
+      {children}
     </MenuView>
   );
 }

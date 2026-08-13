@@ -52,6 +52,8 @@ import Migration0036 from "./Migrations/036_ProjectionThreadTitleRegeneration.ts
 import Migration0037 from "./Migrations/037_ProjectionThreadsPinned.ts";
 import Migration0038 from "./Migrations/038_ProjectionTurnsKeysetIndex.ts";
 import Migration0039 from "./Migrations/039_ProjectionThreadsPinOrderKey.ts";
+import Migration0040 from "./Migrations/040_ProjectionProjectsDefaultThreadEnvMode.ts";
+import Migration0041 from "./Migrations/041_ProjectionProjectFaviconPath.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -103,6 +105,8 @@ export const migrationEntries = [
   [37, "ProjectionThreadsPinned", Migration0037],
   [38, "ProjectionTurnsKeysetIndex", Migration0038],
   [39, "ProjectionThreadsPinOrderKey", Migration0039],
+  [40, "ProjectionProjectsDefaultThreadEnvMode", Migration0040],
+  [41, "ProjectionProjectFaviconPath", Migration0041],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
