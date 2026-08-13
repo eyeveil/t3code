@@ -36,8 +36,16 @@ echo "src_app=$SRC_APP"
 if [ -z "$SRC_APP" ]; then echo "NO .app IN DMG"; hdiutil detach "$MNT" >/dev/null 2>&1; exit 1; fi
 # quit a running instance so the copy isn't clobbered by a live process
 osascript -e 'tell application "T3 Code (Alpha)" to quit' >/dev/null 2>&1 || true
-pkill -f "T3 Code (Alpha).app/Contents/MacOS" >/dev/null 2>&1 || true
-sleep 2
+for _ in $(seq 1 15); do
+  APP_RUNNING=$(osascript -e 'application "T3 Code (Alpha)" is running' 2>/dev/null || echo false)
+  [ "$APP_RUNNING" = "false" ] && break
+  sleep 1
+done
+if [ "$APP_RUNNING" != "false" ]; then
+  echo "APP DID NOT QUIT — stopping before install"
+  hdiutil detach "$MNT" >/dev/null 2>&1 || true
+  exit 1
+fi
 rm -rf "$APP"
 cp -R "$SRC_APP" "$APP" || { echo "COPY FAILED"; hdiutil detach "$MNT" >/dev/null 2>&1; exit 1; }
 xattr -dr com.apple.quarantine "$APP" >/dev/null 2>&1 || true
