@@ -2035,26 +2035,75 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
-function buildToolCallExpandedBody(
+function toolInputString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function subagentInputBlocks(toolData: unknown): string[] {
+  const input =
+    toolData && typeof toolData === "object" ? (toolData as Record<string, unknown>) : null;
+  if (!input) {
+    return [];
+  }
+  const blocks: string[] = [];
+  const meta: string[] = [];
+  const subagentType = toolInputString(input.subagent_type);
+  if (subagentType) {
+    meta.push(`Type: ${subagentType}`);
+  }
+  const model = toolInputString(input.model);
+  if (model) {
+    meta.push(`Model: ${model}`);
+  }
+  if (meta.length > 0) {
+    blocks.push(meta.join("\n"));
+  }
+  const prompt = toolInputString(input.prompt);
+  if (prompt) {
+    blocks.push(prompt);
+  }
+  return blocks;
+}
+
+export function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
+  const seen = new Set<string>();
+  const pushBlock = (block: string | null | undefined) => {
+    const trimmed = block?.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    blocks.push(trimmed);
+  };
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
-    blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+    pushBlock(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+  }
+  const isSubagent = workEntry.itemType === "collab_agent_tool_call";
+  if (isSubagent) {
+    for (const block of subagentInputBlocks(workEntry.toolData)) {
+      pushBlock(block);
+    }
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
-    blocks.push(raw.trim());
+    pushBlock(raw);
   } else if (workEntry.command?.trim()) {
-    blocks.push(workEntry.command.trim());
+    pushBlock(workEntry.command);
   }
-  if (workEntry.detail?.trim()) {
-    blocks.push(workEntry.detail.trim());
+  if (!isSubagent) {
+    pushBlock(workEntry.detail);
   }
   const changedFiles = workEntry.changedFiles ?? [];
   if (changedFiles.length > 0) {
-    blocks.push(
+    pushBlock(
       changedFiles
         .map((filePath) => formatWorkspaceRelativePath(filePath, workspaceRoot))
         .join("\n"),

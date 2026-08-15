@@ -179,7 +179,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
-import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
@@ -205,6 +205,7 @@ import { buildDraftThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
+  hydrateComposerImagesFromAttachments,
   useComposerDraftStore,
   type DraftId,
 } from "../composerDraftStore";
@@ -248,7 +249,21 @@ import {
   useThreadShell,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
+import {
+  claimQueuedMessageDispatch,
+  dispatchingQueuedMessageIdAtom,
+  enqueueThreadOutboxMessage,
+  finishDispatchingQueuedMessage,
+  holdEditingQueuedMessage,
+  releaseEditingQueuedMessage,
+  removeThreadOutboxMessage,
+  useThreadOutboxMessages,
+} from "../state/threadOutbox";
+import { useThreadOutboxDelivery } from "../state/threadOutboxDelivery";
+import type { QueuedThreadMessage } from "@t3tools/client-runtime/state/thread-outbox-model";
+import type { DraftComposerImageAttachment } from "@t3tools/client-runtime/state/composer-attachment";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { ComposerQueuedMessages } from "./chat/ComposerQueuedMessages";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -319,6 +334,7 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  shouldQueueMessageWhileBusy,
   shouldWriteThreadErrorToCurrentServerThread,
   startNewThreadForProject,
   waitForStartedServerThread,
@@ -436,6 +452,7 @@ const PreviewPanel = lazy(() =>
 const DiffPanel = lazy(() => import("./DiffPanel"));
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
+const EMPTY_QUEUED_MESSAGES: ReadonlyArray<QueuedThreadMessage> = [];
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
   "textarea",
@@ -1599,6 +1616,12 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const queuedMessagesByThreadKey = useThreadOutboxMessages();
+  const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
+  const activeQueuedMessages =
+    isServerThread && activeThreadKey !== null
+      ? (queuedMessagesByThreadKey[activeThreadKey] ?? EMPTY_QUEUED_MESSAGES)
+      : EMPTY_QUEUED_MESSAGES;
   const changeRequestSnapshotByKey = useAtomValue(threadChangeRequestSnapshotsAtom);
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
@@ -2813,6 +2836,118 @@ function ChatViewContent(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+
+  const { sendQueuedMessage } = useThreadOutboxDelivery();
+
+  const onSteerQueuedMessage = useCallback(
+    async (queuedMessage: QueuedThreadMessage) => {
+      if (
+        !activeThread ||
+        !isServerThread ||
+        activeThread.environmentId !== queuedMessage.environmentId ||
+        activeThread.id !== queuedMessage.threadId
+      ) {
+        return;
+      }
+      if (!claimQueuedMessageDispatch(queuedMessage.messageId)) {
+        return;
+      }
+      try {
+        const sent = await sendQueuedMessage(queuedMessage, {
+          modelSelection: activeThread.modelSelection,
+          runtimeMode: activeThread.runtimeMode,
+          interactionMode: activeThread.interactionMode,
+        });
+        if (!sent) {
+          setThreadError(
+            queuedMessage.threadId,
+            "Could not send the queued message. It stays queued.",
+          );
+        }
+      } finally {
+        finishDispatchingQueuedMessage(queuedMessage.messageId);
+      }
+    },
+    [activeThread, isServerThread, sendQueuedMessage, setThreadError],
+  );
+
+  const onEditQueuedMessage = useCallback(
+    async (queuedMessage: QueuedThreadMessage) => {
+      if (dispatchingQueuedMessageId === queuedMessage.messageId) {
+        return;
+      }
+      holdEditingQueuedMessage(queuedMessage.messageId);
+      try {
+        await removeThreadOutboxMessage(queuedMessage);
+      } catch (error) {
+        setThreadError(
+          queuedMessage.threadId,
+          error instanceof Error ? error.message : "Failed to load the queued message for editing.",
+        );
+        return;
+      } finally {
+        releaseEditingQueuedMessage(queuedMessage.messageId);
+      }
+      const existing = promptRef.current;
+      const separator = existing.trim().length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
+      const nextPrompt = `${existing}${separator}${queuedMessage.text}`;
+      promptRef.current = nextPrompt;
+      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+      if (queuedMessage.attachments.length > 0) {
+        const restoredImages = hydrateComposerImagesFromAttachments(queuedMessage.attachments);
+        if (restoredImages.length > 0) {
+          addComposerDraftImages(composerDraftTarget, restoredImages);
+        }
+      }
+      if (queuedMessage.modelSelection !== undefined) {
+        setComposerDraftModelSelection(composerDraftTarget, queuedMessage.modelSelection);
+      }
+      if (queuedMessage.runtimeMode !== undefined) {
+        setComposerDraftRuntimeMode(composerDraftTarget, queuedMessage.runtimeMode);
+      }
+      if (queuedMessage.interactionMode !== undefined) {
+        setComposerDraftInteractionMode(composerDraftTarget, queuedMessage.interactionMode);
+      }
+      composerRef.current?.resetCursorState({
+        cursor: collapseExpandedComposerCursor(nextPrompt, nextPrompt.length),
+        prompt: nextPrompt,
+      });
+      scheduleComposerFocus();
+    },
+    [
+      addComposerDraftImages,
+      composerDraftTarget,
+      composerRef,
+      dispatchingQueuedMessageId,
+      scheduleComposerFocus,
+      setComposerDraftInteractionMode,
+      setComposerDraftModelSelection,
+      setComposerDraftPrompt,
+      setComposerDraftRuntimeMode,
+      setThreadError,
+    ],
+  );
+
+  const onDeleteQueuedMessage = useCallback(
+    async (queuedMessage: QueuedThreadMessage) => {
+      if (dispatchingQueuedMessageId === queuedMessage.messageId) {
+        return;
+      }
+      holdEditingQueuedMessage(queuedMessage.messageId);
+      try {
+        await removeThreadOutboxMessage(queuedMessage);
+      } catch (error) {
+        setThreadError(
+          queuedMessage.threadId,
+          error instanceof Error ? error.message : "Failed to delete the queued message.",
+        );
+      } finally {
+        releaseEditingQueuedMessage(queuedMessage.messageId);
+      }
+    },
+    [dispatchingQueuedMessageId, setThreadError],
+  );
+
   const addTerminalContextToDraft = useCallback(
     (selection: TerminalContextSelection) => {
       composerRef.current?.addTerminalContext(selection);
@@ -5116,6 +5251,70 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
 
+    const messageIdForSend = newMessageId();
+    const messageCreatedAt = new Date().toISOString();
+    const shouldQueueWhileBusy = shouldQueueMessageWhileBusy({
+      isServerThread,
+      sessionStatus: activeThread.session?.status,
+    });
+    if (shouldQueueWhileBusy) {
+      let queuedAttachments: DraftComposerImageAttachment[];
+      try {
+        queuedAttachments = await Promise.all(
+          composerImagesSnapshot.map(async (image) => ({
+            id: image.id,
+            previewUri: image.previewUrl,
+            type: "image" as const,
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+            dataUrl: await readFileAsDataUrl(image.file),
+          })),
+        );
+      } catch (error) {
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error ? error.message : "Failed to read the image attachments.",
+        );
+        return;
+      }
+      try {
+        await enqueueThreadOutboxMessage({
+          environmentId: activeThread.environmentId,
+          threadId: threadIdForSend,
+          messageId: messageIdForSend,
+          commandId: newCommandId(),
+          text: outgoingMessageText,
+          attachments: queuedAttachments,
+          ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
+          runtimeMode,
+          interactionMode,
+          createdAt: messageCreatedAt,
+        });
+      } catch (error) {
+        console.warn("[thread-outbox] failed to queue message", error);
+        setThreadError(threadIdForSend, "Couldn't queue your message. Please try again.");
+        return;
+      }
+      if (expiredTerminalContextCount > 0) {
+        const toastCopy = buildExpiredTerminalContextToastCopy(
+          expiredTerminalContextCount,
+          "omitted",
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: toastCopy.title,
+            description: toastCopy.description,
+          }),
+        );
+      }
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
+
     sendInFlightRef.current = true;
     if (isDraftHeroState && activeThreadKey) {
       let resolveDockStarted: (() => void) | undefined;
@@ -5134,8 +5333,6 @@ function ChatViewContent(props: ChatViewProps) {
     }
     beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
 
-    const messageIdForSend = newMessageId();
-    const messageCreatedAt = new Date().toISOString();
     const turnAttachmentsPromise = Promise.all(
       composerImagesSnapshot.map(async (image) => ({
         type: "image" as const,
@@ -6398,6 +6595,14 @@ function ChatViewContent(props: ChatViewProps) {
                   ) : (
                     <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
+                  <ComposerQueuedMessages
+                    messages={activeQueuedMessages}
+                    dispatchingMessageId={dispatchingQueuedMessageId}
+                    steerEnabled={!activeEnvironmentUnavailable}
+                    onSteer={(message) => void onSteerQueuedMessage(message)}
+                    onEdit={(message) => void onEditQueuedMessage(message)}
+                    onDelete={(message) => void onDeleteQueuedMessage(message)}
+                  />
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}
@@ -6466,7 +6671,12 @@ function ChatViewContent(props: ChatViewProps) {
                             composerImagesRef={composerImagesRef}
                             composerTerminalContextsRef={composerTerminalContextsRef}
                             composerElementContextsRef={composerElementContextsRef}
+                            queuedHeadMessage={activeQueuedMessages[0] ?? null}
+                            queueSteerEnabled={!activeEnvironmentUnavailable}
                             onSend={onSend}
+                            onSteerQueuedMessage={(message) => void onSteerQueuedMessage(message)}
+                            onEditQueuedMessage={(message) => void onEditQueuedMessage(message)}
+                            onDeleteQueuedMessage={(message) => void onDeleteQueuedMessage(message)}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
