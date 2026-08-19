@@ -132,19 +132,21 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
 
 function makeNpmGlobalProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  globalPrefix: string | null = null,
 ): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
     updateExecutable: "npm",
-    // npm 12 blocks install scripts by default (empty allow-scripts allowlist)
-    // and still exits 0, so a package whose postinstall finishes the install
-    // (claude copies its native binary over a placeholder stub) is left broken
-    // while the update reports success. Allow this one package's scripts.
-    // Older npm warns about the unknown config and continues.
+    // Pin updates to the provider's detected npm-global tree. The npm first on
+    // PATH can have a different compiled prefix, such as an immutable Nix
+    // store path, even when the provider itself lives under ~/.npm-global.
+    // npm 12 also blocks install scripts by default (empty allow-scripts
+    // allowlist) and still exits 0, so allow this package's scripts.
     updateArgs: [
       "install",
       "-g",
+      ...(globalPrefix ? [`--prefix=${globalPrefix}`] : []),
       `--allow-scripts=${definition.npmPackageName}`,
       `${definition.npmPackageName}@latest`,
     ],
@@ -250,6 +252,26 @@ function isPnpmGlobalCommandPath(commandPath: string): boolean {
   );
 }
 
+function npmGlobalPrefixFromCommandPath(commandPath: string): string | null {
+  const slashPath = commandPath.replaceAll("\\", "/");
+  const normalized = slashPath.toLowerCase();
+  const libNodeModulesMarker = "/lib/node_modules/";
+  const libNodeModulesIndex = normalized.indexOf(libNodeModulesMarker);
+  if (libNodeModulesIndex > 0) {
+    return slashPath.slice(0, libNodeModulesIndex);
+  }
+
+  const binMarker = "/node_modules/.bin/";
+  const binIndex = normalized.indexOf(binMarker);
+  if (binIndex > 0) {
+    return slashPath.slice(0, binIndex);
+  }
+
+  const nodeModulesMarker = "/node_modules/";
+  const nodeModulesIndex = normalized.indexOf(nodeModulesMarker);
+  return nodeModulesIndex > 0 ? slashPath.slice(0, nodeModulesIndex) : null;
+}
+
 function isNpmGlobalCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
   return (
@@ -311,7 +333,9 @@ export function resolvePackageManagedProviderMaintenance(
       return makePnpmGlobalProviderMaintenanceCapabilities(definition);
     }
     if (commandPaths.some(isNpmGlobalCommandPath)) {
-      return makeNpmGlobalProviderMaintenanceCapabilities(definition);
+      const globalPrefix =
+        commandPaths.map(npmGlobalPrefixFromCommandPath).find((prefix) => prefix !== null) ?? null;
+      return makeNpmGlobalProviderMaintenanceCapabilities(definition, globalPrefix);
     }
     if (commandPaths.some(isHomebrewCommandPath)) {
       return makeHomebrewProviderMaintenanceCapabilities(definition);

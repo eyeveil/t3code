@@ -452,9 +452,11 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     });
   });
 
-  it.effect("keeps npm updates for binaries symlinked into npm's global node_modules tree", () =>
+  it.effect("pins npm updates to the detected global prefix", () =>
     Effect.gen(function* () {
       const tempDir = yield* makeTempDir("t3-npm-capabilities");
+      NodeFS.mkdirSync(tempDir, { recursive: true });
+      const npmPrefix = NodeFS.realpathSync(tempDir);
       const binDir = NodePath.join(tempDir, "bin");
       const packageBinDir = NodePath.join(
         tempDir,
@@ -483,14 +485,14 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         provider: driver("packageTool"),
         packageName: "@example/package-tool",
         update: {
-          command:
-            "npm install -g --allow-scripts=@example/package-tool @example/package-tool@latest",
+          command: `npm install -g --prefix=${npmPrefix} --allow-scripts=@example/package-tool @example/package-tool@latest`,
 
           executable: "npm",
 
           args: [
             "install",
             "-g",
+            `--prefix=${npmPrefix}`,
             "--allow-scripts=@example/package-tool",
             "@example/package-tool@latest",
           ],
