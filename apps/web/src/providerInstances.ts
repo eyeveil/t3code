@@ -202,22 +202,38 @@ export function deriveProviderInstanceEntries(
 }
 
 /**
- * Index provider metadata within its owning environment. Provider instance ids
- * are server-local, so flattening every environment into the primary server's
- * map makes remote custom instances lose their driver icon and capabilities.
+ * Project several environments' `ServerProvider[]` into a nested
+ * `environmentId → instanceId → entry` lookup.
+ *
+ * Instance ids are per-environment routing keys, and `defaultInstanceIdForDriver`
+ * makes the default id literally the driver slug, so every environment running
+ * the same driver reports the same id. Flattening across environments would
+ * clobber entries and mis-resolve accent colors; lookups must stay scoped to
+ * the thread's own environment.
  */
-export function indexProviderInstancesByEnvironment(
-  serverConfigs: ReadonlyMap<string, Pick<ServerConfig, "providers">>,
+export function deriveProviderEntriesByEnvironment(
+  providersByEnvironment: Iterable<readonly [string, ReadonlyArray<ServerProvider>]>,
 ): ReadonlyMap<string, ReadonlyMap<string, ProviderInstanceEntry>> {
-  return new Map(
-    Array.from(serverConfigs, ([environmentId, config]) => [
+  const byEnvironment = new Map<string, ReadonlyMap<string, ProviderInstanceEntry>>();
+  for (const [environmentId, providers] of providersByEnvironment) {
+    byEnvironment.set(
       environmentId,
       new Map(
-        deriveProviderInstanceEntries(config.providers).map(
+        deriveProviderInstanceEntries(providers).map(
           (entry) => [entry.instanceId as string, entry] as const,
         ),
       ),
-    ]),
+    );
+  }
+  return byEnvironment;
+}
+
+/** Compatibility adapter for callers that already hold complete server configs. */
+export function indexProviderInstancesByEnvironment(
+  serverConfigs: ReadonlyMap<string, Pick<ServerConfig, "providers">>,
+): ReadonlyMap<string, ReadonlyMap<string, ProviderInstanceEntry>> {
+  return deriveProviderEntriesByEnvironment(
+    Array.from(serverConfigs, ([environmentId, config]) => [environmentId, config.providers]),
   );
 }
 
