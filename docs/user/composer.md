@@ -161,6 +161,17 @@ to reveal them, or focus **Show other notices** with `Tab` and press `Enter` or 
 `Escape` to close the stack and return focus to that control. On a touchscreen, tap the peek to
 open the stack. Interacting with the attached banner or composer does not open the stack.
 
+## Recall a sent prompt
+
+Press `ArrowUp` in an empty composer to bring back the last prompt you sent in this thread. Press
+`ArrowUp` again to go further back, and `ArrowDown` to come forward. Moving forward past the newest
+prompt clears the composer. Recall walks the prompts loaded in the thread. Attachments, terminal
+context, and other extras from the original message are not restored, only the text you typed.
+
+When the composer has text, the arrow keys move the caret as usual. Recall takes over only when
+the caret is on the first line and the text is an unedited recalled prompt. Editing a recalled
+prompt turns it into a normal draft.
+
 ## Prompt stash
 
 Use the default shortcut, `Cmd+S` on macOS or `Ctrl+S` on Windows and Linux, to stash the current
