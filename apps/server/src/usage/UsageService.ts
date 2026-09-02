@@ -234,6 +234,12 @@ export const make = Effect.gen(function* () {
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
+      // Codex CLI rotates completed rollouts out of `sessions` into
+      // `archived_sessions`; usage that has aged into it is otherwise invisible.
+      {
+        provider: "codex" as const,
+        dir: path.join(codexLayout.sharedHomePath, "archived_sessions"),
+      },
       {
         provider: "grok" as const,
         dir: path.join(grokHome, "sessions"),

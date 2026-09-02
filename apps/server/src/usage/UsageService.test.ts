@@ -33,6 +33,42 @@ function claudeLine(id: number, outputTokens: number): string {
   })}\n`;
 }
 
+/** Shaped after a real Codex rollout: session_meta, turn_context, then a token delta. */
+function codexLines(input: {
+  sessionId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+}): string {
+  const sessionMeta = JSON.stringify({
+    type: "session_meta",
+    timestamp: "2026-08-01T10:00:00Z",
+    payload: { type: "session_meta", id: input.sessionId },
+  });
+  const turnContext = JSON.stringify({
+    type: "turn_context",
+    timestamp: "2026-08-01T10:00:01Z",
+    payload: { type: "turn_context", model: input.model },
+  });
+  const tokenCount = JSON.stringify({
+    type: "event_msg",
+    timestamp: "2026-08-01T10:00:02Z",
+    payload: {
+      type: "token_count",
+      info: {
+        last_token_usage: {
+          input_tokens: input.inputTokens,
+          cached_input_tokens: 0,
+          cache_write_input_tokens: 0,
+          output_tokens: input.outputTokens,
+          reasoning_output_tokens: 0,
+        },
+      },
+    },
+  });
+  return `${sessionMeta}\n${turnContext}\n${tokenCount}\n`;
+}
+
 const WINDOW: UsageSummaryInput = {
   timeZone: "UTC",
   sinceDay: UsageDay.make("2026-07-31"),
@@ -139,6 +175,41 @@ describe("UsageService", () => {
       // A later request is fresh work again, not a stale cached answer.
       yield* service.readSummary(WINDOW);
       assert.strictEqual(ratesFetches, 2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("counts usage rotated into Codex's archived_sessions directory", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const archivedDir = NodePath.join(home, "codex", "archived_sessions");
+      yield* Effect.promise(() => NodeFSP.mkdir(archivedDir, { recursive: true }));
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(archivedDir, "rollout-2026-08-01.jsonl"),
+          codexLines({
+            sessionId: "archived-session-1",
+            model: "gpt-5.6-sol",
+            inputTokens: 100,
+            outputTokens: 50,
+          }),
+        ),
+      );
+
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(serviceLayers({ prefix: "usage-service-archived-test", home, settings })),
+      );
+
+      const summary = yield* service.readSummary(WINDOW);
+      assert.strictEqual(totalOutputTokens(summary), 50);
+
+      const archivedSource = summary.sources.find(
+        (source) =>
+          source.fingerprint.provider === "codex" &&
+          source.fingerprint.resolvedHomePath === archivedDir,
+      );
+      assert.isDefined(archivedSource);
+      assert.strictEqual(archivedSource?.status, "ok");
+      assert.strictEqual(archivedSource?.distinctSessions, 1);
     }).pipe(Effect.scoped),
   );
 
