@@ -1,25 +1,25 @@
 import {
   createContext,
+  useEffect,
+  startTransition,
   use,
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   type ReactNode,
 } from "react";
-import { useColorScheme } from "react-native";
+import { Appearance, Platform, useColorScheme } from "react-native";
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { useMaterial3Theme, type Material3Theme } from "@pchmn/expo-material3-theme";
-import { Platform } from "react-native";
-import { Uniwind } from "uniwind";
+import { ScopedTheme, Uniwind } from "uniwind";
 
 import {
   resolveAppearance,
   resolveAppearancePreferences,
-  resolveTextScaleVariables,
   type ResolvedAppearance,
 } from "../../../lib/appearancePreferences";
 import { BRAND_ACCENT_SOURCE, resolveMaterialAccentVariables } from "../../../lib/materialAccent";
@@ -28,7 +28,6 @@ import type { Preferences } from "../../../persistence/mobile-preferences";
 import {
   createMobileThemePairPatch,
   createMobileThemeSelectionPatch,
-  getMobileThemeVariables,
   normalizeMobileThemeMode,
   resolveMobileThemeIds,
   type MobileThemeAppearance,
@@ -36,6 +35,11 @@ import {
   type MobileThemeIds,
   type MobileThemeMode,
 } from "../../../lib/mobileTheme";
+import {
+  createMobileThemeRuntimeOperations,
+  getMobileUniwindThemeName,
+  type MobileThemeRuntimeState,
+} from "../../../lib/mobileThemeRuntime";
 import { cacheTerminalFontSize } from "../../terminal/terminalUiState";
 
 interface AppearancePreferencesContextValue {
@@ -63,44 +67,16 @@ interface AppearancePreferencesContextValue {
 const AppearancePreferencesContext = createContext<AppearancePreferencesContextValue | null>(null);
 
 function applyMaterialAccentVariables(materialTheme: Material3Theme) {
-  const currentTheme = Uniwind.currentTheme;
   const variables = {
     light: resolveMaterialAccentVariables(materialTheme.light, "light"),
     dark: resolveMaterialAccentVariables(materialTheme.dark, "dark"),
   } as const;
 
-  for (const theme of ["light", "dark"] as const) {
-    if (theme !== currentTheme) {
-      Uniwind.updateCSSVariables(theme, variables[theme]);
-    }
-  }
-  Uniwind.updateCSSVariables(currentTheme, variables[currentTheme]);
+  // Material You decorates the two adaptive default themes. Named palettes
+  // keep their authored accents instead of inheriting the device wallpaper.
+  Uniwind.updateCSSVariables("light", variables.light);
+  Uniwind.updateCSSVariables("dark", variables.dark);
 }
-
-/**
- * Injects palette and text-scale variables into both adaptive stylesheets.
- * Updating the active sheet last lets the visible app settle in one pass.
- */
-function applyAppearanceVariables(baseFontSize: number, themeIds: MobileThemeIds) {
-  const textVariables = resolveTextScaleVariables(baseFontSize);
-  const currentTheme = Uniwind.currentTheme;
-  const activeAppearance =
-    currentTheme === "light" || currentTheme === "dark" ? currentTheme : null;
-
-  for (const theme of ["light", "dark"] as const) {
-    const variables = { ...getMobileThemeVariables(themeIds[theme], theme), ...textVariables };
-    if (theme !== activeAppearance) {
-      Uniwind.updateCSSVariables(theme, variables);
-    }
-  }
-  if (activeAppearance !== null) {
-    Uniwind.updateCSSVariables(activeAppearance, {
-      ...getMobileThemeVariables(themeIds[activeAppearance], activeAppearance),
-      ...textVariables,
-    });
-  }
-}
-
 export function AppearancePreferencesProvider(props: { readonly children: ReactNode }) {
   const { theme: materialTheme } = useMaterial3Theme({
     colorFidelity: true,
@@ -118,18 +94,52 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
   );
   const themeMode = normalizeMobileThemeMode(storedPreferences?.themeMode);
   const themeAppearance = themeMode === "system" ? systemColorScheme : themeMode;
-  const themeIds = useMemo(
-    () => resolveMobileThemeIds(storedPreferences ?? {}),
-    [storedPreferences],
+  const resolvedThemeIds = resolveMobileThemeIds(storedPreferences ?? {});
+  const themeIds = useMemo<MobileThemeIds>(
+    () => ({ light: resolvedThemeIds.light, dark: resolvedThemeIds.dark }),
+    [resolvedThemeIds.dark, resolvedThemeIds.light],
   );
   const themeId = themeIds[themeAppearance];
-  const isReady = AsyncResult.isSuccess(preferencesResult) && !preferencesResult.waiting;
+  const activeThemeName = getMobileUniwindThemeName(themeId, themeAppearance);
+  const { baseFontSize, codeFontSize, codeWordBreak, terminalFontSize } = preferences;
+  const appearance = useMemo(
+    () => resolveAppearance({ baseFontSize, codeFontSize, codeWordBreak, terminalFontSize }),
+    [baseFontSize, codeFontSize, codeWordBreak, terminalFontSize],
+  );
+  // Preference patches are optimistic. Keep controls interactive while a save is
+  // in flight so rapid theme choices can supersede one another immediately.
+  const isReady = AsyncResult.isSuccess(preferencesResult);
+  const runtimeState = useMemo<MobileThemeRuntimeState>(
+    () => ({
+      baseFontSize,
+      themeAppearance,
+      themeMode,
+    }),
+    [baseFontSize, themeAppearance, themeMode],
+  );
+  const appliedRuntimeStateRef = useRef<MobileThemeRuntimeState | null>(null);
+  const selectedThemeIdsRef = useRef(themeIds);
 
-  useLayoutEffect(() => {
-    applyAppearanceVariables(preferences.baseFontSize, themeIds);
-    Uniwind.setTheme(themeMode);
-    cacheTerminalFontSize(resolveAppearance(preferences).terminalFontSize);
-  }, [preferences, themeIds, themeMode]);
+  const applyThemeRuntime = useCallback((next: MobileThemeRuntimeState) => {
+    const operations = createMobileThemeRuntimeOperations(appliedRuntimeStateRef.current, next);
+    for (const operation of operations) {
+      if (operation.kind === "update-text-variables") {
+        Uniwind.updateCSSVariables(operation.themeName, operation.variables);
+        continue;
+      }
+      if (operation.kind === "set-appearance-mode") {
+        Appearance.setColorScheme(
+          operation.themeMode === "system" ? "unspecified" : operation.appearance,
+        );
+      }
+    }
+    appliedRuntimeStateRef.current = next;
+  }, []);
+
+  const syncThemeRuntime = useCallback(
+    (next: MobileThemeRuntimeState) => applyThemeRuntime(next),
+    [applyThemeRuntime],
+  );
 
   useEffect(() => {
     if (Platform.OS === "android") {
@@ -139,39 +149,86 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
 
   const updatePreferences = useCallback(
     (patch: Partial<Preferences>) => {
+      startTransition(() => savePreferences(patch));
+    },
+    [savePreferences],
+  );
+
+  const updateThemePreferences = useCallback(
+    (patch: Partial<Preferences>) => {
+      // Theme selection owns the visible root ScopedTheme value. Keep its
+      // optimistic atom update urgent so the first frame after a press is the
+      // complete new palette rather than a deferred transition render.
       savePreferences(patch);
     },
     [savePreferences],
   );
 
+  useLayoutEffect(() => {
+    selectedThemeIdsRef.current = themeIds;
+    syncThemeRuntime(runtimeState);
+    cacheTerminalFontSize(appearance.terminalFontSize);
+  }, [appearance.terminalFontSize, runtimeState, syncThemeRuntime, themeIds]);
+
   const setThemeIdForAppearance = useCallback(
     (appearance: MobileThemeAppearance, value: MobileThemeId) => {
-      updatePreferences(
-        createMobileThemeSelectionPatch(themeIds, themeAppearance, appearance, value),
+      const patch = createMobileThemeSelectionPatch(
+        selectedThemeIdsRef.current,
+        themeAppearance,
+        appearance,
+        value,
       );
+      selectedThemeIdsRef.current = resolveMobileThemeIds(patch);
+      updateThemePreferences(patch);
     },
-    [themeAppearance, themeIds, updatePreferences],
+    [themeAppearance, updateThemePreferences],
   );
 
   const setThemeIdForBothAppearances = useCallback(
     (value: MobileThemeId) => {
-      updatePreferences(createMobileThemePairPatch(value));
+      const patch = createMobileThemePairPatch(value);
+      selectedThemeIdsRef.current = resolveMobileThemeIds(patch);
+      updateThemePreferences(patch);
     },
-    [updatePreferences],
+    [updateThemePreferences],
   );
 
   const setThemeMode = useCallback(
     (value: MobileThemeMode) => {
-      updatePreferences({ themeMode: value });
+      const current = appliedRuntimeStateRef.current ?? runtimeState;
+
+      // Clear a forced native appearance before publishing System. The
+      // resulting useColorScheme notification still sees the previous forced
+      // preference, so React batches the actual system palette into the one
+      // urgent preference commit below.
+      if (value === "system") {
+        Appearance.setColorScheme("unspecified");
+      }
+      const nextAppearance =
+        value === "system" ? (Appearance.getColorScheme() === "dark" ? "dark" : "light") : value;
+      const next = {
+        ...current,
+        themeAppearance: nextAppearance,
+        themeMode: value,
+      };
+
+      updateThemePreferences({ themeMode: value });
+      if (value === "system") {
+        appliedRuntimeStateRef.current = next;
+      } else {
+        syncThemeRuntime(next);
+      }
     },
-    [updatePreferences],
+    [runtimeState, syncThemeRuntime, updateThemePreferences],
   );
 
   const setBaseFontSize = useCallback(
     (value: number) => {
+      const current = appliedRuntimeStateRef.current ?? runtimeState;
+      syncThemeRuntime({ ...current, baseFontSize: value });
       updatePreferences({ baseFontSize: value });
     },
-    [updatePreferences],
+    [runtimeState, syncThemeRuntime, updatePreferences],
   );
 
   const setTerminalFontSize = useCallback(
@@ -197,7 +254,7 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
 
   const value = useMemo(
     (): AppearancePreferencesContextValue => ({
-      appearance: resolveAppearance(preferences),
+      appearance,
       themeId,
       themeIds,
       themeMode,
@@ -212,7 +269,7 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
       setCodeWordBreak,
     }),
     [
-      preferences,
+      appearance,
       themeId,
       themeIds,
       themeMode,
@@ -230,7 +287,7 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
 
   return (
     <AppearancePreferencesContext.Provider value={value}>
-      {props.children}
+      <ScopedTheme theme={activeThemeName}>{props.children}</ScopedTheme>
     </AppearancePreferencesContext.Provider>
   );
 }

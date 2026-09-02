@@ -99,6 +99,7 @@ const projectionQueryStub = (
   getArchivedShellSnapshot: () => Effect.succeed(emptyShellSnapshot),
   getSnapshotSequence: () => Effect.die("unused"),
   getCounts: () => Effect.die("unused"),
+  getEventReplayStats: () => Effect.die("unused"),
   getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
   getProjectShellById: () => Effect.succeed(Option.none()),
   getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
@@ -223,6 +224,7 @@ const runTool = <Name extends keyof typeof ChatToolkit.tools & string>(input: {
             Effect.as({ sequence: 1 }),
           ),
         streamDomainEvents: Stream.die("unused"),
+        subscribeDomainEvents: Effect.succeed(Stream.empty),
       }),
       Effect.provideService(ProjectionSnapshotQuery, projectionQueryStub(input.query ?? {})),
       Effect.provideService(

@@ -9,7 +9,6 @@ import Animated, { FadeIn } from "react-native-reanimated";
 
 import { appBlurTargetRef } from "../lib/appBlurTarget";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
-import { useThemeColor } from "../lib/useThemeColor";
 import { cn } from "../lib/cn";
 import { type AppSymbolName, SymbolView } from "./AppSymbol";
 import { AppText as Text } from "./AppText";
@@ -84,13 +83,6 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
   const isDarkMode = themeAppearance === "dark";
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
   const keyboardHeight = useKeyboardState((state) => state.height);
-  const rippleColor = useThemeColor("--color-accent");
-  const menuSurfaceColor = useThemeColor("--color-menu-surface");
-  const selectedColor = useThemeColor("--color-accent-foreground");
-  const iconColor = useThemeColor("--color-icon");
-  const iconSubtleColor = useThemeColor("--color-icon-subtle");
-  const dangerColor = useThemeColor("--color-danger-foreground");
-
   const close = useCallback(() => {
     setAnchor(null);
     setPath([]);
@@ -235,8 +227,8 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
                     : { bottom: (rootHeight ?? 0) - local.y + ANCHOR_GAP }),
                 }}
               >
-                {/* Preserve upstream's anchored/predictive-back menu behavior,
-                  but wash the blur with Eyeveil's Material You tonal surface. */}
+                {/* Preserve upstream's anchored/predictive-back menu behavior;
+                  the card token picks up Eyeveil's Material You accent. */}
                 <BlurView
                   blurMethod="dimezisBlurView"
                   blurTarget={appBlurTargetRef}
@@ -244,10 +236,7 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
                   tint={isDarkMode ? "dark" : "light"}
                   className="absolute inset-0"
                 />
-                <View
-                  className="absolute inset-0"
-                  style={{ backgroundColor: menuSurfaceColor, opacity: 0.96 }}
-                />
+                <View className="absolute inset-0 bg-card-translucent" />
                 {/* keyboardShouldPersistTaps: the menu often opens over an
                   active editor; the first item tap must act, not just
                   dismiss the keyboard. */}
@@ -284,10 +273,9 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
                     return (
                       <Pressable
                         key={action.id ?? `${index}-${action.title}`}
-                        android_ripple={{ color: rippleColor }}
                         disabled={disabled}
                         className={cn(
-                          "min-h-11 flex-row items-center gap-2.5 px-3.5 py-2.5",
+                          "min-h-11 flex-row items-center gap-2.5 px-3.5 py-2.5 active:bg-subtle",
                           disabled && "opacity-45",
                         )}
                         onPress={() => onPressItem(action)}
@@ -312,21 +300,23 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
                           <SymbolView
                             name="chevron.right"
                             size={13}
-                            tintColor={iconSubtleColor}
+                            tintColorClassName={"accent-icon-subtle"}
                             type="monochrome"
                           />
                         ) : action.state === "on" ? (
                           <SymbolView
                             name="checkmark"
                             size={15}
-                            tintColor={selectedColor}
+                            tintColorClassName={"accent-icon"}
                             type="monochrome"
                           />
                         ) : action.image ? (
                           <SymbolView
                             name={action.image as AppSymbolName}
                             size={15}
-                            tintColor={destructive ? dangerColor : iconColor}
+                            tintColorClassName={
+                              destructive ? "accent-danger-foreground" : "accent-icon"
+                            }
                             type="monochrome"
                           />
                         ) : null}

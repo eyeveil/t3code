@@ -117,10 +117,10 @@ nodeServicesIt("ACP native logging", (it) => {
         yield* protocolLogger({
           direction: "incoming",
           stage: "raw",
-          payload: encodeUnknownJson({
+          payload: `${encodeUnknownJson({
             method: "session/update",
             params: { update: { sessionUpdate: updateType } },
-          }),
+          })}\n`,
         });
         yield* protocolLogger({
           direction: "incoming",
@@ -149,6 +149,90 @@ nodeServicesIt("ACP native logging", (it) => {
         ],
       });
       assert.lengthOf(records, 1);
+    }),
+  );
+
+  it.effect("keeps mixed and incomplete raw diagnostics", () =>
+    Effect.gen(function* () {
+      const records: Array<unknown> = [];
+      const makeLogger = yield* makeAcpNativeLoggerFactory();
+      const logger = makeLogger({
+        nativeEventLogger: {
+          filePath: "/tmp/provider-native.ndjson",
+          write: (event) => Effect.sync(() => void records.push(event)),
+          close: () => Effect.void,
+        },
+        provider: ProviderDriverKind.make("cursor"),
+        threadId: ThreadId.make("thread-1"),
+        verboseProtocolLogging: true,
+      });
+      const protocolLogger = logger.protocolLogging?.logger;
+      assert.exists(protocolLogger);
+      if (!protocolLogger) return;
+
+      const transient = encodeUnknownJson({
+        method: "session/update",
+        params: { update: { sessionUpdate: "agent_message_chunk" } },
+      });
+      const lifecycle = encodeUnknownJson({ method: "session/new", params: {} });
+
+      yield* protocolLogger({
+        direction: "incoming",
+        stage: "raw",
+        payload: `${transient}\n${lifecycle}\n`,
+      });
+      yield* protocolLogger({
+        direction: "incoming",
+        stage: "raw",
+        payload: transient,
+      });
+      yield* protocolLogger({
+        direction: "incoming",
+        stage: "raw",
+        payload: `${transient}\n{malformed}\n`,
+      });
+
+      assert.lengthOf(records, 3);
+    }),
+  );
+
+  it.effect("filters transient entries from mixed decoded batches", () =>
+    Effect.gen(function* () {
+      const records: Array<unknown> = [];
+      const makeLogger = yield* makeAcpNativeLoggerFactory();
+      const logger = makeLogger({
+        nativeEventLogger: {
+          filePath: "/tmp/provider-native.ndjson",
+          write: (event) => Effect.sync(() => void records.push(event)),
+          close: () => Effect.void,
+        },
+        provider: ProviderDriverKind.make("grok"),
+        threadId: ThreadId.make("thread-1"),
+        verboseProtocolLogging: true,
+      });
+      const protocolLogger = logger.protocolLogging?.logger;
+      assert.exists(protocolLogger);
+      if (!protocolLogger) return;
+
+      yield* protocolLogger({
+        direction: "incoming",
+        stage: "decoded",
+        payload: [
+          {
+            _tag: "Request",
+            tag: "session/update",
+            payload: { update: { sessionUpdate: "agent_thought_chunk" } },
+          },
+          {
+            _tag: "Request",
+            tag: "session/new",
+            payload: {},
+          },
+        ],
+      });
+
+      assert.lengthOf(records, 1);
+      assert.include(encodeUnknownJson(records), '"itemCount":1');
     }),
   );
 
