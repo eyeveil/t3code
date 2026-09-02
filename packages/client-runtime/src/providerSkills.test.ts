@@ -7,7 +7,6 @@ import {
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
   resolveProviderSkillsForCwd,
-  resolveProviderSlashCommandsForCwd,
   resolveProviderSkillSourceKind,
 } from "./providerSkills.ts";
 
@@ -242,13 +241,9 @@ describe("workspace provider snapshots", () => {
     expect(resolveProviderSkillsForCwd(provider, "/workspace/project-a")).toEqual([
       { name: "project", path: "/workspace/project-a/SKILL.md", enabled: true },
     ]);
-    expect(resolveProviderSlashCommandsForCwd(provider, "/workspace/project-a")).toEqual([
-      { name: "project" },
-    ]);
   });
 
   it("keeps the machine snapshot before this cwd has a provider snapshot", () => {
     expect(resolveProviderSkillsForCwd(provider, "/workspace/project-b")).toEqual(provider.skills);
-    expect(resolveProviderSlashCommandsForCwd(provider, null)).toEqual(provider.slashCommands);
   });
 });

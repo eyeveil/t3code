@@ -51,6 +51,7 @@ import { readProviderStatusCache, resolveProviderStatusCachePath } from "../prov
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
+import { ProviderDriverError } from "../Errors.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -605,7 +606,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         assert.strictEqual(haveProvidersChanged(providers, [...providers]), false);
       });
 
-      it("stores workspace skills and commands without changing machine metadata", () => {
+      it("stores workspace skills with current machine commands", () => {
         const provider = {
           instanceId: ProviderInstanceId.make("codex"),
           driver: ProviderDriverKind.make("codex"),
@@ -626,7 +627,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           skills: [{ name: "project", path: "/project/SKILL.md", enabled: true }],
         } satisfies ServerProvider;
 
-        const result = upsertProviderWorkspaceSnapshot(provider, "/project", scopedSnapshot);
+        const result = upsertProviderWorkspaceSnapshot(
+          provider,
+          "/project",
+          {
+            skills: scopedSnapshot.skills,
+          },
+          scopedSnapshot.checkedAt,
+        );
 
         assert.deepStrictEqual(result.slashCommands, provider.slashCommands);
         assert.deepStrictEqual(result.skills, provider.skills);
@@ -634,7 +642,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           {
             cwd: "/project",
             checkedAt: scopedSnapshot.checkedAt,
-            slashCommands: scopedSnapshot.slashCommands,
+            slashCommands: provider.slashCommands,
             skills: scopedSnapshot.skills,
           },
         ]);
@@ -1060,7 +1068,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
-      it.effect("deduplicates cwd probes and clears snapshots when an instance rebuilds", () =>
+      it.effect("deduplicates and expires cwd probes", () =>
         Effect.gen(function* () {
           const driver = ProviderDriverKind.make("codex");
           const instanceId = ProviderInstanceId.make("codex");
@@ -1083,14 +1091,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             slashCommands: [{ name: "project" }],
             skills: [{ name: "project", path: "/workspace/SKILL.md", enabled: true }],
           } as const satisfies ServerProvider;
-          const pendingScopedProvider = {
-            ...scopedProvider,
-            status: "error",
-            installed: false,
-            slashCommands: [],
-          } as const satisfies ServerProvider;
+          const scopedCatalog = {
+            skills: scopedProvider.skills,
+          } as const;
           const snapshotCalls = yield* Ref.make(0);
-          const returnPendingSnapshot = yield* Ref.make(true);
+          const failProbe = yield* Ref.make(true);
+          const incompleteProbe = yield* Ref.make(false);
           const probeStarted = yield* Deferred.make<void>();
           const releaseProbe = yield* Deferred.make<void>();
           const makeInstance = (
@@ -1121,10 +1127,22 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const firstInstance = makeInstance(machineProvider, () =>
             Effect.gen(function* () {
               yield* Ref.update(snapshotCalls, (count) => count + 1);
-              if (yield* Ref.get(returnPendingSnapshot)) return pendingScopedProvider;
+              if (yield* Ref.get(failProbe)) {
+                return yield* new ProviderDriverError({
+                  driver,
+                  instanceId,
+                  detail: "workspace probe failed",
+                });
+              }
               yield* Deferred.succeed(probeStarted, undefined);
               yield* Deferred.await(releaseProbe);
-              return scopedProvider;
+              if (yield* Ref.get(incompleteProbe)) {
+                return {
+                  skills: [{ name: "partial", path: "/partial/SKILL.md", enabled: true }],
+                  complete: false,
+                };
+              }
+              return scopedCatalog;
             }),
           );
           const rebuiltProvider = {
@@ -1135,7 +1153,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             auth: { status: "unknown" },
           } satisfies ServerProvider;
           const rebuiltInstance = makeInstance(rebuiltProvider, () =>
-            Ref.update(snapshotCalls, (count) => count + 1).pipe(Effect.as(scopedProvider)),
+            Ref.update(snapshotCalls, (count) => count + 1).pipe(Effect.as(scopedCatalog)),
           );
           const registryChanges = yield* PubSub.unbounded<void>();
           const instancesRef = yield* Ref.make<ReadonlyArray<ProviderInstance>>([firstInstance]);
@@ -1172,7 +1190,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const registry = yield* ProviderRegistry.ProviderRegistry;
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
             assert.strictEqual((yield* registry.getProviders)[0]?.workspaceSnapshots, undefined);
-            yield* Ref.set(returnPendingSnapshot, false);
+            yield* Ref.set(failProbe, false);
             const workspaceUpdate = yield* registry.streamChanges.pipe(
               Stream.runHead,
               Effect.forkChild,
@@ -1200,6 +1218,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             );
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+            yield* TestClock.setTime(-1_000);
+            yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 3);
+            yield* TestClock.adjust("61 seconds");
+            yield* Ref.set(incompleteProbe, true);
+            yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 4);
+            assert.deepStrictEqual(
+              (yield* registry.getProviders)[0]?.workspaceSnapshots?.[0]?.skills,
+              scopedProvider.skills,
+            );
+            yield* Ref.set(incompleteProbe, false);
+            yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 5);
 
             yield* Ref.set(instancesRef, [rebuiltInstance]);
             yield* PubSub.publish(registryChanges, undefined);

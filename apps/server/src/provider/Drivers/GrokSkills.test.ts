@@ -5,7 +5,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { discoverGrokSkills, parseGrokInspectSkills } from "./GrokSkills.ts";
+import { discoverGrokSkills, parseGrokInspectSkills, probeGrokSkills } from "./GrokSkills.ts";
 
 const inspectPayload = (skills: ReadonlyArray<unknown>) => JSON.stringify({ skills });
 
@@ -130,6 +130,39 @@ describe("discoverGrokSkills", () => {
 
       expect(spawnCwds).toEqual(["/workspaces/demo"]);
       expect(skills.map((skill) => skill.name)).toEqual(["kept"]);
+    });
+  });
+
+  it.effect("fails strict workspace probes when inspect exits non-zero", () => {
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.encodeText(Stream.make("{}")),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const strict = yield* probeGrokSkills({ binaryPath: "grok" }, {}, "/workspace").pipe(
+        Effect.result,
+        Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      );
+      const bestEffort = yield* discoverGrokSkills({ binaryPath: "grok" }, {}, "/workspace").pipe(
+        Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      );
+
+      expect(strict._tag).toBe("Failure");
+      expect(bestEffort).toEqual([]);
     });
   });
 });

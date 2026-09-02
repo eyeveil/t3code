@@ -25,7 +25,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
-  ServerProvider,
+  ServerProviderSkill,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -70,9 +70,17 @@ export interface ProviderInstance {
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
   readonly snapshot: ServerProviderShape;
-  readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
+  readonly snapshotForCwd?: (
+    cwd: string,
+  ) => Effect.Effect<ProviderWorkspaceCatalog, ProviderDriverError>;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
+}
+
+export interface ProviderWorkspaceCatalog {
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
+  /** False when discovery retained healthy roots but another root could not be read. */
+  readonly complete?: boolean;
 }
 
 export interface ProviderContinuationIdentity {

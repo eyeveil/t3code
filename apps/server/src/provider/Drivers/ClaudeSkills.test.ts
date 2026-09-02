@@ -4,7 +4,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { discoverClaudeSkills, skillOverrideSettingsPaths } from "./ClaudeSkills.ts";
+import {
+  discoverClaudeSkills,
+  inspectClaudeSkills,
+  skillOverrideSettingsPaths,
+} from "./ClaudeSkills.ts";
 
 const writeSkill = Effect.fn(function* (
   skillsDir: string,
@@ -678,6 +682,26 @@ it.layer(NodeServices.layer)("discoverClaudeSkills", (it) => {
       );
 
       assert.deepEqual(skills, []);
+    }),
+  );
+
+  it.effect("retains healthy skills and reports filesystem failures", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skills-" });
+      const configDir = path.join(tempDir, "claude-home");
+      const workspace = path.join(tempDir, "workspace");
+      yield* fs.makeDirectory(configDir);
+      yield* fs.writeFileString(path.join(configDir, "skills"), "blocked");
+      yield* writeSkill(path.join(workspace, ".claude", "skills"), "healthy", "# Healthy\n");
+
+      const inspection = yield* inspectClaudeSkills({ homePath: configDir }, workspace);
+      assert.deepEqual(
+        inspection.skills.map((skill) => skill.name),
+        ["healthy"],
+      );
+      assert.strictEqual(inspection.errors[0]?._tag, "PlatformError");
     }),
   );
 });

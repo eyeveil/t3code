@@ -220,13 +220,10 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         snapshot,
         snapshotForCwd: (cwd) =>
           !effectiveConfig.enabled
-            ? snapshot.getSnapshot
-            : Effect.all([
-                snapshot.getSnapshot,
-                loadSkillsForCwd(cwd).pipe(Effect.timeout("20 seconds")),
-              ]).pipe(
-                Effect.map(([machineSnapshot, skills]) => ({
-                  ...machineSnapshot,
+            ? Effect.succeed({ skills: [] })
+            : loadSkillsForCwd(cwd).pipe(
+                Effect.timeout("20 seconds"),
+                Effect.map((skills) => ({
                   skills: openCodeSkillsToServerProviderSkills(skills),
                 })),
                 Effect.mapError(

@@ -19,6 +19,7 @@ import type { ClaudeSettings, ServerProviderSkill } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -30,6 +31,19 @@ type ClaudeSkillScope = "user" | "project";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
+const undefinedOnNotFound = <A, R>(
+  effect: Effect.Effect<A, PlatformError.PlatformError, R>,
+): Effect.Effect<A | undefined, PlatformError.PlatformError, R> =>
+  effect.pipe(
+    Effect.map((value): A | undefined => value),
+    Effect.catchTags({
+      PlatformError: (error) =>
+        error.reason._tag === "NotFound"
+          ? Effect.void.pipe(Effect.as(undefined))
+          : Effect.fail(error),
+    }),
+  );
+
 type SkillFrontmatter =
   | { readonly kind: "missing" }
   | { readonly kind: "malformed" }
@@ -39,6 +53,24 @@ type SkillFrontmatter =
       readonly userInvocationOnly?: boolean;
       readonly userInvocable?: boolean;
     };
+
+export interface ClaudeSkillsInspection {
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly errors: ReadonlyArray<PlatformError.PlatformError>;
+}
+
+const collectFileSystemError = <A, R>(
+  effect: Effect.Effect<A, PlatformError.PlatformError, R>,
+  errors: Array<PlatformError.PlatformError>,
+): Effect.Effect<A | undefined, never, R> =>
+  undefinedOnNotFound(effect).pipe(
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        errors.push(error);
+        return undefined;
+      }),
+    ),
+  );
 
 /**
  * Claude Code accepts the YAML 1.1 boolean spellings (`yes`/`no`, `on`/`off`,
@@ -161,15 +193,17 @@ export function skillOverrideSettingsPaths(
  */
 const findRepositoryRoot = Effect.fn("findRepositoryRoot")(function* (
   cwd: string,
-): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  string | undefined,
+  PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   let current = path.resolve(cwd);
   while (true) {
-    const isRoot = yield* fileSystem
-      .exists(path.join(current, ".git"))
-      .pipe(Effect.orElseSucceed(() => false));
-    if (isRoot) {
+    const gitEntry = yield* undefinedOnNotFound(fileSystem.stat(path.join(current, ".git")));
+    if (gitEntry) {
       return current;
     }
     const parent = path.dirname(current);
@@ -223,12 +257,14 @@ const readSkillOverrides = Effect.fn("readSkillOverrides")(function* (
   configDirPath: string,
   cwd: string | undefined,
   environment: NodeJS.ProcessEnv,
+  errors: Array<PlatformError.PlatformError>,
 ): Effect.fn.Return<ReadonlyMap<string, SkillOverride>, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcessPlatform;
   const overridesByName = new Map<string, SkillOverride>();
-  const repositoryRoot = cwd === undefined ? undefined : yield* findRepositoryRoot(cwd);
+  const repositoryRoot =
+    cwd === undefined ? undefined : yield* collectFileSystemError(findRepositoryRoot(cwd), errors);
 
   for (const settingsPath of skillOverrideSettingsPaths(
     path,
@@ -238,9 +274,7 @@ const readSkillOverrides = Effect.fn("readSkillOverrides")(function* (
     environment,
     repositoryRoot,
   )) {
-    const contents = yield* fileSystem
-      .readFileString(settingsPath)
-      .pipe(Effect.orElseSucceed(() => undefined));
+    const contents = yield* collectFileSystemError(fileSystem.readFileString(settingsPath), errors);
     if (contents === undefined) {
       continue;
     }
@@ -297,23 +331,28 @@ const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(funct
 
 /**
  * Enumerate Claude Code skills from the user config dir and the workspace
- * `.claude/skills`. Discovery is best-effort: unreadable roots and malformed
- * skill entries are skipped so a broken skill never degrades the provider
- * snapshot. Roots are listed highest precedence first and the first hit for a
- * name wins, matching Claude Code: verified against the CLI with the same
- * skill name in both scopes, the user copy is the one that runs. Reporting the
- * project copy instead would attach its invocation metadata to a command
- * Claude Code resolves elsewhere.
+ * `.claude/skills`. Missing roots and entries are normal. Other filesystem
+ * failures are reported alongside skills retained from healthy paths so the
+ * registry can protect a complete snapshot without emptying a first result.
+ * Roots are listed highest precedence first and the first hit for a name wins,
+ * matching Claude Code: verified against the CLI with the same skill name in
+ * both scopes, the user copy is the one that runs.
  */
-export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* (
+export const inspectClaudeSkills = Effect.fn("inspectClaudeSkills")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   cwd?: string,
   environment?: NodeJS.ProcessEnv,
-): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<ClaudeSkillsInspection, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const configDirPath = yield* resolveClaudeConfigDirPath(config, environment ?? process.env, cwd);
-  const skillOverrides = yield* readSkillOverrides(configDirPath, cwd, environment ?? process.env);
+  const errors: PlatformError.PlatformError[] = [];
+  const skillOverrides = yield* readSkillOverrides(
+    configDirPath,
+    cwd,
+    environment ?? process.env,
+    errors,
+  );
 
   const roots: ReadonlyArray<{ directory: string; scope: ClaudeSkillScope }> = [
     { directory: path.join(configDirPath, "skills"), scope: "user" },
@@ -322,15 +361,20 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
 
   const skillsByName = new Map<string, ServerProviderSkill>();
   for (const root of roots) {
-    const entries = yield* fileSystem
-      .readDirectory(root.directory)
-      .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+    const entries =
+      (yield* collectFileSystemError(fileSystem.readDirectory(root.directory), errors)) ?? [];
 
     for (const entry of [...entries].sort()) {
-      const skillPath = path.join(root.directory, entry, "SKILL.md");
-      const contents = yield* fileSystem
-        .readFileString(skillPath)
-        .pipe(Effect.orElseSucceed(() => undefined));
+      const skillDirectory = path.join(root.directory, entry);
+      const skillDirectoryInfo = yield* collectFileSystemError(
+        fileSystem.stat(skillDirectory),
+        errors,
+      );
+      if (skillDirectoryInfo?.type !== "Directory") {
+        continue;
+      }
+      const skillPath = path.join(skillDirectory, "SKILL.md");
+      const contents = yield* collectFileSystemError(fileSystem.readFileString(skillPath), errors);
       if (contents === undefined) {
         continue;
       }
@@ -380,5 +424,22 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
     }
   }
 
-  return [...skillsByName.values()].sort((left, right) => left.name.localeCompare(right.name));
+  return {
+    skills: [...skillsByName.values()].sort((left, right) => left.name.localeCompare(right.name)),
+    errors,
+  };
+});
+
+export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  cwd?: string,
+  environment?: NodeJS.ProcessEnv,
+): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
+  const inspection = yield* inspectClaudeSkills(config, cwd, environment);
+  if (inspection.errors.length > 0) {
+    yield* Effect.logWarning("claude skill discovery was incomplete", {
+      causes: inspection.errors,
+    });
+  }
+  return inspection.skills;
 });

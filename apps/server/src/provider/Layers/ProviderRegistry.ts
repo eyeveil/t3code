@@ -30,6 +30,8 @@ import {
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
@@ -37,6 +39,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 
@@ -51,7 +54,7 @@ import {
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
-import type { ProviderInstance } from "../ProviderDriver.ts";
+import type { ProviderInstance, ProviderWorkspaceCatalog } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
@@ -79,17 +82,19 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
 
 const MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER = 16;
+const WORKSPACE_SNAPSHOT_TTL_MS = 60_000;
 
 export function upsertProviderWorkspaceSnapshot(
   provider: ServerProvider,
   cwd: string,
-  scopedSnapshot: ServerProvider,
+  catalog: ProviderWorkspaceCatalog,
+  checkedAt: ServerProvider["checkedAt"],
 ): ServerProvider {
   const workspaceSnapshot = {
     cwd,
-    checkedAt: scopedSnapshot.checkedAt,
-    slashCommands: scopedSnapshot.slashCommands,
-    skills: scopedSnapshot.skills,
+    checkedAt,
+    slashCommands: provider.slashCommands,
+    skills: catalog.skills,
   } satisfies NonNullable<ServerProvider["workspaceSnapshots"]>[number];
   return {
     ...provider,
@@ -98,6 +103,18 @@ export function upsertProviderWorkspaceSnapshot(
       workspaceSnapshot,
     ].slice(-MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER),
   };
+}
+
+function hasFreshWorkspaceSnapshot(provider: ServerProvider, cwd: string, nowMs: number): boolean {
+  const snapshot = provider.workspaceSnapshots?.find((candidate) => candidate.cwd === cwd);
+  if (!snapshot) return false;
+  return Option.match(DateTime.make(snapshot.checkedAt), {
+    onNone: () => false,
+    onSome: (checkedAt) => {
+      const checkedAtMs = DateTime.toEpochMillis(checkedAt);
+      return checkedAtMs <= nowMs && nowMs - checkedAtMs < WORKSPACE_SNAPSHOT_TTL_MS;
+    },
+  });
 }
 
 const shouldRetainMissingProviderModels = (provider: ServerProvider): boolean => {
@@ -757,11 +774,10 @@ export const ProviderRegistryLive = Layer.effect(
     }) {
       const providers = yield* Ref.get(providersRef);
       const provider = providers.find((candidate) => candidate.instanceId === input.instanceId);
-      if (
-        !provider ||
-        !provider.enabled ||
-        provider.workspaceSnapshots?.some((s) => s.cwd === input.cwd)
-      ) {
+      if (!provider || !provider.enabled) {
+        return providers;
+      }
+      if (hasFreshWorkspaceSnapshot(provider, input.cwd, yield* Clock.currentTimeMillis)) {
         return providers;
       }
       const instance = yield* instanceRegistry.getInstance(input.instanceId);
@@ -775,30 +791,30 @@ export const ProviderRegistryLive = Layer.effect(
       });
       if (!claimed) return yield* Ref.get(providersRef);
       return yield* instance.snapshotForCwd(input.cwd).pipe(
-        Effect.flatMap((scopedSnapshot) =>
-          scopedSnapshot.status === "error"
-            ? Ref.get(providersRef)
-            : instanceRegistry.getInstance(input.instanceId).pipe(
-                Effect.flatMap((currentInstance) => {
-                  if (currentInstance !== instance) return Ref.get(providersRef);
-                  return Ref.modify(providersRef, (currentProviders) => {
-                    const nextProviders = currentProviders.map((candidate) =>
-                      candidate.instanceId === input.instanceId &&
-                      !candidate.workspaceSnapshots?.some((s) => s.cwd === input.cwd)
-                        ? upsertProviderWorkspaceSnapshot(candidate, input.cwd, scopedSnapshot)
-                        : candidate,
-                    );
-                    return [[currentProviders, nextProviders] as const, nextProviders];
-                  }).pipe(
-                    Effect.tap(([previousProviders, nextProviders]) =>
-                      haveProvidersChanged(previousProviders, nextProviders)
-                        ? PubSub.publish(changesPubSub, nextProviders)
-                        : Effect.void,
-                    ),
-                    Effect.map(([, nextProviders]) => nextProviders),
-                  );
-                }),
+        Effect.flatMap((catalog) =>
+          Effect.gen(function* () {
+            const currentInstance = yield* instanceRegistry.getInstance(input.instanceId);
+            if (currentInstance !== instance) return yield* Ref.get(providersRef);
+            const checkedAt = DateTime.formatIso(yield* DateTime.now);
+            return yield* Ref.modify(providersRef, (currentProviders) => {
+              const nextProviders = currentProviders.map((candidate) => {
+                if (candidate.instanceId !== input.instanceId) return candidate;
+                const previousSnapshot = candidate.workspaceSnapshots?.find(
+                  (snapshot) => snapshot.cwd === input.cwd,
+                );
+                if (catalog.complete === false && previousSnapshot) return candidate;
+                return upsertProviderWorkspaceSnapshot(candidate, input.cwd, catalog, checkedAt);
+              });
+              return [[currentProviders, nextProviders] as const, nextProviders];
+            }).pipe(
+              Effect.tap(([previousProviders, nextProviders]) =>
+                haveProvidersChanged(previousProviders, nextProviders)
+                  ? PubSub.publish(changesPubSub, nextProviders)
+                  : Effect.void,
               ),
+              Effect.map(([, nextProviders]) => nextProviders),
+            );
+          }),
         ),
         Effect.ensuring(
           Ref.update(workspaceRefreshesRef, (refreshes) => {
