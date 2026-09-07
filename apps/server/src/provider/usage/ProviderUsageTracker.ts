@@ -16,7 +16,11 @@
  *
  * @module provider/usage/ProviderUsageTracker
  */
-import type { ServerProvider, ProviderAccountUsageWindow } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  ProviderAccountUsageWindow,
+  ServerProviderUsageWindow,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -42,7 +46,7 @@ export interface ProviderUsageTrackerShape {
   }) => Effect.Effect<void>;
   readonly recordWindows: (
     instanceId: string,
-    windows: ReadonlyArray<ProviderAccountUsageWindow>,
+    windows: ReadonlyArray<ServerProviderUsageWindow>,
   ) => Effect.Effect<void>;
   /** Decorate provider snapshots with their accumulated `usage` windows. */
   readonly decorateProviders: (
@@ -132,7 +136,23 @@ const make = Effect.gen(function* () {
         const next = new Map(state);
         next.set(
           instanceId,
-          new Map(windows.map((window, sortWeight) => [window.id, { window, sortWeight }])),
+          new Map(
+            windows.map((source, sortWeight) => {
+              const id =
+                source.windowDurationMins === 300
+                  ? "five_hour"
+                  : source.windowDurationMins === 10080
+                    ? "seven_day"
+                    : source.id;
+              const window = {
+                id,
+                label: source.label,
+                usedPercent: source.usedPercent,
+                ...(source.resetsAt === undefined ? {} : { resetsAt: source.resetsAt }),
+              };
+              return [id, { window, sortWeight }];
+            }),
+          ),
         );
         return next;
       }),

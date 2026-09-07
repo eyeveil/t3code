@@ -1489,12 +1489,7 @@ const make = Effect.gen(function* () {
         if (event.providerInstanceId !== undefined) {
           yield* providerUsageTracker.recordWindows(
             String(event.providerInstanceId),
-            event.payload.limits.windows.map(({ id, label, usedPercent, resetsAt }) => ({
-              id,
-              label,
-              usedPercent,
-              ...(resetsAt === undefined ? {} : { resetsAt }),
-            })),
+            event.payload.limits.windows,
           );
         }
         return;

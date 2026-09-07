@@ -27,6 +27,24 @@ const PAST_ISO = "1969-01-01T00:00:00.000Z";
 
 describe("ProviderUsageTracker", () => {
   it.layer(ProviderUsageTrackerLive)("live tracker", (it) => {
+    it.effect("canonical live windows replace the matching probe baseline", () =>
+      Effect.gen(function* () {
+        const tracker = yield* ProviderUsageTracker;
+        yield* tracker.recordWindows("canonical", [
+          {
+            id: "primary",
+            kind: "session",
+            label: "Session",
+            windowDurationMins: 300,
+            usedPercent: 85,
+          },
+        ]);
+        const [result] = yield* tracker.decorateProviders([
+          { ...provider("canonical"), usage: [{ id: "five_hour", label: "5h", usedPercent: 10 }] },
+        ]);
+        expect(result?.usage).toEqual([{ id: "five_hour", label: "Session", usedPercent: 85 }]);
+      }),
+    );
     it.effect("records codex windows and decorates the matching provider", () =>
       Effect.gen(function* () {
         const tracker = yield* ProviderUsageTracker;
