@@ -92,6 +92,8 @@ const emptyShellSnapshot = {
 const projectionQueryStub = (
   overrides: Partial<ProjectionSnapshotQuery["Service"]>,
 ): ProjectionSnapshotQuery["Service"] => ({
+  getImportedAgentSessionSources: () => Effect.succeed([]),
+  getUserInputActivity: () => Effect.succeed(Option.none()),
   getCommandReadModel: () => Effect.die("unused"),
   getSnapshot: () => Effect.die("unused"),
   searchThreads: () => Effect.die("unused"),
@@ -218,6 +220,8 @@ const runTool = <Name extends keyof typeof ChatToolkit.tools & string>(input: {
       ),
       Effect.provideService(OrchestrationEngineService, {
         readEvents: () => Stream.die("unused"),
+        readThreadEvents: () => Stream.die("unused"),
+        getThreadReplayStats: () => Effect.die("unused"),
         latestSequence: Effect.succeed(0),
         dispatch: (command) =>
           Ref.update(dispatched, (commands) => [...commands, command]).pipe(

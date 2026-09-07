@@ -1,18 +1,20 @@
 import {
   isToolLifecycleItemType,
   type AssetResource,
+  type RuntimeItemStatus,
   type ThreadId,
+  type ToolActivitySource,
   type ToolLifecycleItemType,
 } from "@t3tools/contracts";
-import {
-  classifyMarkdownImageSource,
-  markdownImageSourceFragment,
-} from "@t3tools/client-runtime/markdown-images";
+import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
+import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 
 export function isWorktreeSetupActivity(kind: string): boolean {
   return kind === "setup-script.requested" || kind === "setup-script.started";
 }
+
+export type WorkLogToolLifecycleStatus = RuntimeItemStatus | "stopped";
 
 export interface WorkLogPresentationEntry {
   readonly label: string;
@@ -30,6 +32,7 @@ export interface WorkLogPresentationEntry {
   readonly toolLifecycleStatus?: string;
   readonly sourceActivityKind?: string;
   readonly taskId?: string;
+  readonly toolSource?: ToolActivitySource;
 }
 
 export type ToolGroupAction =
@@ -115,12 +118,19 @@ function resolveT3McpToolPresentation(value: string | undefined, status: string 
             ? `Declined to ${action.toLowerCase()}`
             : status === "stopped"
               ? `Stopped ${running.toLowerCase()}`
-              : action;
+              : running;
 
   return {
     displayName: `${verb} ${detail}`,
     icon: name.startsWith("preview_") ? ("browser" as const) : ("t3-code" as const),
   };
+}
+
+/** Latest live activity stays present-tense unless the call itself failed, declined, or stopped. */
+export function liveActivityToolStatus(status: string | undefined, presentTense: boolean) {
+  if (status === "failed" || status === "declined" || status === "stopped") return status;
+  if (presentTense || status === "inProgress") return "inProgress";
+  return "completed";
 }
 
 /** Resolves tool identity before choosing labels or icons in either client. */
@@ -291,14 +301,101 @@ export function commandDetailRepeatsCommand(input: {
   );
 }
 
-function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
+export function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") return true;
   if (entry.command !== undefined && entry.command.trim().length > 0) return true;
   if (entry.requestKind !== undefined) return true;
   return entry.itemType !== undefined && isToolLifecycleItemType(entry.itemType);
 }
 
-export function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean {
+/** Maps item and task status to the status shown on a work-log row. */
+export function extractWorkLogToolLifecycleStatus(
+  payloadValue: unknown,
+): WorkLogToolLifecycleStatus | undefined {
+  const payload = asRecord(payloadValue);
+  switch (payload?.status) {
+    case "pending":
+    case "running":
+    case "waiting":
+      return "inProgress";
+    case "cancelled":
+    case "interrupted":
+      return "stopped";
+    case "idle":
+      // A batch becomes idle when its parent turn ends. Other idle tasks can resume.
+      return payload.taskType === "subagent_batch" ? "stopped" : undefined;
+    case "inProgress":
+    case "completed":
+    case "failed":
+    case "declined":
+    case "stopped":
+      return payload.status;
+    default:
+      return undefined;
+  }
+}
+
+// Some providers report completion even when the output describes a failure.
+function toolDetailTextLooksLikeFailure(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("file not found") ||
+    normalized.includes("no files found") ||
+    normalized.includes("enoent") ||
+    normalized.includes("no such file or directory") ||
+    normalized.includes("no such file") ||
+    normalized.includes("commandnotfoundexception") ||
+    normalized.includes("command not found") ||
+    (normalized.includes("cannot find path") && normalized.includes("because it does not exist")) ||
+    (normalized.includes("is not recognized") && normalized.includes("the term '")) ||
+    normalized.includes("is not recognized as the name of a cmdlet") ||
+    normalized.includes("a parameter cannot be found that matches parameter name") ||
+    /<exited with exit code\s+[1-9]\d*\s*>/i.test(text) ||
+    /exit(?:ed)? with exit code\s+[1-9]\d*/i.test(text) ||
+    /exit code\s*[:\s]\s*[1-9]\d*\b/i.test(text)
+  );
+}
+
+function workEntryIndicatesToolFailureFromOutput(
+  entry: WorkLogPresentationEntry,
+  includeCommand: boolean,
+): boolean {
+  if (
+    entry.tone === "error" ||
+    entry.toolLifecycleStatus === "failed" ||
+    entry.toolLifecycleStatus === "declined"
+  ) {
+    return true;
+  }
+  if (!workLogEntryIsToolLike(entry)) return false;
+  const output = includeCommand
+    ? [entry.detail, entry.command].filter(Boolean).join("\n")
+    : (entry.detail ?? "");
+  return output.length > 0 && toolDetailTextLooksLikeFailure(output);
+}
+
+/** Includes legacy activities that stored error output in the command field. */
+export function workEntryIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
+  return workEntryIndicatesToolFailureFromOutput(entry, true);
+}
+
+/** Checks rendered output without treating the user's command as an error. */
+export function workEntryDisplayIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
+  return workEntryIndicatesToolFailureFromOutput(entry, false);
+}
+
+/** Decides whether the row can show a success marker. */
+export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): boolean {
+  return (
+    workLogEntryIsToolLike(entry) &&
+    !workEntryIndicatesToolFailure(entry) &&
+    entry.tone !== "thinking" &&
+    entry.toolLifecycleStatus !== "inProgress" &&
+    entry.toolLifecycleStatus !== "stopped"
+  );
+}
+
+function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean {
   return (
     entry.itemType === "web_search" &&
     /\bgrep\b/i.test(normalizeCompactToolLabel(entry.toolTitle ?? entry.label))
@@ -306,6 +403,13 @@ export function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): 
 }
 
 export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupAction {
+  if (
+    entry.sourceActivityKind === "approval.requested" ||
+    entry.sourceActivityKind === "approval.resolved" ||
+    entry.sourceActivityKind === "provider.approval.respond.failed"
+  ) {
+    return "update";
+  }
   if (resolveWorkEntryToolPresentation(entry)?.icon === "browser") return "browser";
   if (
     entry.requestKind === "file-read" ||
@@ -350,14 +454,10 @@ export function workEntryViewedImagePath(entry: WorkLogPresentationEntry): strin
 }
 
 export interface ViewedImageAsset {
-  readonly resource: Extract<AssetResource, { readonly _tag: "attachment" | "media-file" }>;
+  readonly resource: Extract<AssetResource, { readonly _tag: "media-file" }>;
   readonly alt: string;
   readonly srcFragment: string;
 }
-
-const ABSOLUTE_IMAGE_SOURCE_PATTERN = /^(?:file:|[\\/]|[a-z]:[\\/])/i;
-const T3_ATTACHMENT_IMAGE_PATH_PATTERN =
-  /(?:^|[\\/])(?:dev|userdata)[\\/]attachments[\\/]([a-z0-9_-]{1,128})\.[a-z0-9]{1,10}$/i;
 
 export function resolveViewedImageAsset(
   source: string,
@@ -366,24 +466,22 @@ export function resolveViewedImageAsset(
     readonly workspaceRoot?: string | null | undefined;
   },
 ): ViewedImageAsset | null {
+  // A relative path with no known workspace still names a media-file relative
+  // to the thread's workspace, so classify against "." and drop the prefix.
   const imageSource = classifyMarkdownImageSource(source, input.workspaceRoot ?? ".");
   if (imageSource._tag !== "WorkspaceFile") return null;
-
-  const path =
+  const resolvedFilePath =
     input.workspaceRoot == null && imageSource.path.startsWith("./")
       ? imageSource.path.slice(2)
       : imageSource.path;
-  const attachmentId = ABSOLUTE_IMAGE_SOURCE_PATTERN.test(source)
-    ? (T3_ATTACHMENT_IMAGE_PATH_PATTERN.exec(path)?.[1] ?? null)
-    : null;
 
-  return {
-    resource: attachmentId
-      ? { _tag: "attachment", attachmentId }
-      : { _tag: "media-file", threadId: input.threadId, path },
-    alt: path.split(/[\\/]/).at(-1) ?? "image",
-    srcFragment: markdownImageSourceFragment(source),
-  };
+  const media = resolveMediaSource(source, {
+    threadId: input.threadId,
+    workspaceRoot: input.workspaceRoot,
+    resolvedFilePath,
+  });
+  if (media === null || media.access !== "environment") return null;
+  return { resource: media.resource, alt: media.name, srcFragment: media.srcFragment };
 }
 
 function toolGroupActionCount(
@@ -427,8 +525,13 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
 
 export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): string {
   const summaryEntries = omitSupersededLifecycleMarkers(entries, (entry) => entry);
+  const sources = new Map<string, ToolActivitySource>();
   const groupedEntries = new Map<ToolGroupAction, WorkLogPresentationEntry[]>();
   for (const entry of summaryEntries) {
+    if (entry.toolSource) {
+      sources.set(entry.toolSource.key, entry.toolSource);
+      continue;
+    }
     const action = toolGroupAction(entry);
     const group = groupedEntries.get(action);
     if (group) group.push(entry);
@@ -437,6 +540,20 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   const labels = [...groupedEntries].map(([action, actionEntries]) =>
     toolGroupActionLabel(action, toolGroupActionCount(action, actionEntries)),
   );
+  if (sources.size > 0) {
+    const sourceValues = [...sources.values()];
+    const sourceNames = sourceValues.map((source) => source.name);
+    const formattedNames =
+      sourceNames.length < 2
+        ? sourceNames[0]!
+        : sourceNames.length === 2
+          ? sourceNames.join(" and ")
+          : `${sourceNames.slice(0, -1).join(", ")}, and ${sourceNames.at(-1)}`;
+    const allIntegrations = sourceValues.every((source) => source.kind === "integration");
+    labels.unshift(
+      `Used ${formattedNames}${allIntegrations ? ` ${sources.size === 1 ? "integration" : "integrations"}` : ""}`,
+    );
+  }
   const sentenceLabels = labels.map((label, index) =>
     index === 0 ? label : label.charAt(0).toLowerCase() + label.slice(1),
   );

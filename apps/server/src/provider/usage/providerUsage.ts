@@ -3,7 +3,7 @@
  * Pure per-driver usage/rate-limit mapping.
  *
  * Turns the raw `account.rate-limits.updated` runtime event payload each
- * driver emits into normalized {@link ServerProviderUsageWindow} rows that
+ * driver emits into normalized {@link ProviderAccountUsageWindow} rows that
  * the ws snapshot path decorates onto `ServerProvider`. Kept pure so the
  * mapping can be unit-tested against the real event shapes.
  *
@@ -26,13 +26,13 @@
  *
  * @module provider/usage/providerUsage
  */
-import type { ServerProviderUsageWindow } from "@t3tools/contracts";
+import type { ProviderAccountUsageWindow } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 /** A usage window plus an internal sort weight (shorter windows first). */
 export interface RankedUsageWindow {
-  readonly window: ServerProviderUsageWindow;
+  readonly window: ProviderAccountUsageWindow;
   /** Window duration in minutes; used only for stable ordering. */
   readonly sortWeight: number;
 }
@@ -89,7 +89,7 @@ function makeWindow(input: {
   readonly label: string;
   readonly usedPercent: number;
   readonly resetsAt?: string | undefined;
-}): ServerProviderUsageWindow {
+}): ProviderAccountUsageWindow {
   return {
     id: input.id,
     label: input.label,

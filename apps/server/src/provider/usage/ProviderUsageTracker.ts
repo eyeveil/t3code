@@ -16,7 +16,7 @@
  *
  * @module provider/usage/ProviderUsageTracker
  */
-import type { ServerProvider, ServerProviderUsageWindow } from "@t3tools/contracts";
+import type { ServerProvider, ProviderAccountUsageWindow } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -40,6 +40,10 @@ export interface ProviderUsageTrackerShape {
     readonly driver: string;
     readonly rateLimits: unknown;
   }) => Effect.Effect<void>;
+  readonly recordWindows: (
+    instanceId: string,
+    windows: ReadonlyArray<ProviderAccountUsageWindow>,
+  ) => Effect.Effect<void>;
   /** Decorate provider snapshots with their accumulated `usage` windows. */
   readonly decorateProviders: (
     providers: ReadonlyArray<ServerProvider>,
@@ -62,7 +66,7 @@ function mergeWindows(
   return next;
 }
 
-function isWindowActive(window: ServerProviderUsageWindow, now: number): boolean {
+function isWindowActive(window: ProviderAccountUsageWindow, now: number): boolean {
   const resetsAt = window.resetsAt;
   if (resetsAt === undefined) return true;
   const parsed = Date.parse(resetsAt);
@@ -73,7 +77,7 @@ function isWindowActive(window: ServerProviderUsageWindow, now: number): boolean
 function presentWindows(
   state: InstanceUsageState | undefined,
   now: number,
-): ReadonlyArray<ServerProviderUsageWindow> {
+): ReadonlyArray<ProviderAccountUsageWindow> {
   if (state === undefined || state.size === 0) return [];
   const ranked = [...state.values()].filter((entry) => isWindowActive(entry.window, now));
   ranked.sort((a, b) => a.sortWeight - b.sortWeight || a.window.id.localeCompare(b.window.id));
@@ -85,11 +89,11 @@ function presentWindows(
  * matching windows as fresher telemetry arrives.
  */
 function mergePresentedWindows(
-  probed: ReadonlyArray<ServerProviderUsageWindow> | undefined,
-  live: ReadonlyArray<ServerProviderUsageWindow>,
+  probed: ReadonlyArray<ProviderAccountUsageWindow> | undefined,
+  live: ReadonlyArray<ProviderAccountUsageWindow>,
   now: number,
-): ReadonlyArray<ServerProviderUsageWindow> {
-  const merged = new Map<string, ServerProviderUsageWindow>();
+): ReadonlyArray<ProviderAccountUsageWindow> {
+  const merged = new Map<string, ProviderAccountUsageWindow>();
   for (const window of probed ?? []) {
     if (isWindowActive(window, now)) merged.set(window.id, window);
   }
@@ -123,6 +127,15 @@ const make = Effect.gen(function* () {
               }),
         ),
       ),
+    recordWindows: (instanceId, windows) =>
+      Ref.update(stateRef, (state) => {
+        const next = new Map(state);
+        next.set(
+          instanceId,
+          new Map(windows.map((window, sortWeight) => [window.id, { window, sortWeight }])),
+        );
+        return next;
+      }),
     decorateProviders: (providers) =>
       Effect.all([Ref.get(stateRef), Clock.currentTimeMillis]).pipe(
         Effect.map(([state, now]) =>

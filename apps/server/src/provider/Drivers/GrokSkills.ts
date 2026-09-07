@@ -9,9 +9,9 @@
  * (ignore lists, disabled skills) and includes plugin skills, which live
  * three levels deep under `~/.grok/installed-plugins/` where a flat scan
  * cannot see them. This mirrors how the Codex app-server reports skills over
- * `skills/list`. Discovery is best-effort: an older CLI without `inspect`,
- * a timeout, or malformed output yields an empty list, never a degraded
- * provider snapshot.
+ * `skills/list`. Probe failures stay typed so workspace snapshots do not
+ * cache an empty catalog; machine-level discovery recovers them to an empty
+ * list without degrading the provider.
  *
  * @module provider/Drivers/GrokSkills
  */
@@ -19,14 +19,14 @@ import type { GrokSettings, ServerProviderSkill } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess } from "effect/unstable/process";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { spawnAndCollect } from "../providerSnapshot.ts";
 
 const GROK_SKILLS_PROBE_TIMEOUT_MS = 4_000;
 
-export class GrokSkillsProbeError extends Schema.TaggedErrorClass<GrokSkillsProbeError>()(
+class GrokSkillsProbeError extends Schema.TaggedErrorClass<GrokSkillsProbeError>()(
   "GrokSkillsProbeError",
   {
     stage: Schema.Literals(["spawn", "timeout", "exit", "decode"]),
@@ -42,6 +42,11 @@ export class GrokSkillsProbeError extends Schema.TaggedErrorClass<GrokSkillsProb
   }
 }
 
+/**
+ * Map `grok inspect --json` output onto provider skills. Entries without a
+ * name or a filesystem path are skipped; `userInvocable: false` skills are
+ * kept but disabled so pickers that filter on `enabled` hide them.
+ */
 function decodeGrokInspectSkills(stdout: string): ReadonlyArray<ServerProviderSkill> | undefined {
   let parsed: unknown;
   try {
@@ -87,27 +92,15 @@ function decodeGrokInspectSkills(stdout: string): ReadonlyArray<ServerProviderSk
 }
 
 /**
- * Map `grok inspect --json` output onto provider skills. Entries without a
- * name or a filesystem path are skipped; `userInvocable: false` skills are
- * kept but disabled so pickers that filter on `enabled` hide them.
+ * Run `grok inspect --json` and map the reported catalog onto provider
+ * skills. Callers that need best-effort discovery can recover this effect to
+ * an empty list; workspace callers leave failures typed so they are not cached.
  */
-export function parseGrokInspectSkills(stdout: string): ReadonlyArray<ServerProviderSkill> {
-  return decodeGrokInspectSkills(stdout) ?? [];
-}
-
-/**
- * Strict workspace probe. A failed inspect must not replace a previously
- * working workspace catalog with an empty one.
- */
-export const probeGrokSkills = Effect.fn("probeGrokSkills")(function* (
+export const discoverGrokSkills = Effect.fn("discoverGrokSkills")(function* (
   grokSettings: Pick<GrokSettings, "binaryPath">,
   environment: NodeJS.ProcessEnv = process.env,
   cwd?: string,
-): Effect.fn.Return<
-  ReadonlyArray<ServerProviderSkill>,
-  GrokSkillsProbeError,
-  ChildProcessSpawner.ChildProcessSpawner
-> {
+) {
   const command = grokSettings.binaryPath || "grok";
   const inspectResult = yield* Effect.gen(function* () {
     const spawnCommand = yield* resolveSpawnCommand(command, ["inspect", "--json"], {
@@ -155,23 +148,4 @@ export const probeGrokSkills = Effect.fn("probeGrokSkills")(function* (
     });
   }
   return skills;
-});
-
-/** Machine-level discovery stays best-effort so an old Grok CLI never makes
- * the whole provider unavailable. */
-export const discoverGrokSkills = Effect.fn("discoverGrokSkills")(function* (
-  grokSettings: Pick<GrokSettings, "binaryPath">,
-  environment: NodeJS.ProcessEnv = process.env,
-  cwd?: string,
-): Effect.fn.Return<
-  ReadonlyArray<ServerProviderSkill>,
-  never,
-  ChildProcessSpawner.ChildProcessSpawner
-> {
-  return yield* probeGrokSkills(grokSettings, environment, cwd).pipe(
-    Effect.tapError((cause) =>
-      Effect.logDebug("Grok skill discovery failed; continuing without skills.", { cause }),
-    ),
-    Effect.orElseSucceed(() => []),
-  );
 });

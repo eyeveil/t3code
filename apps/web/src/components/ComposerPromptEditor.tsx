@@ -84,9 +84,11 @@ import {
 } from "./composerInlineChip";
 import { FILE_TAG_CHIP_CLASS_NAME, FileTagChipContent } from "./chat/FileTagChip";
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
+import { getTimelinePageScrollKey } from "./chat/pageScrollController";
 import { formatProviderSkillDisplayName } from "@t3tools/client-runtime/providerSkills";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { registerComposerInlineTokenPaste } from "./composerInlineTokenPaste";
+import { didComposerSelectionChangeVisibly } from "./composerSelection";
 import {
   $consumeComposerCitationCommentRequest,
   $createComposerCitationNode,
@@ -116,6 +118,7 @@ const BACKTICK_SURROUND_CLOSE_SYMBOL = SURROUND_SYMBOLS_MAP.get("`") ?? null;
 type SerializedComposerMentionNode = Spread<
   {
     path: string;
+    source?: string;
     type: "composer-mention";
     version: 1;
   },
@@ -173,28 +176,33 @@ function ComposerMentionDecorator(props: { path: string }) {
 
 class ComposerMentionNode extends DecoratorNode<React.ReactElement> {
   __path: string;
+  __source: string;
 
   static override getType(): string {
     return "composer-mention";
   }
 
   static override clone(node: ComposerMentionNode): ComposerMentionNode {
-    return new ComposerMentionNode(node.__path, node.__key);
+    return new ComposerMentionNode(node.__path, node.__source, node.__key);
   }
 
   static override importJSON(serializedNode: SerializedComposerMentionNode): ComposerMentionNode {
-    return $createComposerMentionNode(serializedNode.path).updateFromJSON(serializedNode);
+    return $createComposerMentionNode(serializedNode.path, serializedNode.source).updateFromJSON(
+      serializedNode,
+    );
   }
 
-  constructor(path: string, key?: NodeKey) {
+  constructor(path: string, source = serializeComposerFileLink(path), key?: NodeKey) {
     super(key);
     this.__path = path;
+    this.__source = source;
   }
 
   override exportJSON(): SerializedComposerMentionNode {
     return {
       ...super.exportJSON(),
       path: this.__path,
+      source: this.__source,
       type: "composer-mention",
       version: 1,
     };
@@ -211,7 +219,7 @@ class ComposerMentionNode extends DecoratorNode<React.ReactElement> {
   }
 
   override getTextContent(): string {
-    return serializeComposerFileLink(this.__path);
+    return this.__source;
   }
 
   override isInline(): true {
@@ -223,8 +231,8 @@ class ComposerMentionNode extends DecoratorNode<React.ReactElement> {
   }
 }
 
-function $createComposerMentionNode(path: string): ComposerMentionNode {
-  return $applyNodeReplacement(new ComposerMentionNode(path));
+function $createComposerMentionNode(path: string, source?: string): ComposerMentionNode {
+  return $applyNodeReplacement(new ComposerMentionNode(path, source));
 }
 
 function resolveSkillDescription(
@@ -850,7 +858,7 @@ function $setComposerEditorPrompt(
       continue;
     }
     if (segment.type === "mention") {
-      paragraph.append($createComposerMentionNode(segment.path));
+      paragraph.append($createComposerMentionNode(segment.path, segment.source));
       continue;
     }
     if (segment.type === "skill") {
@@ -911,7 +919,9 @@ interface ComposerPromptEditorProps {
   skills: ReadonlyArray<ServerProviderSkill>;
   disabled: boolean;
   placeholder: string;
+  containerClassName?: string;
   className?: string;
+  placeholderClassName?: string;
   onRemoveTerminalContext: (contextId: string) => void;
   onChange: (
     nextValue: string,
@@ -920,7 +930,12 @@ interface ComposerPromptEditorProps {
     cursorAdjacentToMention: boolean,
     terminalContextIds: string[],
   ) => void;
+  onVisibleSelectionChange?: () => void;
   onCommandKeyDown?: (key: ComposerCommandKey, event: KeyboardEvent) => boolean;
+  onPageScrollKeyDown?: (key: "PageUp" | "PageDown") => void;
+  onPageScrollKeyUp?: (key: string) => void;
+  onPageScrollRelease?: () => void;
+  onCitationSubmitAndSend?: () => void;
   onPaste: React.ClipboardEventHandler<HTMLElement>;
   editorRef: React.RefObject<ComposerPromptEditorHandle | null>;
 }
@@ -928,21 +943,32 @@ interface ComposerPromptEditorProps {
 type ComposerCommandKey = "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Delete" | "Backspace";
 
 /**
- * Client rect of the line the collapsed caret is on. A collapsed range
- * reports zero-height rects at some positions, so probe the adjacent
- * character. When the range container is the paragraph itself (an empty
- * line, or a caret beside an inline chip) measure the child next to the
- * caret before falling back to the paragraph.
+ * Client rect of the line the collapsed caret is on, as seen from `edge`.
+ * A caret at a soft-wrap boundary belongs to two visual lines and the
+ * range reports a rect for each, so take the one farthest from the edge
+ * under test: an ambiguous caret then never claims the key and the arrow
+ * moves the caret as usual. A collapsed range reports zero-height rects at
+ * some positions, so probe the adjacent character on the same side. When
+ * the range container is the paragraph itself (an empty line, or a caret
+ * beside an inline chip) measure the child next to the caret before
+ * falling back to the paragraph.
  */
-function caretLineRect(range: Range): DOMRect | null {
-  const collapsedRect = Array.from(range.getClientRects()).find((rect) => rect.height > 0);
+function caretLineRect(range: Range, edge: "start" | "end"): DOMRect | null {
+  const collapsedRects = Array.from(range.getClientRects()).filter((rect) => rect.height > 0);
+  const collapsedRect = edge === "start" ? collapsedRects.at(-1) : collapsedRects[0];
   if (collapsedRect) return collapsedRect;
 
   const container = range.startContainer;
   if (container.nodeType === Node.TEXT_NODE) {
     const textNode = container as Text;
     if (textNode.data.length === 0) return null;
-    const probeStart = Math.min(range.startOffset, textNode.data.length - 1);
+    const probeStart = Math.max(
+      0,
+      Math.min(
+        edge === "start" ? range.startOffset : range.startOffset - 1,
+        textNode.data.length - 1,
+      ),
+    );
     const probeRange = document.createRange();
     probeRange.setStart(textNode, probeStart);
     probeRange.setEnd(textNode, probeStart + 1);
@@ -1618,16 +1644,25 @@ function ComposerPromptEditorInner({
   skills,
   disabled,
   placeholder,
+  containerClassName,
   className,
+  placeholderClassName,
   onRemoveTerminalContext,
   onChange,
+  onVisibleSelectionChange,
   onCommandKeyDown,
+  onPageScrollKeyDown,
+  onPageScrollKeyUp,
+  onPageScrollRelease,
+  onCitationSubmitAndSend,
   onPaste,
   editorRef,
 }: ComposerPromptEditorProps) {
   const [editor] = useLexicalComposerContext();
   const onChangeRef = useRef(onChange);
+  const onVisibleSelectionChangeRef = useRef(onVisibleSelectionChange);
   const initialCursor = clampCollapsedComposerCursor(value, cursor);
+  const initialExpandedCursor = expandCollapsedComposerCursor(value, initialCursor);
   const terminalContextsSignature = terminalContextSignature(terminalContexts);
   const terminalContextsSignatureRef = useRef(terminalContextsSignature);
   const skillsSignature = skillSignature(skills);
@@ -1636,9 +1671,10 @@ function ComposerPromptEditorInner({
   const snapshotRef = useRef({
     value,
     cursor: initialCursor,
-    expandedCursor: expandCollapsedComposerCursor(value, initialCursor),
+    expandedCursor: initialExpandedCursor,
     terminalContextIds: terminalContexts.map((context) => context.id),
   });
+  const selectionRangeRef = useRef({ start: initialExpandedCursor, end: initialExpandedCursor });
   const isApplyingControlledUpdateRef = useRef(false);
   const citationCommentRequestRef = useRef<ComposerCitationCommentRequest | null>(null);
   const [openCitationComment, setOpenCitationComment] =
@@ -1651,8 +1687,9 @@ function ComposerPromptEditorInner({
           open ? { nodeKey } : current?.nodeKey === nodeKey ? null : current,
         );
       },
+      onSubmitAndSend: onCitationSubmitAndSend ?? (() => {}),
     }),
-    [openCitationComment],
+    [onCitationSubmitAndSend, openCitationComment],
   );
   const terminalContextActions = useMemo(
     () => ({ onRemoveTerminalContext }),
@@ -1662,6 +1699,10 @@ function ComposerPromptEditorInner({
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    onVisibleSelectionChangeRef.current = onVisibleSelectionChange;
+  }, [onVisibleSelectionChange]);
 
   useLayoutEffect(() => {
     skillMetadataRef.current = skillMetadataByName(skills);
@@ -1701,11 +1742,16 @@ function ComposerPromptEditorInner({
       return;
     }
 
+    const normalizedExpandedCursor = expandCollapsedComposerCursor(value, normalizedCursor);
     snapshotRef.current = {
       value,
       cursor: normalizedCursor,
-      expandedCursor: expandCollapsedComposerCursor(value, normalizedCursor),
+      expandedCursor: normalizedExpandedCursor,
       terminalContextIds: terminalContexts.map((context) => context.id),
+    };
+    selectionRangeRef.current = {
+      start: normalizedExpandedCursor,
+      end: normalizedExpandedCursor,
     };
     terminalContextsSignatureRef.current = terminalContextsSignature;
     skillsSignatureRef.current = skillsSignature;
@@ -1758,6 +1804,10 @@ function ComposerPromptEditorInner({
         expandedCursor: expandCollapsedComposerCursor(snapshotRef.current.value, boundedCursor),
         terminalContextIds: snapshotRef.current.terminalContextIds,
       };
+      selectionRangeRef.current = {
+        start: snapshotRef.current.expandedCursor,
+        end: snapshotRef.current.expandedCursor,
+      };
       onChangeRef.current(
         snapshotRef.current.value,
         boundedCursor,
@@ -1791,12 +1841,17 @@ function ComposerPromptEditorInner({
         nextValue,
         $readExpandedSelectionOffsetFromEditorState(fallbackExpandedCursor),
       );
+      const selectionRange = getSelectionRangeForExpandedComposerOffsets($getSelection());
       const terminalContextIds = collectTerminalContextIds($getRoot());
       snapshot = {
         value: nextValue,
         cursor: nextCursor,
         expandedCursor: nextExpandedCursor,
         terminalContextIds,
+      };
+      selectionRangeRef.current = selectionRange ?? {
+        start: nextExpandedCursor,
+        end: nextExpandedCursor,
       };
     });
     snapshotRef.current = snapshot;
@@ -1846,7 +1901,7 @@ function ComposerPromptEditorInner({
         ) {
           return false;
         }
-        const caretRect = caretLineRect(selection.getRangeAt(0));
+        const caretRect = caretLineRect(selection.getRangeAt(0), edge);
         if (!caretRect) return false;
         const edgeElement =
           edge === "start" ? rootElement.firstElementChild : rootElement.lastElementChild;
@@ -1876,18 +1931,28 @@ function ComposerPromptEditorInner({
         nextValue,
         $readExpandedSelectionOffsetFromEditorState(fallbackExpandedCursor),
       );
+      const nextSelectionRange = getSelectionRangeForExpandedComposerOffsets($getSelection());
+      const previousSelectionRange = selectionRangeRef.current;
+      selectionRangeRef.current = nextSelectionRange ?? {
+        start: nextExpandedCursor,
+        end: nextExpandedCursor,
+      };
       const terminalContextIds = collectTerminalContextIds($getRoot());
       const previousSnapshot = snapshotRef.current;
-      if (
+      const snapshotChanged = !(
         previousSnapshot.value === nextValue &&
         previousSnapshot.cursor === nextCursor &&
         previousSnapshot.expandedCursor === nextExpandedCursor &&
         previousSnapshot.terminalContextIds.length === terminalContextIds.length &&
         previousSnapshot.terminalContextIds.every((id, index) => id === terminalContextIds[index])
-      ) {
+      );
+      if (isApplyingControlledUpdateRef.current) {
         return;
       }
-      if (isApplyingControlledUpdateRef.current) {
+      if (!snapshotChanged) {
+        if (didComposerSelectionChangeVisibly(previousSelectionRange, nextSelectionRange)) {
+          onVisibleSelectionChangeRef.current?.();
+        }
         return;
       }
       snapshotRef.current = {
@@ -1912,7 +1977,12 @@ function ComposerPromptEditorInner({
   return (
     <ComposerTerminalContextActionsContext value={terminalContextActions}>
       <ComposerCitationCommentContext value={citationCommentActions}>
-        <div className="relative [font-family:var(--font-composer,var(--font-sans))] [font-size:var(--font-size-prompt,0.875rem)] [@media(max-width:39.999rem)_and_(pointer:coarse)]:[font-size:max(var(--font-size-prompt,1rem),16px)]">
+        <div
+          className={cn(
+            "relative [font-family:var(--font-composer,var(--font-sans))] [font-size:var(--font-size-prompt,0.875rem)] [@media(max-width:39.999rem)_and_(pointer:coarse)]:[font-size:max(var(--font-size-prompt,1rem),16px)]",
+            containerClassName,
+          )}
+        >
           <PlainTextPlugin
             contentEditable={
               <ContentEditable
@@ -1924,12 +1994,57 @@ function ComposerPromptEditorInner({
                 data-testid="composer-editor"
                 aria-placeholder={placeholder}
                 placeholder={<span />}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Control" ||
+                    event.key === "Meta" ||
+                    event.key === "Alt" ||
+                    event.key === "Shift"
+                  ) {
+                    onPageScrollRelease?.();
+                  }
+
+                  if (event.key !== "PageUp" && event.key !== "PageDown") {
+                    return;
+                  }
+
+                  const pageScrollKey = getTimelinePageScrollKey({
+                    altKey: event.altKey,
+                    clientHeight: event.currentTarget.clientHeight,
+                    ctrlKey: event.ctrlKey,
+                    defaultPrevented: event.defaultPrevented,
+                    isComposing: event.nativeEvent.isComposing,
+                    key: event.key,
+                    keyCode: event.keyCode,
+                    metaKey: event.metaKey,
+                    scrollHeight: event.currentTarget.scrollHeight,
+                    scrollTop: event.currentTarget.scrollTop,
+                    shiftKey: event.shiftKey,
+                  });
+                  if (!pageScrollKey) {
+                    onPageScrollRelease?.();
+                    return;
+                  }
+                  if (!onPageScrollKeyDown) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  onPageScrollKeyDown(pageScrollKey);
+                }}
+                onKeyUp={(event) => onPageScrollKeyUp?.(event.key)}
+                onBlur={onPageScrollRelease}
                 onPaste={onPaste}
               />
             }
             placeholder={
               terminalContexts.length > 0 ? null : (
-                <div className="pointer-events-none absolute inset-0 leading-relaxed text-placeholder">
+                <div
+                  className={cn(
+                    "pointer-events-none absolute inset-0 leading-relaxed text-placeholder/75",
+                    placeholderClassName,
+                  )}
+                >
                   {placeholder}
                 </div>
               )
@@ -1959,10 +2074,17 @@ export function ComposerPromptEditor({
   skills,
   disabled,
   placeholder,
+  containerClassName,
   className,
+  placeholderClassName,
   onRemoveTerminalContext,
   onChange,
+  onVisibleSelectionChange,
   onCommandKeyDown,
+  onPageScrollKeyDown,
+  onPageScrollKeyUp,
+  onPageScrollRelease,
+  onCitationSubmitAndSend,
   onPaste,
   editorRef,
 }: ComposerPromptEditorProps) {
@@ -2002,12 +2124,19 @@ export function ComposerPromptEditor({
         skills={skills}
         disabled={disabled}
         placeholder={placeholder}
+        {...(containerClassName ? { containerClassName } : {})}
         onRemoveTerminalContext={onRemoveTerminalContext}
         onChange={onChange}
+        {...(onVisibleSelectionChange ? { onVisibleSelectionChange } : {})}
         onPaste={onPaste}
+        {...(onCitationSubmitAndSend ? { onCitationSubmitAndSend } : {})}
         editorRef={editorRef}
         {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
+        {...(onPageScrollKeyDown ? { onPageScrollKeyDown } : {})}
+        {...(onPageScrollKeyUp ? { onPageScrollKeyUp } : {})}
+        {...(onPageScrollRelease ? { onPageScrollRelease } : {})}
         {...(className ? { className } : {})}
+        {...(placeholderClassName ? { placeholderClassName } : {})}
       />
     </LexicalComposer>
   );

@@ -15,13 +15,17 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import { parse as parseYamlDocument } from "yaml";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-const SKILL_MENTION_PATTERN = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
-const HAS_SKILL_MENTION_PATTERN = /(^|\s)\$[a-zA-Z][a-zA-Z0-9:_-]*(?=\s|$)/;
+const SKILL_MENTION_PATTERN =
+  /(^|\s)\$(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/g;
+const HAS_SKILL_MENTION_PATTERN = new RegExp(SKILL_MENTION_PATTERN.source);
 const MAX_SKILL_DEPTH = 10;
 const MAX_SKILL_BYTES = FileSystem.Size(1_000_000);
+const MAX_SKILL_SCAN_ENTRIES = 10_000;
+const MAX_SKILL_SCAN_BYTES = FileSystem.Size(8_000_000);
 
 interface CursorSkillFrontmatter {
   readonly description?: string;
@@ -31,35 +35,38 @@ interface CursorSkillFrontmatter {
   readonly cliVisible: boolean;
 }
 
-export interface CursorSkillsInspection {
-  readonly skills: ReadonlyArray<ServerProviderSkill>;
-  readonly errors: ReadonlyArray<PlatformError.PlatformError>;
+interface CursorSkillScanBudget {
+  remainingEntries: number;
+  remainingBytes: bigint;
+  exhausted: boolean;
+  incomplete: boolean;
 }
 
-const undefinedOnNotFound = <A, R>(
+class CursorSkillsProbeError extends Schema.TaggedErrorClass<CursorSkillsProbeError>()(
+  "CursorSkillsProbeError",
+  {
+    reason: Schema.Literals(["scan-budget-exhausted", "filesystem-error"]),
+    cwd: Schema.optional(Schema.String),
+  },
+) {
+  override get message(): string {
+    const location = this.cwd === undefined ? "" : ` for '${this.cwd}'`;
+    return `Cursor skill discovery${location} was incomplete (${this.reason}).`;
+  }
+}
+
+const orUndefined = <A, R>(
   effect: Effect.Effect<A, PlatformError.PlatformError, R>,
-): Effect.Effect<A | undefined, PlatformError.PlatformError, R> =>
+  budget?: CursorSkillScanBudget,
+): Effect.Effect<A | undefined, never, R> =>
   effect.pipe(
     Effect.map((value): A | undefined => value),
     Effect.catchTags({
-      PlatformError: (error) =>
-        error.reason._tag === "NotFound"
-          ? Effect.void.pipe(Effect.as(undefined))
-          : Effect.fail(error),
+      PlatformError: (error) => {
+        if (error.reason._tag !== "NotFound" && budget) budget.incomplete = true;
+        return Effect.void.pipe(Effect.as(undefined));
+      },
     }),
-  );
-
-const collectFileSystemError = <A, R>(
-  effect: Effect.Effect<A, PlatformError.PlatformError, R>,
-  errors: Array<PlatformError.PlatformError>,
-): Effect.Effect<A | undefined, never, R> =>
-  undefinedOnNotFound(effect).pipe(
-    Effect.catch((error) =>
-      Effect.sync(() => {
-        errors.push(error);
-        return undefined;
-      }),
-    ),
   );
 
 function parseFrontmatterBoolean(value: unknown): boolean | undefined {
@@ -122,36 +129,48 @@ function parseSkillFrontmatter(contents: string): CursorSkillFrontmatter | undef
 const discoverSkillsInRoot = Effect.fn("discoverCursorSkillsInRoot")(function* (input: {
   readonly directory: string;
   readonly scope: "user" | "project";
-}): Effect.fn.Return<CursorSkillsInspection, never, FileSystem.FileSystem | Path.Path> {
+  readonly budget: CursorSkillScanBudget;
+}): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const skills: ServerProviderSkill[] = [];
-  const errors: PlatformError.PlatformError[] = [];
-  const rootDirectory = yield* collectFileSystemError(fileSystem.realPath(input.directory), errors);
-  if (!rootDirectory) return { skills, errors };
+  if (input.budget.exhausted) return skills;
+  const rootDirectory = yield* orUndefined(fileSystem.realPath(input.directory), input.budget);
+  if (!rootDirectory) return skills;
   const visitedDirectories = new Set<string>();
 
   const visit = Effect.fn("visitCursorSkillDirectory")(function* (
     directory: string,
     depth: number,
   ): Effect.fn.Return<void, never> {
-    const resolvedDirectory = yield* collectFileSystemError(fileSystem.realPath(directory), errors);
-    if (
-      !resolvedDirectory ||
-      visitedDirectories.has(resolvedDirectory) ||
-      (resolvedDirectory !== rootDirectory &&
-        !resolvedDirectory.startsWith(`${rootDirectory}${path.sep}`))
-    ) {
+    if (input.budget.exhausted) return;
+    const resolvedDirectory = yield* orUndefined(fileSystem.realPath(directory), input.budget);
+    if (!resolvedDirectory) {
+      return;
+    }
+    if (visitedDirectories.has(resolvedDirectory)) {
       return;
     }
     visitedDirectories.add(resolvedDirectory);
+    // A symlink whose target lives outside the root is a skill package
+    // boundary: read its own SKILL.md so linked skill libraries show up, but
+    // never walk the target tree.
+    const insideRoot =
+      resolvedDirectory === rootDirectory ||
+      resolvedDirectory.startsWith(`${rootDirectory}${path.sep}`);
 
-    const skillPath = path.join(resolvedDirectory, "SKILL.md");
-    const skillInfo = yield* collectFileSystemError(fileSystem.stat(skillPath), errors);
-    if (skillInfo?.type === "File" && skillInfo.size <= MAX_SKILL_BYTES) {
-      const contents = yield* collectFileSystemError(fileSystem.readFileString(skillPath), errors);
-      const frontmatter = contents === undefined ? undefined : parseSkillFrontmatter(contents);
-      const name = path.basename(resolvedDirectory).trim();
+    const skillPath = path.join(directory, "SKILL.md");
+    const skillInfo = yield* orUndefined(fileSystem.stat(skillPath), input.budget);
+    if (skillInfo?.type === "File") {
+      let frontmatter: CursorSkillFrontmatter | undefined = { cliVisible: true };
+      if (skillInfo.size <= MAX_SKILL_BYTES && skillInfo.size <= input.budget.remainingBytes) {
+        const contents = yield* orUndefined(fileSystem.readFileString(skillPath));
+        if (contents !== undefined) {
+          input.budget.remainingBytes -= skillInfo.size;
+          frontmatter = parseSkillFrontmatter(contents);
+        }
+      }
+      const name = path.basename(directory).trim();
       if (frontmatter?.cliVisible && name) {
         skills.push({
           name,
@@ -168,64 +187,88 @@ const discoverSkillsInRoot = Effect.fn("discoverCursorSkillsInRoot")(function* (
       }
     }
 
-    if (depth >= MAX_SKILL_DEPTH) return;
-    const entries =
-      (yield* collectFileSystemError(fileSystem.readDirectory(resolvedDirectory), errors)) ?? [];
+    if (!insideRoot) {
+      return;
+    }
+    const entries = yield* orUndefined(fileSystem.readDirectory(directory), input.budget);
+    if (!entries) {
+      return;
+    }
     for (const entry of [...entries].sort()) {
-      const child = path.join(resolvedDirectory, entry);
-      const info = yield* collectFileSystemError(fileSystem.stat(child), errors);
-      if (info?.type === "Directory") yield* visit(child, depth + 1);
+      if (input.budget.remainingEntries === 0) {
+        input.budget.exhausted = true;
+        return;
+      }
+      input.budget.remainingEntries -= 1;
+      const child = path.join(directory, entry);
+      const info = yield* orUndefined(fileSystem.stat(child), input.budget);
+      if (info?.type !== "Directory") continue;
+      if (depth >= MAX_SKILL_DEPTH) {
+        input.budget.exhausted = true;
+        return;
+      }
+      yield* visit(child, depth + 1);
     }
   });
 
-  yield* visit(input.directory, 0);
-  return { skills, errors };
+  yield* visit(rootDirectory, 0);
+  return skills;
 });
 
-export const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
+const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<CursorSkillsInspection, never, FileSystem.FileSystem | Path.Path> {
+) {
   const path = yield* Path.Path;
   const userHome = environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
-  const roots = [
-    { directory: path.join(userHome, ".claude", "skills"), scope: "user" as const },
-    { directory: path.join(userHome, ".codex", "skills"), scope: "user" as const },
-    { directory: path.join(userHome, ".agents", "skills"), scope: "user" as const },
-    { directory: path.join(userHome, ".cursor", "skills"), scope: "user" as const },
-    ...(cwd
-      ? [
-          { directory: path.join(cwd, ".claude", "skills"), scope: "project" as const },
-          { directory: path.join(cwd, ".codex", "skills"), scope: "project" as const },
-          { directory: path.join(cwd, ".agents", "skills"), scope: "project" as const },
-          { directory: path.join(cwd, ".cursor", "skills"), scope: "project" as const },
-        ]
-      : []),
+  const rootsBelow = (base: string, scope: "user" | "project") => [
+    { directory: path.join(base, ".cursor", "skills"), scope },
+    { directory: path.join(base, ".agents", "skills"), scope },
+    { directory: path.join(base, ".codex", "skills"), scope },
+    { directory: path.join(base, ".claude", "skills"), scope },
   ];
+  const roots = [...(cwd ? rootsBelow(cwd, "project") : []), ...rootsBelow(userHome, "user")];
 
   const skillsByName = new Map<string, ServerProviderSkill>();
-  const errors: PlatformError.PlatformError[] = [];
+  const budget: CursorSkillScanBudget = {
+    remainingEntries: MAX_SKILL_SCAN_ENTRIES,
+    remainingBytes: MAX_SKILL_SCAN_BYTES,
+    exhausted: false,
+    incomplete: false,
+  };
   for (const root of roots) {
-    const inspection = yield* discoverSkillsInRoot(root);
-    errors.push(...inspection.errors);
-    for (const skill of inspection.skills) {
-      skillsByName.set(skill.name, skill);
+    if (budget.exhausted) break;
+    const skills = yield* discoverSkillsInRoot({ ...root, budget });
+    for (const skill of skills) {
+      if (!skillsByName.has(skill.name)) skillsByName.set(skill.name, skill);
     }
   }
   return {
     skills: [...skillsByName.values()].sort((left, right) => left.name.localeCompare(right.name)),
-    errors,
+    failureReason: budget.exhausted
+      ? ("scan-budget-exhausted" as const)
+      : budget.incomplete
+        ? ("filesystem-error" as const)
+        : undefined,
   };
 });
 
 export const discoverCursorSkills = Effect.fn("discoverCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
+) {
+  return (yield* inspectCursorSkills(cwd, environment)).skills;
+});
+
+export const probeCursorSkills = Effect.fn("probeCursorSkills")(function* (
+  cwd?: string,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
   const inspection = yield* inspectCursorSkills(cwd, environment);
-  if (inspection.errors.length > 0) {
-    yield* Effect.logWarning("cursor skill discovery was incomplete", {
-      causes: inspection.errors,
+  if (inspection.failureReason) {
+    return yield* new CursorSkillsProbeError({
+      reason: inspection.failureReason,
+      ...(cwd ? { cwd } : {}),
     });
   }
   return inspection.skills;

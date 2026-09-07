@@ -12,7 +12,198 @@ import {
   toolGroupSummaryKind,
   type WorkLogPresentationEntry,
   workEntryViewedImagePath,
+  workEntryIndicatesToolFailure,
+  workEntryDisplayIndicatesToolFailure,
+  workEntryIndicatesToolSuccess,
 } from "./presentation.js";
+
+describe("workEntryIndicatesToolFailure", () => {
+  const base = {
+    id: "w1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    label: "Read",
+  };
+
+  it("is true for error tone", () => {
+    expect(
+      workEntryIndicatesToolFailure({
+        ...base,
+        tone: "error",
+        detail: "nothing special",
+      }),
+    ).toBe(true);
+  });
+
+  it("is true when lifecycle says failed even if detail is empty", () => {
+    expect(
+      workEntryIndicatesToolFailure({
+        ...base,
+        tone: "tool",
+        toolLifecycleStatus: "failed",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects file-not-found style tool output with completed lifecycle", () => {
+    expect(
+      workEntryIndicatesToolFailure({
+        ...base,
+        tone: "tool",
+        toolLifecycleStatus: "completed",
+        detail: "File not found: C:\\foo\\nonexistent.ts",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects glob no files and PowerShell command errors", () => {
+    expect(
+      workEntryIndicatesToolFailure({
+        ...base,
+        label: "Glob",
+        tone: "tool",
+        detail: "No files found",
+      }),
+    ).toBe(true);
+    expect(
+      workEntryIndicatesToolFailure({
+        ...base,
+        label: "Bash",
+        tone: "tool",
+        detail:
+          "The term 'this_is_not_a_command' is not recognized as the name of a cmdlet, function, script file, or operable program.",
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for successful completed tools", () => {
+    expect(
+      workEntryIndicatesToolFailure({
+        ...base,
+        tone: "tool",
+        toolLifecycleStatus: "completed",
+        detail: "Found 3 matching files",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not treat error text in a command as rendered failure", () => {
+    const entry = {
+      label: "Ran command",
+      tone: "tool",
+      toolLifecycleStatus: "completed",
+      command: 'rg "file not found"',
+      detail: "Found 3 matches",
+    } satisfies WorkLogPresentationEntry;
+
+    expect(workEntryDisplayIndicatesToolFailure(entry)).toBe(false);
+    // Older activities can store output in this field, so that path stays separate.
+    expect(workEntryIndicatesToolFailure(entry)).toBe(true);
+    expect(workEntryDisplayIndicatesToolFailure({ ...entry, detail: "File not found" })).toBe(true);
+  });
+
+  it("treats successful tool rows as success candidates", () => {
+    expect(
+      workEntryIndicatesToolSuccess({
+        ...base,
+        tone: "tool",
+        toolLifecycleStatus: "completed",
+        detail: "ok",
+      }),
+    ).toBe(true);
+    expect(
+      workEntryIndicatesToolSuccess({
+        ...base,
+        tone: "tool",
+        toolLifecycleStatus: "inProgress",
+        detail: "…",
+      }),
+    ).toBe(false);
+    expect(workEntryIndicatesToolSuccess({ ...base, tone: "thinking", detail: "…" })).toBe(false);
+    expect(
+      workEntryIndicatesToolSuccess({ ...base, tone: "tool", toolLifecycleStatus: "stopped" }),
+    ).toBe(false);
+  });
+
+  it("does not run heuristics on non-tool info rows", () => {
+    expect(
+      workEntryIndicatesToolFailure({
+        ...base,
+        label: "Context compacted",
+        tone: "info",
+        detail: "File not found in conversation",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("summarizeToolGroup", () => {
+  it.each(["command", "file-read", "file-change"])(
+    "keeps %s approvals out of tool execution counts",
+    (requestKind) => {
+      const approvals = [
+        {
+          label: "Approval requested",
+          sourceActivityKind: "approval.requested",
+          tone: "info",
+          requestKind,
+        },
+        {
+          label: "Approval resolved",
+          sourceActivityKind: "approval.resolved",
+          tone: "info",
+          requestKind,
+        },
+        {
+          label: "Provider approval response failed",
+          sourceActivityKind: "provider.approval.respond.failed",
+          tone: "error",
+        },
+      ] satisfies WorkLogPresentationEntry[];
+
+      expect(
+        summarizeToolGroup([
+          ...approvals,
+          { label: "Read", tone: "tool", itemType: "dynamic_tool_call" },
+        ]),
+      ).toBe("Received 3 updates and used 1 tool");
+      expect(summarizeToolGroup(approvals)).toBe("Received 3 updates");
+      expect(toolGroupSummaryKind(approvals)).toBe("update");
+    },
+  );
+
+  it("deduplicates named sources ahead of ordinary actions", () => {
+    const source = { key: "browser-use:chrome", name: "Chrome", kind: "integration" as const };
+    expect(
+      summarizeToolGroup([
+        { label: "Open page", tone: "tool", toolSource: source },
+        { label: "Inspect page", tone: "tool", toolSource: source },
+        {
+          label: "Ran command",
+          tone: "tool",
+          itemType: "command_execution",
+          command: "git status",
+        },
+      ]),
+    ).toBe("Used Chrome integration and ran 1 command");
+  });
+
+  it("omits the integration suffix for special browser and computer sources", () => {
+    expect(
+      summarizeToolGroup([
+        {
+          label: "Inspect page",
+          tone: "tool",
+          toolSource: { key: "browser-use", name: "Browser", kind: "browser" },
+        },
+        {
+          label: "Click",
+          tone: "tool",
+          toolSource: { key: "computer-use", name: "Computer Use", kind: "computer" },
+        },
+      ]),
+    ).toBe("Used Browser and Computer Use");
+  });
+});
 
 describe("resolveWorkEntryToolPresentation", () => {
   it.each([
@@ -25,7 +216,7 @@ describe("resolveWorkEntryToolPresentation", () => {
     "preview_click",
   ])("recognizes browser tool names across providers: %s", (label) => {
     expect(resolveWorkEntryToolPresentation({ label })).toEqual({
-      displayName: "Click in the preview browser",
+      displayName: "Clicking in the preview browser",
       icon: "browser",
     });
   });
@@ -37,7 +228,7 @@ describe("resolveWorkEntryToolPresentation", () => {
         toolTitle: "Inspect the current page",
         toolData: { server: "t3-code", tool: "preview_snapshot", result: { title: "Example" } },
       }),
-    ).toEqual({ displayName: "Take a snapshot of the preview page", icon: "browser" });
+    ).toEqual({ displayName: "Taking a snapshot of the preview page", icon: "browser" });
   });
 
   it.each([
@@ -46,7 +237,7 @@ describe("resolveWorkEntryToolPresentation", () => {
     ["failed", "Failed to click in the preview browser"],
     ["declined", "Declined to click in the preview browser"],
     ["stopped", "Stopped clicking in the preview browser"],
-    ["unknown", "Click in the preview browser"],
+    ["unknown", "Clicking in the preview browser"],
   ])("describes the tool's own %s state", (toolLifecycleStatus, displayName) => {
     expect(
       resolveWorkEntryToolPresentation({
@@ -115,7 +306,7 @@ describe("resolveWorkEntryToolPresentation", () => {
         label: "mcp__t3_code__task_status",
         toolTitle: "Check the child task",
       }),
-    ).toEqual({ displayName: "Get delegated task status", icon: "t3-code" });
+    ).toEqual({ displayName: "Getting delegated task status", icon: "t3-code" });
   });
 
   it("does not brand unknown tools or another server's matching tool name", () => {
@@ -353,17 +544,11 @@ describe("toolGroupAction", () => {
 describe("resolveViewedImageAsset", () => {
   const threadId = ThreadId.make("thread-1");
 
-  it("loads t3 attachment paths as attachments", () => {
-    const attachmentId =
-      "11111111-1111-4111-8111-111111111111-22222222-2222-4222-8222-222222222222";
-    expect(
-      resolveViewedImageAsset(`/Users/demo/.t3/dev/attachments/${attachmentId}.png`, {
-        threadId,
-        workspaceRoot: "/workspace",
-      }),
-    ).toEqual({
-      resource: { _tag: "attachment", attachmentId },
-      alt: `${attachmentId}.png`,
+  it("serves t3 attachment paths in place like any other host path", () => {
+    const path = "/Users/demo/.t3/dev/attachments/11111111-1111-4111-8111-111111111111.png";
+    expect(resolveViewedImageAsset(path, { threadId, workspaceRoot: "/workspace" })).toEqual({
+      resource: { _tag: "media-file", threadId, path },
+      alt: "11111111-1111-4111-8111-111111111111.png",
       srcFragment: "",
     });
   });
