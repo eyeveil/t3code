@@ -92,6 +92,8 @@ const emptyShellSnapshot = {
 const projectionQueryStub = (
   overrides: Partial<ProjectionSnapshotQuery["Service"]>,
 ): ProjectionSnapshotQuery["Service"] => ({
+  getThreadRuntimeContext: () => Effect.succeed(Option.none()),
+  getTurnStartMessage: () => Effect.succeed(Option.none()),
   getImportedAgentSessionSources: () => Effect.succeed([]),
   getUserInputActivity: () => Effect.succeed(Option.none()),
   getCommandReadModel: () => Effect.die("unused"),
