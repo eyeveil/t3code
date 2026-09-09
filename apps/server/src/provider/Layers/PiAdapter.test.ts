@@ -317,6 +317,10 @@ describe("PiAdapter", () => {
         ]);
         assert.equal(args.includes("--no-session"), false);
         assert.equal(args.includes("--offline"), true);
+        assert.equal(
+          (args[args.indexOf("--append-system-prompt") + 1] ?? "").includes("<kistack_skills>"),
+          true,
+        );
         for (const arg of [
           "--no-context-files",
           "--no-extensions",

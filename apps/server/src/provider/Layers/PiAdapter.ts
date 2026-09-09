@@ -1,3 +1,4 @@
+import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import {
   ApprovalRequestId,
   EventId,
@@ -1786,6 +1787,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
                 "--session",
                 cursor?.sessionFile ?? freshFile!.sessionFile,
                 ...DETERMINISTIC_ARGS,
+                "--append-system-prompt",
+                buildRuntimeInstructions({ harness: "Pi" }),
               ],
               cwd,
               env: {

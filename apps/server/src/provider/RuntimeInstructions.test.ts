@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
-  it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode", "Antigravity"])(
+  it.each(["Codex", "Claude Code", "Cursor", "Grok", "OpenCode", "Antigravity", "Pi"])(
     "identifies the %s harness and describes media embedding",
     (harness) => {
       const instructions = buildRuntimeInstructions({ harness });
