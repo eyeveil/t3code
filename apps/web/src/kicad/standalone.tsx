@@ -263,7 +263,7 @@ function App() {
           ? files.filter((item) => item.path === configured)
           : libraryView && assignedLibrary && !selected[selectionKey]
             ? files.filter((item) => item.path === normalizedConfiguredLibrary)
-          : files;
+            : files;
   const file =
     selectableFiles.find((item) => item.path === selected[selectionKey]) ??
     selectableFiles.find((item) => item.path === configured) ??
@@ -431,19 +431,19 @@ function App() {
           <span className="design-source">
             {view === "step"
               ? "Recent first"
-                : designView
+              : designView
+                ? selected[selectionKey]
+                  ? "Preview override"
+                  : design.assigned
+                    ? "Assigned design"
+                    : "Project design"
+                : libraryView
                   ? selected[selectionKey]
                     ? "Preview override"
-                    : design.assigned
-                      ? "Assigned design"
-                      : "Project design"
-                  : libraryView
-                    ? selected[selectionKey]
-                      ? "Preview override"
-                      : assignedLibrary
-                        ? "Assigned library"
-                        : "Saved library"
-                : "Saved output"}
+                    : assignedLibrary
+                      ? "Assigned library"
+                      : "Saved library"
+                  : "Saved output"}
           </span>
           {(designView || libraryView) && (
             <button

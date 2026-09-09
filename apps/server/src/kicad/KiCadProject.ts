@@ -181,9 +181,15 @@ export async function discoverKiCadProject(root: string): Promise<KiCadProjectMa
     warnings.push(`Configured PCB file not found: ${config.pcb}`);
   if (config?.schematic && !files.some((file) => file.path === config!.schematic))
     warnings.push(`Configured schematic file not found: ${config.schematic}`);
-  if (config?.symbol && !files.some((file) => file.path === config!.symbol && file.kind === "symbol"))
+  if (
+    config?.symbol &&
+    !files.some((file) => file.path === config!.symbol && file.kind === "symbol")
+  )
     warnings.push(`Configured symbol library not found: ${config.symbol}`);
-  if (config?.footprint && !files.some((file) => file.path === config!.footprint && file.kind === "footprint"))
+  if (
+    config?.footprint &&
+    !files.some((file) => file.path === config!.footprint && file.kind === "footprint")
+  )
     warnings.push(`Configured footprint file not found: ${config.footprint}`);
   for (const directory of config?.gerbers ?? [])
     if (

@@ -396,7 +396,7 @@ describe("ClaudeAdapterLive", () => {
         preset: "claude_code",
         append: buildRuntimeInstructions({ harness: "Claude Code" }),
       });
-      assert.include(createInput?.options.additionalDirectories, kiStackSkillsDirectory);
+      assert.include(createInput?.options.additionalDirectories ?? [], kiStackSkillsDirectory);
       assert.equal(createInput?.options.permissionMode, "bypassPermissions");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
     }).pipe(

@@ -2,7 +2,11 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { expect, it } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+}));
 
 import { resolveKiCadEnvironment, resolveKiCadExecutable } from "./KiCadExecutable.ts";
 
@@ -36,7 +40,7 @@ it("falls back to PATH for development", () => {
   (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath = NodeFS.mkdtempSync(
     NodePath.join(NodeOS.tmpdir(), "backplane-empty-resources-"),
   );
-  expect(resolveKiCadExecutable({})).toBe("kicad-cli");
+  expect(resolveKiCadExecutable({}, "linux")).toBe("kicad-cli");
   NodeFS.rmSync((process as NodeJS.Process & { resourcesPath?: string }).resourcesPath!, {
     recursive: true,
     force: true,
@@ -73,5 +77,18 @@ it("points bundled KiCad at its standard libraries while preserving overrides", 
     ).toBe(override);
   } finally {
     NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("finds the macOS KiCad application without shell PATH configuration", () => {
+  const cli = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli";
+  const exists = vi.spyOn(NodeFS, "existsSync").mockImplementation((path) => path === cli);
+  try {
+    expect(resolveKiCadExecutable({}, "darwin")).toBe(cli);
+    expect(resolveKiCadExecutable({ KICAD_CLI: "/custom/kicad-cli" }, "darwin")).toBe(
+      "/custom/kicad-cli",
+    );
+  } finally {
+    exists.mockRestore();
   }
 });

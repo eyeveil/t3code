@@ -1677,6 +1677,46 @@ const NodeHttpServerTestWithWsDeflate = HttpServer.layerTestClient.pipe(
 );
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect("scopes KiCad viewer sessions to their workspace and requires authentication", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kicad-route-" });
+      const outside = yield* fs.makeTempDirectoryScoped({ prefix: "t3-kicad-outside-" });
+      yield* fs.writeFileString(path.join(cwd, "board.kicad_pcb"), "local board");
+      yield* fs.writeFileString(path.join(outside, "board.kicad_pcb"), "outside board");
+      yield* buildAppUnderTest();
+      const sessionUrl = "/api/kicad/viewer-session?cwd=" + encodeURIComponent(cwd);
+      assert.equal((yield* HttpClient.post(sessionUrl)).status, 401);
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const minted = yield* HttpClient.post(sessionUrl, { headers: { cookie } });
+      assert.equal(minted.status, 200);
+      const session = yield* minted.json.pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({ token: Schema.String, expiresAt: Schema.Number }),
+          ),
+        ),
+      );
+      const query = "?token=" + session.token + "&cwd=" + encodeURIComponent(outside);
+      const asset = yield* HttpClient.get("/api/kicad/assets" + query + "&path=board.kicad_pcb");
+      assert.equal(asset.status, 200);
+      assert.equal(yield* asset.text, "local board");
+      assert.equal(
+        (yield* HttpClient.get("/api/kicad/assets" + query + "&path=../board.kicad_pcb")).status,
+        404,
+      );
+      assert.equal(
+        (yield* HttpClient.get(
+          "/api/kicad/assets?token=invalid&cwd=" +
+            encodeURIComponent(cwd) +
+            "&path=board.kicad_pcb",
+        )).status,
+        401,
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("parks HTTP ingress until command readiness", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

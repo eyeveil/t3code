@@ -109,11 +109,14 @@ it.effect("reads explicit library assignments and reports missing assigned asset
     const root = tempRoot();
     NodeFS.mkdirSync(root, { recursive: true });
     NodeFS.writeFileSync(NodePath.join(root, "parts.kicad_sym"), "(kicad_symbol_lib)");
-    NodeFS.writeFileSync(NodePath.join(root, ".k3eda.json"), JSON.stringify({
-      symbol: "parts.kicad_sym",
-      symbolMember: "Controller",
-      footprint: "generated/controller.kicad_mod",
-    }));
+    NodeFS.writeFileSync(
+      NodePath.join(root, ".k3eda.json"),
+      JSON.stringify({
+        symbol: "parts.kicad_sym",
+        symbolMember: "Controller",
+        footprint: "generated/controller.kicad_mod",
+      }),
+    );
     const manifest = await discoverKiCadProject(root);
     expect(manifest.config).toMatchObject({
       symbol: "parts.kicad_sym",
