@@ -89,7 +89,7 @@ export const ProviderLoginStreamEvent = Schema.Union([
 ]);
 export type ProviderLoginStreamEvent = typeof ProviderLoginStreamEvent.Type;
 
-export class ProviderLoginInstanceNotFoundError extends Schema.TaggedErrorClass<ProviderLoginInstanceNotFoundError>()(
+export class ProviderLoginInstanceNotFoundError extends Schema.TaggedError<ProviderLoginInstanceNotFoundError>()(
   "ProviderLoginInstanceNotFoundError",
   {
     instanceId: Schema.String,
@@ -100,7 +100,7 @@ export class ProviderLoginInstanceNotFoundError extends Schema.TaggedErrorClass<
   }
 }
 
-export class ProviderLoginUnsupportedDriverError extends Schema.TaggedErrorClass<ProviderLoginUnsupportedDriverError>()(
+export class ProviderLoginUnsupportedDriverError extends Schema.TaggedError<ProviderLoginUnsupportedDriverError>()(
   "ProviderLoginUnsupportedDriverError",
   {
     instanceId: Schema.String,
@@ -112,7 +112,7 @@ export class ProviderLoginUnsupportedDriverError extends Schema.TaggedErrorClass
   }
 }
 
-export class ProviderLoginSpawnError extends Schema.TaggedErrorClass<ProviderLoginSpawnError>()(
+export class ProviderLoginSpawnError extends Schema.TaggedError<ProviderLoginSpawnError>()(
   "ProviderLoginSpawnError",
   {
     instanceId: Schema.String,
@@ -124,7 +124,7 @@ export class ProviderLoginSpawnError extends Schema.TaggedErrorClass<ProviderLog
   }
 }
 
-export class ProviderLoginNotRunningError extends Schema.TaggedErrorClass<ProviderLoginNotRunningError>()(
+export class ProviderLoginNotRunningError extends Schema.TaggedError<ProviderLoginNotRunningError>()(
   "ProviderLoginNotRunningError",
   {
     instanceId: Schema.String,
@@ -135,7 +135,7 @@ export class ProviderLoginNotRunningError extends Schema.TaggedErrorClass<Provid
   }
 }
 
-export class ProviderLoginWriteError extends Schema.TaggedErrorClass<ProviderLoginWriteError>()(
+export class ProviderLoginWriteError extends Schema.TaggedError<ProviderLoginWriteError>()(
   "ProviderLoginWriteError",
   {
     instanceId: Schema.String,

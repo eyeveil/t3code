@@ -8,7 +8,7 @@ import {
   type QueuedThreadMessage,
 } from "./threadOutboxModel.ts";
 
-export class ThreadOutboxStorageError extends Schema.TaggedErrorClass<ThreadOutboxStorageError>()(
+export class ThreadOutboxStorageError extends Schema.TaggedError<ThreadOutboxStorageError>()(
   "ThreadOutboxStorageError",
   {
     operation: Schema.Literals(["load", "read-message", "write", "remove"]),
@@ -31,7 +31,7 @@ export interface ThreadOutboxStorage {
   readonly remove: (message: QueuedThreadMessage) => Promise<void>;
 }
 
-export class ThreadOutboxManagerError extends Schema.TaggedErrorClass<ThreadOutboxManagerError>()(
+export class ThreadOutboxManagerError extends Schema.TaggedError<ThreadOutboxManagerError>()(
   "ThreadOutboxManagerError",
   {
     operation: Schema.Literals([

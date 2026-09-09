@@ -33,7 +33,7 @@ const dependencies = [
 const spawnDependencies = [...dependencies, ProviderInstanceRegistry];
 
 /** Serializable wrapper so orchestration read/dispatch failures surface as MCP tool errors. */
-export class ChatToolError extends Schema.TaggedErrorClass<ChatToolError>()("ChatToolError", {
+export class ChatToolError extends Schema.TaggedError<ChatToolError>()("ChatToolError", {
   detail: Schema.String,
 }) {
   override get message(): string {

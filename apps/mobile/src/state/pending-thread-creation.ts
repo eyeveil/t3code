@@ -159,5 +159,7 @@ export function pendingThreadCreationShell(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    lastActivitySummary: null,
+    lastActivityAt: null,
   };
 }

@@ -103,6 +103,10 @@
       "types": "./src/state/composerAttachment.ts",
       "default": "./src/state/composerAttachment.ts"
     },
+    "./state/kicad": {
+      "types": "./src/state/kicad.ts",
+      "default": "./src/state/kicad.ts"
+    },
     "./state/attachments": {
       "types": "./src/state/attachments.ts",
       "default": "./src/state/attachments.ts"

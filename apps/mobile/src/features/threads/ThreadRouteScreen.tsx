@@ -661,7 +661,40 @@ function ThreadRouteContent(
     onRunAction: gitActions.onRunSelectedThreadGitAction,
   };
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
-  const compactRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
+  const baseCompactRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
+  const openKiCad = useCallback(() => {
+    if (!selectedThread || selectedThreadCwd === null) return;
+    void navigation.navigate("KiCadViewer", {
+      environmentId: String(selectedThread.environmentId),
+      threadId: String(selectedThread.id),
+      cwd: selectedThreadCwd,
+    });
+  }, [navigation, selectedThread, selectedThreadCwd]);
+  const kiCadHeaderItem = useMemo(
+    () =>
+      withNativeGlassHeaderItem({
+        accessibilityLabel: "Open KiCad viewer",
+        icon: { name: "cpu", type: "sfSymbol" as const },
+        identifier: "thread-kicad",
+        onPress: openKiCad,
+        type: "button" as const,
+      }),
+    [openKiCad],
+  );
+  const compactRightHeaderItems = useMemo(
+    () =>
+      selectedThreadCwd === null
+        ? baseCompactRightHeaderItems
+        : [...baseCompactRightHeaderItems, kiCadHeaderItem],
+    [baseCompactRightHeaderItems, kiCadHeaderItem, selectedThreadCwd],
+  );
+  const splitCenterHeaderItems = useMemo(
+    () =>
+      selectedThreadCwd === null
+        ? threadCenterHeaderItems
+        : [...threadCenterHeaderItems, kiCadHeaderItem],
+    [kiCadHeaderItem, selectedThreadCwd, threadCenterHeaderItems],
+  );
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       {
@@ -720,6 +753,11 @@ function ThreadRouteContent(
         icon: "folder",
         onPress: handleOpenFilesInspector,
       });
+      actions.push({
+        accessibilityLabel: "Open KiCad viewer",
+        icon: "cpu",
+        onPress: openKiCad,
+      });
     }
     if (selectedThreadProject?.workspaceRoot) {
       actions.push({
@@ -749,6 +787,7 @@ function ThreadRouteContent(
     handleToggleInspector,
     props.onReturnToThread,
     selectedThreadCwd,
+    openKiCad,
     selectedThreadProject?.workspaceRoot,
   ]);
 
@@ -943,7 +982,7 @@ function ThreadRouteContent(
           // reserved for future breadcrumbs/status).
           unstable_headerRightItems:
             Platform.OS === "ios"
-              ? () => (layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems)
+              ? () => (layout.usesSplitView ? splitCenterHeaderItems : compactRightHeaderItems)
               : undefined,
           unstable_headerSubtitle: usesNativeHeaderGlass ? headerSubtitle : undefined,
           contentStyle:

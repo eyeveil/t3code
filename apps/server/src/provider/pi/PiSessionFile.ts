@@ -16,7 +16,7 @@ export type PiSessionCursor = typeof PiSessionCursor.Type;
 
 const decodePiSessionHeader = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
-export class PiSessionFileError extends Schema.TaggedErrorClass<PiSessionFileError>()(
+export class PiSessionFileError extends Schema.TaggedError<PiSessionFileError>()(
   "PiSessionFileError",
   {
     operation: Schema.String,

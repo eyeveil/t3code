@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Prism viewer</title>
+    <style>
+      html,
+      body,
+      #viewer {
+        height: 100%;
+        width: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+      body {
+        background: #101214;
+        color: #b8b8b8;
+        font: 12px system-ui;
+      }
+      #error {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        text-align: center;
+        pointer-events: none;
+      }
+      #error:empty {
+        display: none;
+      }
+      .canvas-actions {
+        position: absolute;
+        bottom: 16px;
+        right: 16px;
+        display: flex;
+        gap: 2px;
+        border: 1px solid #ffffff20;
+        border-radius: 9px;
+        padding: 4px;
+        background: #182023;
+        box-shadow: 0 4px 20px #0003;
+        z-index: 20;
+      }
+      .canvas-actions button {
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: #dce5e0;
+        height: 32px;
+        min-width: 32px;
+        padding: 0 10px;
+        font: 11px system-ui;
+        cursor: pointer;
+        transition: background-color 140ms;
+      }
+      .canvas-actions button:hover {
+        background: #ffffff14;
+      }
+      [data-color-scheme="light"] .canvas-actions {
+        background: #f8faf9;
+        border-color: #18202326;
+      }
+      [data-color-scheme="light"] .canvas-actions button {
+        color: #283830;
+      }
+      [data-color-scheme="light"] .canvas-actions button:hover {
+        background: #1820230c;
+      }
+      .canvas-actions button:focus-visible {
+        outline: 2px solid #8fbe9a;
+      }
+      @media (max-width: 640px) {
+        .canvas-actions {
+          right: 10px;
+          bottom: 10px;
+        }
+        .canvas-actions button {
+          min-height: 40px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .canvas-actions button {
+          transition: none;
+        }
+      }
+      ecad-viewer,
+      ecad-3d-viewer {
+        display: block;
+        height: 100%;
+        width: 100%;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./three/three.module.js",
+          "three/addons/": "./three/addons/",
+          "3d-viewer": "./3d-viewer.js",
+          "glyph-full": "./glyph-full.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="viewer"></div>
+    <div id="error" role="status"></div>
+    <script type="module" src="./runtime.js"></script>
+  </body>
+</html>
