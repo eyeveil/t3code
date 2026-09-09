@@ -57,6 +57,7 @@ const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabili
 const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
+  reportsContextWindow: true,
 } as const;
 const USAGE_PROBE_TIMEOUT_MS = 4_000;
 function toTitleCaseWords(value: string): string {

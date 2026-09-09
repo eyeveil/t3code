@@ -1,21 +1,22 @@
 import {
   createContext,
-  useEffect,
   startTransition,
   use,
   useCallback,
+  useEffect,
+  useState,
   useLayoutEffect,
   useMemo,
   useRef,
   type ReactNode,
 } from "react";
-import { Appearance, Platform, useColorScheme } from "react-native";
+import { AppState, Appearance, Platform, useColorScheme } from "react-native";
 
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { useMaterial3Theme, type Material3Theme } from "@pchmn/expo-material3-theme";
-import { ScopedTheme, Uniwind } from "uniwind";
+import { ScopedTheme, ScopedVariables, Uniwind } from "uniwind";
 
 import {
   resolveAppearance,
@@ -25,6 +26,10 @@ import {
 import { BRAND_ACCENT_SOURCE, resolveMaterialAccentVariables } from "../../../lib/materialAccent";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../../state/preferences";
 import type { Preferences } from "../../../persistence/mobile-preferences";
+import { isSystemColorsAvailable, readSystemColorPalettes } from "../../../lib/materialYouPalette";
+import { materialYouPaletteToMobileThemeVariables } from "../../../lib/materialYouTheme";
+import { getMobileThemeRuntimeVariables } from "../../../lib/mobileThemeVariables";
+import type { MobileThemeVariables } from "../../../lib/mobileTheme";
 import {
   createMobileThemePairPatch,
   createMobileThemeSelectionPatch,
@@ -48,6 +53,16 @@ interface AppearancePreferencesContextValue {
   readonly themeIds: MobileThemeIds;
   readonly themeMode: MobileThemeMode;
   readonly themeAppearance: MobileThemeAppearance;
+  readonly materialYouStyleLayoutEnabled: boolean;
+  readonly materialYouStyleLayoutActive: boolean;
+  readonly setMaterialYouStyleLayoutEnabled: (value: boolean) => void;
+  readonly systemColorsAvailable: boolean;
+  readonly systemColorsActive: boolean;
+  readonly themeVariables: MobileThemeVariables;
+  readonly themeVariablesByAppearance: Readonly<
+    Record<MobileThemeAppearance, MobileThemeVariables>
+  >;
+  readonly systemColorPalettes: ReturnType<typeof readSystemColorPalettes>;
   readonly isReady: boolean;
   readonly setThemeIdForAppearance: (
     appearance: MobileThemeAppearance,
@@ -99,6 +114,44 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     [resolvedThemeIds.dark, resolvedThemeIds.light],
   );
   const themeId = themeIds[themeAppearance];
+  const materialYouStyleLayoutEnabled = storedPreferences?.materialYouStyleLayoutEnabled ?? false;
+  const materialYouStyleLayoutActive = Platform.OS === "android" && materialYouStyleLayoutEnabled;
+  const systemColorsActive = themeId === "material-you" && isSystemColorsAvailable;
+  const [systemColorPalettes, setSystemColorPalettes] = useState(readSystemColorPalettes);
+  useEffect(() => {
+    if (!isSystemColorsAvailable) return;
+    const refresh = () => {
+      const next = readSystemColorPalettes();
+      setSystemColorPalettes((previous) =>
+        JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
+      );
+    };
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") refresh();
+    });
+    const focusSubscription = AppState.addEventListener("focus", refresh);
+    return () => {
+      subscription.remove();
+      focusSubscription.remove();
+    };
+  }, []);
+  const themeVariablesByAppearance = useMemo(() => {
+    const resolve = (appearance: MobileThemeAppearance) => {
+      const authored = getMobileThemeRuntimeVariables(themeIds[appearance], appearance);
+      const base = Platform.OS === "android" && themeIds[appearance] === "t3-code"
+        ? { ...authored, ...resolveMaterialAccentVariables(materialTheme[appearance], appearance) }
+        : authored;
+      return themeIds[appearance] === "material-you" && systemColorPalettes
+        ? materialYouPaletteToMobileThemeVariables(
+            systemColorPalettes[appearance],
+            appearance,
+            base,
+          )
+        : base;
+    };
+    return { light: resolve("light"), dark: resolve("dark") };
+  }, [themeIds, systemColorPalettes, materialTheme]);
+  const themeVariables = themeVariablesByAppearance[themeAppearance];
   const activeThemeName = getMobileUniwindThemeName(themeId, themeAppearance);
   const { baseFontSize, codeFontSize, codeWordBreak, terminalFontSize } = preferences;
   const appearance = useMemo(
@@ -220,6 +273,13 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     [runtimeState, syncThemeRuntime, updateThemePreferences],
   );
 
+  const setMaterialYouStyleLayoutEnabled = useCallback(
+    (value: boolean) => {
+      updatePreferences({ materialYouStyleLayoutEnabled: value });
+    },
+    [updatePreferences],
+  );
+
   const setBaseFontSize = useCallback(
     (value: number) => {
       const current = appliedRuntimeStateRef.current ?? runtimeState;
@@ -257,6 +317,14 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
       themeIds,
       themeMode,
       themeAppearance,
+      systemColorsAvailable: isSystemColorsAvailable,
+      systemColorsActive,
+      materialYouStyleLayoutEnabled,
+      materialYouStyleLayoutActive,
+      setMaterialYouStyleLayoutEnabled,
+      themeVariables,
+      themeVariablesByAppearance,
+      systemColorPalettes,
       isReady,
       setThemeIdForAppearance,
       setThemeIdForBothAppearances,
@@ -272,6 +340,13 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
       themeIds,
       themeMode,
       themeAppearance,
+      systemColorsActive,
+      materialYouStyleLayoutEnabled,
+      materialYouStyleLayoutActive,
+      setMaterialYouStyleLayoutEnabled,
+      themeVariables,
+      themeVariablesByAppearance,
+      systemColorPalettes,
       isReady,
       setThemeIdForAppearance,
       setThemeIdForBothAppearances,
@@ -285,7 +360,9 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
 
   return (
     <AppearancePreferencesContext.Provider value={value}>
-      <ScopedTheme theme={activeThemeName}>{props.children}</ScopedTheme>
+      <ScopedTheme theme={activeThemeName}>
+        <ScopedVariables variables={themeVariables}>{props.children}</ScopedVariables>
+      </ScopedTheme>
     </AppearancePreferencesContext.Provider>
   );
 }
