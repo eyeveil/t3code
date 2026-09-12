@@ -67,6 +67,7 @@ const threadShell = (input: {
   interactionMode: "default",
   branch: null,
   worktreePath: null,
+  pullRequests: [],
   latestTurn: null,
   createdAt: now,
   updatedAt: now,
@@ -92,6 +93,7 @@ const emptyShellSnapshot = {
 const projectionQueryStub = (
   overrides: Partial<ProjectionSnapshotQuery["Service"]>,
 ): ProjectionSnapshotQuery["Service"] => ({
+  getProjectShells: () => Effect.succeed([]),
   getThreadRuntimeContext: () => Effect.succeed(Option.none()),
   getTurnStartMessage: () => Effect.succeed(Option.none()),
   getImportedAgentSessionSources: () => Effect.succeed([]),
@@ -186,6 +188,7 @@ const threadDetail = (input: {
     interactionMode: "default",
     branch: null,
     worktreePath: null,
+    pullRequests: [],
     latestTurn: input.latestTurn ?? null,
     createdAt: now,
     updatedAt: now,
@@ -379,7 +382,7 @@ it.effect("rejects invocations without the chat capability", () =>
     const error = yield* Effect.flip(
       runTool({ name: "chat_list_projects", params: {}, capabilities: ["preview"] }),
     );
-    expect(error).toMatchObject({ _tag: "PreviewAutomationUnavailableError", capability: "chat" });
+    expect(error).toMatchObject({ _tag: "McpCapabilityUnavailableError", capability: "chat" });
   }),
 );
 

@@ -378,7 +378,7 @@ function B(t) {
       continue;
     }
     let p = o,
-      _ = u === Ie || u === ke || Pe(u),
+      _ = u === Ie || u === ke || u === lt || Pe(u),
       b = o + 1;
     for (; b < a;) {
       let g = t.charCodeAt(b);

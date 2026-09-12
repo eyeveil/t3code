@@ -1,0 +1,25 @@
+diff --git a/apps/web/public/kicad-viewer/ecad-viewer.js b/apps/web/public/kicad-viewer/ecad-viewer.js
+index f2fba6796..f958995da 100644
+--- a/apps/web/public/kicad-viewer/ecad-viewer.js
++++ b/apps/web/public/kicad-viewer/ecad-viewer.js
+@@ -55324,6 +55324,7 @@ var Ue = class Ue extends k {
+       console.error("[ECadViewer] Error while setting up project:", t);
+       let r = t instanceof Error ? t.message : "Unknown error while setting up project";
+       window.dispatchEvent(new ai(r));
++      throw t;
+     } finally {
+       this.loading = !1;
+     }
+diff --git a/apps/web/public/kicad-viewer/parser.worker.js b/apps/web/public/kicad-viewer/parser.worker.js
+index a82fffa39..9b30f5906 100644
+--- a/apps/web/public/kicad-viewer/parser.worker.js
++++ b/apps/web/public/kicad-viewer/parser.worker.js
+@@ -378,7 +378,7 @@ function B(t) {
+       continue;
+     }
+     let p = o,
+-      _ = u === Ie || u === ke || Pe(u),
++      _ = u === Ie || u === ke || u === lt || Pe(u),
+       b = o + 1;
+     for (; b < a;) {
+       let g = t.charCodeAt(b);

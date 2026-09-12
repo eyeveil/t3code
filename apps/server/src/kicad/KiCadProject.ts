@@ -1,4 +1,4 @@
-/* eslint-disable t3code/namespace-node-imports */
+/* eslint-disable backplane/namespace-node-imports */
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -31,6 +31,7 @@ export interface KiCadProjectManifest {
 }
 export interface KiCadProjectConfig {
   readonly analysisUrl?: string;
+  readonly panelization?: string;
   readonly pcb?: string;
   readonly schematic?: string;
   readonly gerbers?: readonly string[];
@@ -108,16 +109,18 @@ export async function discoverKiCadProject(root: string): Promise<KiCadProjectMa
   const cached = manifestCache.get(projectRoot);
   if (cached && cached.expiresAt > Date.now()) return cached.manifest;
   const files: KiCadProjectFile[] = [];
+  const metadataRevisions: string[] = [];
   let visited = 0;
   let scanLimitWarningAdded = false;
   let config: KiCadProjectConfig | undefined;
   const warnings: string[] = [];
   try {
     const parsed = JSON.parse(
-      await NodeFSP.readFile(NodePath.join(projectRoot, ".k3eda.json"), "utf8"),
+      await NodeFSP.readFile(NodePath.join(projectRoot, ".backplane.json"), "utf8"),
     ) as Record<string, unknown>;
     config = {
       ...(typeof parsed.analysisUrl === "string" ? { analysisUrl: parsed.analysisUrl } : {}),
+      ...(typeof parsed.panelization === "string" ? { panelization: parsed.panelization } : {}),
       ...(typeof parsed.pcb === "string" ? { pcb: parsed.pcb } : {}),
       ...(typeof parsed.schematic === "string" ? { schematic: parsed.schematic } : {}),
       ...(Array.isArray(parsed.gerbers)
@@ -129,12 +132,15 @@ export async function discoverKiCadProject(root: string): Promise<KiCadProjectMa
     };
   } catch {
     try {
-      if ((await NodeFSP.stat(NodePath.join(projectRoot, ".k3eda.json"))).isFile())
-        warnings.push("Unable to parse .k3eda.json");
+      if ((await NodeFSP.stat(NodePath.join(projectRoot, ".backplane.json"))).isFile())
+        warnings.push("Unable to parse .backplane.json");
     } catch {
       /* configuration is optional */
     }
   }
+  const panelizationPath = (config?.panelization ?? "panelize.json")
+    .replaceAll("\\", "/")
+    .replace(/^\.\//, "");
   const walk = async (directory: string): Promise<void> => {
     if (++visited > 50_000) {
       if (!scanLimitWarningAdded) {
@@ -157,12 +163,24 @@ export async function discoverKiCadProject(root: string): Promise<KiCadProjectMa
       }
       const extension = entry.name.slice(entry.name.lastIndexOf(".")).toLowerCase();
       const kind = fileKind(extension);
-      if (!kind) continue;
+      const panelization =
+        NodePath.relative(projectRoot, NodePath.join(directory, entry.name))
+          .split(NodePath.sep)
+          .join("/") === panelizationPath;
+      const metadata = /\.kicad_(?:pcb|sch|mod|sym)\.backplane\.json$/i.test(entry.name);
+      if (!kind && !metadata && !panelization) continue;
       const absolute = NodePath.join(directory, entry.name);
       try {
         const info = await NodeFSP.lstat(absolute);
         if (info.isSymbolicLink()) continue;
         if (!info.isFile()) continue;
+        if (metadata || panelization) {
+          metadataRevisions.push(
+            `${NodePath.relative(projectRoot, absolute)}\0${info.size}\0${info.mtimeMs}`,
+          );
+          continue;
+        }
+        if (!kind) continue;
         files.push({
           path: NodePath.relative(projectRoot, absolute).split(NodePath.sep).join("/"),
           kind,
@@ -205,6 +223,7 @@ export async function discoverKiCadProject(root: string): Promise<KiCadProjectMa
     .update(
       `${configFingerprint}\n${JSON.stringify(warnings)}\n${files.map((file) => `${file.path}\0${file.size}\0${file.mtimeMs}`).join("\n")}`,
     )
+    .update(metadataRevisions.sort().join("\n"))
     .digest("hex")
     .slice(0, 16);
   const manifest = { root: projectRoot, revision, files, ...(config ? { config } : {}), warnings };

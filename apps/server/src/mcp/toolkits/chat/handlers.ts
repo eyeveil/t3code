@@ -10,7 +10,7 @@ import {
   ModelSelection,
   type OrchestrationSessionStatus,
   type OrchestrationThreadShell,
-  type PreviewAutomationUnavailableError,
+  type McpCapabilityUnavailableError,
   ProjectId,
   ProviderDriverKind,
   type ProviderInstanceId,
@@ -62,7 +62,7 @@ const runChatTool = Effect.fn("ChatToolkit.run")(function* <
   effect: Effect.Effect<A, E, R>,
 ): Effect.fn.Return<
   A,
-  ChatToolError | PreviewAutomationUnavailableError,
+  ChatToolError | McpCapabilityUnavailableError,
   R | McpInvocationContext.McpInvocationContext
 > {
   yield* McpInvocationContext.requireMcpCapability("chat");

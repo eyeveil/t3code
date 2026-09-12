@@ -7,7 +7,15 @@
   "worktreePatchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "sourceTreeSha256": "ea0023c32d6643c4f6ba520a111e49acea12432791dd0f818d11e7deec95cdec",
   "artifacts": {
-    "ecad-viewer.js": "sha256:11f371e896842c0512e77c041580473d26c3ee573f08901d7d53e41012f3587e",
-    "parser.worker.js": "sha256:32474ee6ec9b57bdc1e0fa1a72f6b98b73690c9092f146ab701ab878be5aee69"
-  }
+    "ecad-viewer.js": "sha256:a7afd29b0327f4c95b37f6e201ea3d40409a786e8cbaef42f9cdf8ec8a94f101",
+    "parser.worker.js": "sha256:71c1f94d6cc98ef22b45074f3b39bedf90abd03e5891070c9e5670ea73631914"
+  },
+  "backplaneCommit": "5af94e9dc9891d8820e52e7af89ff3501d05ed81",
+  "localPatches": [
+    {
+      "file": "leading-decimal-and-load-errors.patch",
+      "sha256": "496b1c3e0a703dc30416119a3be3fae10bdc3fdb7c06ef53c1e586076ca2505a",
+      "reason": "Accept leading decimal numeric tokens and reject failed project setup."
+    }
+  ]
 }

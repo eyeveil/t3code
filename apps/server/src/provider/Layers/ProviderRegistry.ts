@@ -57,6 +57,7 @@ import {
 import type { ProviderInstance, ProviderWorkspaceCatalog } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
+import { mergeKiStackProviderSkills } from "../KiStackSkills.ts";
 
 const loadProviders = (
   providerSources: ReadonlyArray<ProviderSnapshotSource>,
@@ -94,10 +95,11 @@ export function upsertProviderWorkspaceSnapshot(
     cwd,
     checkedAt,
     slashCommands: provider.slashCommands,
-    skills: catalog.skills,
+    skills: mergeKiStackProviderSkills(catalog.skills),
   } satisfies NonNullable<ServerProvider["workspaceSnapshots"]>[number];
   return {
     ...provider,
+    skills: mergeKiStackProviderSkills(provider.skills),
     workspaceSnapshots: [
       ...(provider.workspaceSnapshots ?? []).filter((snapshot) => snapshot.cwd !== cwd),
       workspaceSnapshot,
@@ -266,7 +268,10 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(snapshot);
+  return Effect.succeed({
+    ...snapshot,
+    skills: mergeKiStackProviderSkills(snapshot.skills),
+  });
 };
 
 /**
@@ -361,7 +366,7 @@ export const ProviderRegistryLive = Layer.effect(
                   cachedDriver: cachedProvider.driver ?? null,
                 }).pipe(Effect.as(undefined as ServerProvider | undefined));
               }
-              return Effect.succeed(hydrateCachedProvider(correlation));
+              return correlateSnapshotWithSource(source, hydrateCachedProvider(correlation));
             }),
           );
         }),

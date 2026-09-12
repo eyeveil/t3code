@@ -363,7 +363,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       tone: "info",
       kind: "provider.fallback.switched",
-      summary: `Usage limit on ${failedName} — continued on ${targetName}`,
+      summary: `Usage limit on ${failedName} — retrying on ${targetName}`,
       payload: {
         fromInstanceId: String(failedInstanceId),
         toInstanceId: candidate.instanceId,

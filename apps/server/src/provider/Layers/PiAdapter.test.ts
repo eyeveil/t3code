@@ -360,6 +360,7 @@ describe("PiAdapter", () => {
       providerInstanceId: instanceId,
       endpoint: "http://127.0.0.1:43123/mcp",
       authorizationHeader: "Bearer secret-token",
+      capabilities: new Set(["preview"]),
     });
     return withAdapter(h, (adapter) =>
       Effect.gen(function* () {
@@ -405,6 +406,7 @@ describe("PiAdapter", () => {
       providerInstanceId: instanceId,
       endpoint: "http://127.0.0.1:43123/mcp",
       authorizationHeader: "Bearer secret-token",
+      capabilities: new Set(["preview"]),
     });
     return withAdapter(h, (adapter) =>
       Effect.gen(function* () {

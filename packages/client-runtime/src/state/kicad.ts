@@ -32,10 +32,12 @@ const fetchKiCadJson = <A>(input: {
     const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
     const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
     return yield* executeAuthenticatedEnvironmentHttpRequest<
+      "orchestration",
       HttpClientResponse.HttpClientResponse,
       HttpClientError.HttpClientError,
       HttpClient.HttpClient
     >({
+      group: "orchestration",
       prepared: input.prepared,
       signer,
       remoteAuthorization,

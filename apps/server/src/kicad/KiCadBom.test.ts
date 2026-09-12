@@ -37,7 +37,7 @@ it("uses the active edited settings rather than an outdated named preset", () =>
   });
   expect(prepared.project.schematic.bom_presets).toEqual([
     {
-      name: "T3CAD saved settings",
+      name: "Backplane saved settings",
       fields_ordered: fields,
       group_symbols: true,
       exclude_dnp: true,
@@ -49,14 +49,14 @@ it("uses the active edited settings rather than an outdated named preset", () =>
   expect(prepared.preset).toBe("Current saved settings");
   expect(prepared.args).toEqual([
     "--preset",
-    "T3CAD saved settings",
+    "Backplane saved settings",
     "--format-preset",
-    "T3CAD saved format",
+    "Backplane saved format",
   ]);
 });
 
 it("shares exports per revision, preserves source settings, and removes temporary files", async () => {
-  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3cad-bom-test-"));
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "backplane-bom-test-"));
   const original =
     '{"schematic":{"bom_settings":{"fields_ordered":[{"name":"Reference","show":true}]}}}';
   let runs = 0;
@@ -64,12 +64,17 @@ it("shares exports per revision, preserves source settings, and removes temporar
   try {
     await NodeFSP.writeFile(NodePath.join(root, "board.kicad_sch"), "(kicad_sch)");
     await NodeFSP.writeFile(NodePath.join(root, "board.kicad_pro"), original);
+    const metadata = '{"format":"backplane-kicad-metadata","version":1,"items":{}}';
+    await NodeFSP.writeFile(NodePath.join(root, "board.kicad_sch.backplane.json"), metadata);
     const cache = createKiCadBomCache(async (args, cwd) => {
       runs++;
       expect(cwd).not.toBe(root);
       expect(await NodeFSP.readFile(NodePath.join(cwd, "board.kicad_sch"), "utf8")).toBe(
         "(kicad_sch)",
       );
+      expect(
+        await NodeFSP.readFile(NodePath.join(cwd, "board.kicad_sch.backplane.json"), "utf8"),
+      ).toBe(metadata);
       outputPath = args[args.indexOf("--output") + 1]!;
       await NodeFSP.writeFile(outputPath, '"Ref","Value"\n"R1","10k"\n');
     });

@@ -1,6 +1,6 @@
 import {
   OrchestrationSessionStatus,
-  PreviewAutomationUnavailableError,
+  McpCapabilityUnavailableError,
   ProjectId,
   RuntimeMode,
   ThreadId,
@@ -41,7 +41,7 @@ export class ChatToolError extends Schema.TaggedError<ChatToolError>()("ChatTool
   }
 }
 
-export const ChatToolFailure = Schema.Union([PreviewAutomationUnavailableError, ChatToolError]);
+export const ChatToolFailure = Schema.Union([McpCapabilityUnavailableError, ChatToolError]);
 export type ChatToolFailure = typeof ChatToolFailure.Type;
 
 export const ChatProjectSummary = Schema.Struct({

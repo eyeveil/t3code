@@ -247,7 +247,7 @@ describe("AutoFallbackCoordinator", () => {
       expect(activity.activity.kind).toBe("provider.fallback.switched");
       expect(activity.activity.tone).toBe("info");
       expect(activity.activity.summary).toContain("Usage limit on codex");
-      expect(activity.activity.summary).toContain("continued on codex-2");
+      expect(activity.activity.summary).toContain("retrying on codex-2");
 
       // Duplicate terminal surfaces of the same death must not double-dispatch.
       yield* failWithUsageLimit(coordinator);

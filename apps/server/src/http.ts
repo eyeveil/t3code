@@ -3,7 +3,8 @@ import Mime from "@effect/platform-node/Mime";
 import * as NodeCrypto from "node:crypto";
 import { kiCadLibraryCache } from "./kicad/KiCadLibrary.ts";
 import { kiCadBomCache } from "./kicad/KiCadBom.ts";
-import { kiCadModelCache } from "./kicad/KiCadModel.ts";
+import { getKiCadPanelization } from "./kicad/KiCadPanelization.ts";
+import { kiCadModelCache, resolveKiCadModelRevision } from "./kicad/KiCadModel.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -53,7 +54,11 @@ import {
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
 import { discoverKiCadProject, resolveKiCadProjectFile } from "./kicad/KiCadProject.ts";
-import { renderPrismGerber, renderPrismGerberComposite } from "./kicad/PrismGerber.ts";
+import {
+  gerberLayerColour,
+  renderPrismGerber,
+  renderPrismGerberComposite,
+} from "./kicad/PrismGerber.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -70,8 +75,8 @@ const DOWNLOAD_MIME_TYPE_PATTERN = /^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/;
 const isSafeDownloadMimeType = (mimeType: string): boolean =>
   DOWNLOAD_MIME_TYPE_PATTERN.test(mimeType) &&
   !/(?:^text\/html$|\/xml(?:$|-)|\+xml$)/i.test(mimeType.trim().toLowerCase());
-const isSafeInlineVideoMimeType = (mimeType: string): boolean =>
-  DOWNLOAD_MIME_TYPE_PATTERN.test(mimeType) && mimeType.toLowerCase().startsWith("video/");
+const isSafeInlineMediaMimeType = (mimeType: string): boolean =>
+  DOWNLOAD_MIME_TYPE_PATTERN.test(mimeType) && /^(?:audio|video)\//i.test(mimeType);
 const isSafeInlineDocumentMimeType = (mimeType: string): boolean =>
   mimeType.toLowerCase() === "application/pdf" || mimeType.toLowerCase() === "text/html";
 
@@ -115,7 +120,7 @@ export function assetResponseHeaders(
               ? options.mimeType
               : "application/octet-stream",
         }
-      : inlineMimeType !== undefined && isSafeInlineVideoMimeType(inlineMimeType)
+      : inlineMimeType !== undefined && isSafeInlineMediaMimeType(inlineMimeType)
         ? { "Content-Type": inlineMimeType }
         : inlineMimeType !== undefined && isSafeInlineDocumentMimeType(inlineMimeType)
           ? {
@@ -139,7 +144,7 @@ export function assetResponseHeaders(
   };
 }
 
-/** A single byte range for native video readers; unsupported range syntax uses the full file. */
+/** A single byte range for native media readers; unsupported range syntax uses the full file. */
 function assetByteRange(header: string, size: bigint) {
   const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
   if (!match || (!match[1] && !match[2])) return null;
@@ -177,16 +182,17 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
   const headers = assetResponseHeaders(asset.path, asset);
   const mediaFile = asset.file;
   const mediaInfo = mediaFile ? yield* statMediaFile(asset.path, mediaFile) : undefined;
-  const isVideo = headers["Content-Type"]?.toLowerCase().startsWith("video/") === true;
-  if (mediaFile && isVideo) {
-    // Host videos can change in place. Do not invite conditional range requests
-    // with validators that cannot establish byte-for-byte identity.
+  const isMedia = /^(?:audio|video)\//i.test(headers["Content-Type"] ?? "");
+  if (isMedia) {
+    // Host media can change in place. Do not invite conditional range requests
+    // with validators that cannot establish byte-for-byte identity. Attachment media
+    // carries no `file`, and must not outlive the signed URL that granted it either.
     headers["Cache-Control"] = "private, no-store";
   }
   let status = 200;
   let offset = 0n;
   let bytesToRead: bigint | undefined;
-  if (isVideo) {
+  if (isMedia) {
     headers["Accept-Ranges"] = "bytes";
     // If-Range requires a matching validator. A full response is safe when we cannot validate it.
     if (method === "GET" && rangeHeader && ifRangeHeader === undefined) {
@@ -211,7 +217,7 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
     const size = bytesToRead ?? mediaInfo.size;
     headers["Content-Type"] ??= Mime.getType(asset.path) ?? "application/octet-stream";
     headers["Content-Length"] = String(size);
-    if (!isVideo) {
+    if (!isMedia) {
       headers["Last-Modified"] = mediaInfo.mtime.toUTCString();
       headers.ETag = `W/"${mediaInfo.size.toString(16)}-${mediaInfo.mtimeMs.toString(16)}"`;
     }
@@ -467,8 +473,23 @@ export const kicadModelRouteLayer = HttpRouter.add(
     const asset = yield* Effect.tryPromise(() => resolveKiCadProjectFile(cwd, requestedPath));
     if (!asset || asset.file.kind !== "pcb")
       return HttpServerResponse.text("PCB file not found", { status: 404 });
+    const projectFiles = yield* Effect.tryPromise(async () =>
+      (
+        await Promise.all(
+          manifest.files
+            .filter((file) => file.kind === "project")
+            .map((file) => resolveKiCadProjectFile(cwd, file.path)),
+        )
+      ).flatMap((project) => (project ? [project.absolutePath] : [])),
+    );
+    const modelRevision = yield* Effect.tryPromise(() =>
+      resolveKiCadModelRevision(asset.absolutePath, { projectFiles }),
+    );
     const outputPath = yield* Effect.tryPromise({
-      try: () => kiCadModelCache.get(asset.absolutePath, manifest.revision),
+      // A Gerber, schematic, or unrelated project edit must not invalidate a
+      // costly 3D export. The revision includes the board and only its project,
+      // metadata, and referenced-model dependencies.
+      try: () => kiCadModelCache.get(asset.absolutePath, modelRevision),
       catch: (cause) =>
         new Error(
           `KiCad GLB export failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -538,7 +559,10 @@ export const kicadGerberRouteLayer = HttpRouter.add(
     const svg = yield* Effect.tryPromise({
       try: () =>
         content.length === 1
-          ? renderPrismGerber(content[0]!, assets[0]!.file.path)
+          ? renderPrismGerber(content[0]!, assets[0]!.file.path, {
+              colour: gerberLayerColour(assets[0]!.file.path),
+              transparent: true,
+            })
           : renderPrismGerberComposite(
               content.map((value, index) => ({
                 content: value,
@@ -591,6 +615,32 @@ export const kicadProjectRouteLayer = HttpRouter.add(
     if (suffix === "manifest") {
       return yield* HttpServerResponse.json(
         yield* Effect.tryPromise(() => discoverKiCadProject(cwd)),
+      );
+    }
+    if (suffix === "panelization") {
+      const path = url.value.searchParams.get("path");
+      if (!path) return HttpServerResponse.text("Missing path", { status: 400 });
+      const asset = yield* Effect.tryPromise(() => resolveKiCadProjectFile(cwd, path));
+      if (asset?.file.kind !== "pcb")
+        return HttpServerResponse.text("PCB not found", { status: 404 });
+      const manifest = yield* Effect.tryPromise(() => discoverKiCadProject(cwd));
+      return yield* Effect.tryPromise({
+        try: () =>
+          getKiCadPanelization(
+            cwd,
+            asset.file.path,
+            manifest.config?.panelization ?? "panelize.json",
+          ),
+        catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+      }).pipe(
+        Effect.flatMap((preview) =>
+          HttpServerResponse.json(preview, {
+            headers: { "Cache-Control": "private, no-cache" },
+          }),
+        ),
+        Effect.catch((cause) =>
+          Effect.succeed(HttpServerResponse.text(cause.message, { status: 422 })),
+        ),
       );
     }
     if (suffix === "library") {
