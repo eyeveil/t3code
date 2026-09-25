@@ -122,6 +122,31 @@ try {
     cwd: temporaryPackage,
   });
 
+  // npm does not apply pnpm workspace patches. Runtime dependencies must carry
+  // the same fixes as the checkout (including fff-node's require export).
+  for (const [specifier, patchFile] of Object.entries(workspaceConfig.patchedDependencies ?? {})) {
+    const separator = specifier.lastIndexOf("@");
+    const packageName = specifier.slice(0, separator);
+    const version = specifier.slice(separator + 1);
+    const packageDirectory = NodePath.join(temporaryPackage, "node_modules", packageName);
+    const installed = await NodeFSP.readFile(
+      NodePath.join(packageDirectory, "package.json"),
+      "utf8",
+    )
+      .then(JSON.parse)
+      .catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+    if (installed === null) continue;
+    if (installed.version !== version) {
+      throw new Error(`Patch version mismatch for ${specifier}: installed ${installed.version}`);
+    }
+    await run("patch", ["--batch", "-p1", "-i", NodePath.join(repoRoot, patchFile)], {
+      cwd: packageDirectory,
+    });
+  }
+
   // The repository install already built node-pty for this exact host Node ABI.
   // Copy that known-good native package into the self-contained runtime.
   const repoNodePty = await NodeFSP.realpath(NodePath.join(serverDir, "node_modules/node-pty"));
