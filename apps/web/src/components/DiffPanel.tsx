@@ -153,13 +153,6 @@ export default function DiffPanel({
     strict: false,
     select: (params) => resolveThreadRouteRef(params),
   });
-  const diffSelection = useDiffPanelStore((state) =>
-    selectThreadDiffPanelSelection(
-      state.byThreadKey,
-      routeThreadRef,
-      initialGitScope === "unstaged",
-    ),
-  );
   const activeThreadId = routeThreadRef?.threadId ?? null;
   const activeThread = useThreadShell(routeThreadRef);
   const activeThreadProjection = useThreadProjection(routeThreadRef)?.projection ?? null;

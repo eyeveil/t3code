@@ -73,6 +73,7 @@ import {
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
   restoreFailedBackgroundDraftThread,
+  hydrateComposerImagesFromAttachments,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   composerFileNeedsReattach,

@@ -142,7 +142,7 @@ export function BrowserCloneSurface(props: Props) {
     setDialog(next);
   };
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-[#111] text-white" data-browser-clone>
+    <div className="flex min-h-0 flex-1 flex-col bg-background text-foreground" data-browser-clone>
       <div
         ref={surfaceRef}
         className="relative min-h-0 flex-1 touch-none select-none overflow-hidden"
@@ -182,7 +182,7 @@ export function BrowserCloneSurface(props: Props) {
             draggable={false}
           />
         ) : (
-          <div className="flex h-full items-center justify-center p-6 text-sm text-white/60">
+          <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
             Connecting to the desktop browser…
           </div>
         )}
@@ -204,7 +204,7 @@ export function BrowserCloneSurface(props: Props) {
           </div>
         ) : null}
       </div>
-      <div className="flex shrink-0 items-center justify-around border-t border-white/10 bg-[#171717] py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      <div className="flex shrink-0 items-center justify-around border-t border-border bg-card py-2" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
         <Button
           variant="ghost"
           size="icon-lg"
@@ -241,7 +241,7 @@ export function BrowserCloneSurface(props: Props) {
           if (!value) setDialog(null);
         }}
       >
-        <DialogPopup className="max-h-[85dvh] overflow-y-auto border-white/10 bg-[#171717] text-white">
+        <DialogPopup className="max-h-[85dvh] overflow-y-auto">
           <DialogTitle>
             {dialog === "help"
               ? "Using the Computer"
@@ -251,7 +251,7 @@ export function BrowserCloneSurface(props: Props) {
                   ? "Clipboard"
                   : "Browser controls"}
           </DialogTitle>
-          <DialogDescription className="text-white/60">
+          <DialogDescription>
             {dialog === "typing"
               ? "Select a field in the desktop page, then send text or a key."
               : dialog === "clipboard"
@@ -263,7 +263,7 @@ export function BrowserCloneSurface(props: Props) {
               {HELP.map(([title, detail]) => (
                 <div key={title} className="border border-white/10 bg-white/5 p-4">
                   <p className="text-base">{title}</p>
-                  <p className="mt-1 text-sm text-white/60">{detail}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">{detail}</p>
                 </div>
               ))}
             </div>
@@ -372,7 +372,7 @@ export function BrowserCloneSurface(props: Props) {
             </div>
           ) : null}
           {actionError ? (
-            <p role="alert" className="mt-3 text-sm text-red-300">
+            <p role="alert" className="mt-3 text-sm text-error">
               {actionError}
             </p>
           ) : null}

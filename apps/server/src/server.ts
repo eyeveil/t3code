@@ -1,3 +1,6 @@
+import { workerLive as AccountFallbackWorkerLive } from "./orchestration-v2/AccountFallbackWorker.ts";
+import { AutoFallbackCooldownTrackerLive } from "./orchestration/autoFallback/CooldownTracker.ts";
+import { ProviderUsageTrackerLive } from "./provider/usage/ProviderUsageTracker.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -513,6 +516,7 @@ const AntigravityInstallationRefreshLive = Layer.effectDiscard(
 );
 
 const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
+  AccountFallbackWorkerLive,
   AgentAwarenessRelay.layer,
   ThreadSettlementWorkerLive,
   Layer.effectDiscard(StorageCleanup.make.pipe(Effect.flatMap((service) => service.start()))).pipe(
@@ -540,7 +544,16 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   Layer.provideMerge(Layer.mergeAll(SourceControlProviderRegistryLayerLive, GitHubCli.layer)),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
-  Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, DeviceLayerLive)),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      TerminalLayerLive,
+      PreviewLayerLive,
+      DeviceLayerLive,
+      ProviderLoginLayerLive,
+      AutoFallbackCooldownTrackerLive,
+      ProviderUsageTrackerLive,
+    ),
+  ),
   Layer.provideMerge(PersistenceLayerLive),
   // Both read a user-owned file out of the state directory and stream changes
   // to clients; neither depends on the other.

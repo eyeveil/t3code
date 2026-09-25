@@ -250,7 +250,6 @@ import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
-import { AgentsPanel } from "./AgentsPanel";
 import { KiCadProjectPanel } from "./kicad/KiCadProjectPanel";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
@@ -4274,117 +4273,6 @@ export default function ChatView(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
-  const { sendQueuedMessage } = useThreadOutboxDelivery();
-
-  const onSteerQueuedMessage = useCallback(
-    async (queuedMessage: QueuedThreadMessage) => {
-      if (
-        !activeThread ||
-        !isServerThread ||
-        activeThread.environmentId !== queuedMessage.environmentId ||
-        activeThread.id !== queuedMessage.threadId
-      ) {
-        return;
-      }
-      if (!claimQueuedMessageDispatch(queuedMessage.messageId)) {
-        return;
-      }
-      try {
-        const sent = await sendQueuedMessage(queuedMessage, {
-          modelSelection: activeThread.modelSelection,
-          runtimeMode: activeThread.runtimeMode,
-          interactionMode: activeThread.interactionMode,
-        });
-        if (!sent) {
-          setThreadError(
-            queuedMessage.threadId,
-            "Could not send the queued message. It stays queued.",
-          );
-        }
-      } finally {
-        finishDispatchingQueuedMessage(queuedMessage.messageId);
-      }
-    },
-    [activeThread, isServerThread, sendQueuedMessage, setThreadError],
-  );
-
-  const onEditQueuedMessage = useCallback(
-    async (queuedMessage: QueuedThreadMessage) => {
-      if (dispatchingQueuedMessageId === queuedMessage.messageId) {
-        return;
-      }
-      holdEditingQueuedMessage(queuedMessage.messageId);
-      try {
-        await removeThreadOutboxMessage(queuedMessage);
-      } catch (error) {
-        setThreadError(
-          queuedMessage.threadId,
-          error instanceof Error ? error.message : "Failed to load the queued message for editing.",
-        );
-        return;
-      } finally {
-        releaseEditingQueuedMessage(queuedMessage.messageId);
-      }
-      const existing = promptRef.current;
-      const separator = existing.trim().length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
-      const nextPrompt = `${existing}${separator}${queuedMessage.text}`;
-      promptRef.current = nextPrompt;
-      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
-      if (queuedMessage.attachments.length > 0) {
-        const restoredImages = hydrateComposerImagesFromAttachments(queuedMessage.attachments);
-        if (restoredImages.length > 0) {
-          addComposerDraftImages(composerDraftTarget, restoredImages);
-        }
-      }
-      if (queuedMessage.modelSelection !== undefined) {
-        setComposerDraftModelSelection(composerDraftTarget, queuedMessage.modelSelection);
-      }
-      if (queuedMessage.runtimeMode !== undefined) {
-        setComposerDraftRuntimeMode(composerDraftTarget, queuedMessage.runtimeMode);
-      }
-      if (queuedMessage.interactionMode !== undefined) {
-        setComposerDraftInteractionMode(composerDraftTarget, queuedMessage.interactionMode);
-      }
-      composerRef.current?.resetCursorState({
-        cursor: collapseExpandedComposerCursor(nextPrompt, nextPrompt.length),
-        prompt: nextPrompt,
-      });
-      scheduleComposerFocus();
-    },
-    [
-      addComposerDraftImages,
-      composerDraftTarget,
-      composerRef,
-      dispatchingQueuedMessageId,
-      scheduleComposerFocus,
-      setComposerDraftInteractionMode,
-      setComposerDraftModelSelection,
-      setComposerDraftPrompt,
-      setComposerDraftRuntimeMode,
-      setThreadError,
-    ],
-  );
-
-  const onDeleteQueuedMessage = useCallback(
-    async (queuedMessage: QueuedThreadMessage) => {
-      if (dispatchingQueuedMessageId === queuedMessage.messageId) {
-        return;
-      }
-      holdEditingQueuedMessage(queuedMessage.messageId);
-      try {
-        await removeThreadOutboxMessage(queuedMessage);
-      } catch (error) {
-        setThreadError(
-          queuedMessage.threadId,
-          error instanceof Error ? error.message : "Failed to delete the queued message.",
-        );
-      } finally {
-        releaseEditingQueuedMessage(queuedMessage.messageId);
-      }
-    },
-    [dispatchingQueuedMessageId, setThreadError],
-  );
-
   const useArtifactTemplate = useCallback(
     (template: CodexArtifactTemplate) => {
       const composer = composerRef.current;
@@ -5087,10 +4975,6 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
-  const addAgentsSurface = useCallback(() => {
-    if (!activeThreadRef) return;
-    useRightPanelStore.getState().open(activeThreadRef, "agents");
-  }, [activeThreadRef]);
   const addKiCadSurface = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "kicad");
@@ -10270,12 +10154,6 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
-    ) : renderedRightPanelSurface?.kind === "agents" ? (
-      <AgentsPanel
-        model={agentPanelModel}
-        environmentId={activeThreadRef?.environmentId ?? null}
-        threadId={activeThreadRef?.threadId ?? null}
-      />
     ) : renderedRightPanelSurface?.kind === "kicad" ? (
       <KiCadProjectPanel
         mode="embedded"
@@ -10747,14 +10625,6 @@ export default function ChatView(props: ChatViewProps) {
                       </div>
                     </div>
                   ) : null}
-                  <ComposerQueuedMessages
-                    messages={activeQueuedMessages}
-                    dispatchingMessageId={dispatchingQueuedMessageId}
-                    steerEnabled={!activeEnvironmentUnavailable}
-                    onSteer={(message) => void onSteerQueuedMessage(message)}
-                    onEdit={(message) => void onEditQueuedMessage(message)}
-                    onDelete={(message) => void onDeleteQueuedMessage(message)}
-                  />
                   <div
                     ref={draftHeroTransition.composerAnchorRef}
                     className="relative z-10"
@@ -10899,16 +10769,11 @@ export default function ChatView(props: ChatViewProps) {
                             composerImagesRef={composerImagesRef}
                             composerFilesRef={composerFilesRef}
                             composerTerminalContextsRef={composerTerminalContextsRef}
-                            queuedHeadMessage={activeQueuedMessages[0] ?? null}
-                            queueSteerEnabled={!activeEnvironmentUnavailable}
                             onPageScrollKeyDown={onComposerPageScrollKeyDown}
                             onPageScrollKeyUp={onComposerPageScrollKeyUp}
                             onPageScrollRelease={onComposerPageScrollRelease}
                             onCompactContext={onCompactContext}
                             onSend={onSend}
-                            onSteerQueuedMessage={(message) => void onSteerQueuedMessage(message)}
-                            onEditQueuedMessage={(message) => void onEditQueuedMessage(message)}
-                            onDeleteQueuedMessage={(message) => void onDeleteQueuedMessage(message)}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
@@ -11127,7 +10992,6 @@ export default function ChatView(props: ChatViewProps) {
           onAddFiles={addFilesSurface}
           onAddPullRequest={addPullRequestSurface}
           onAddPullRequests={addPullRequestsSurface}
-          onAddAgents={addAgentsSurface}
           onAddKiCad={addKiCadSurface}
           onAddDevice={addDeviceSurface}
           browserAvailable={isPreviewSupportedInRuntime() || isBrowserCloneSupportedInRuntime()}
@@ -11136,7 +11000,6 @@ export default function ChatView(props: ChatViewProps) {
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
-          agentsAvailable
           kicadAvailable={activeProject !== null}
           deviceAvailable={activeThreadRef !== null}
         >
@@ -11185,16 +11048,14 @@ export default function ChatView(props: ChatViewProps) {
             onAddFiles={addFilesSurface}
             onAddPullRequest={addPullRequestSurface}
             onAddPullRequests={addPullRequestsSurface}
-            onAddAgents={addAgentsSurface}
             onAddKiCad={addKiCadSurface}
-          onAddDevice={addDeviceSurface}
+            onAddDevice={addDeviceSurface}
             browserAvailable={isPreviewSupportedInRuntime() || isBrowserCloneSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
-            agentsAvailable
             kicadAvailable={activeProject !== null}
             deviceAvailable={activeThreadRef !== null}
           >

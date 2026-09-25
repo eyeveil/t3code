@@ -1,3 +1,4 @@
+import * as Haptics from "expo-haptics";
 import { type ComponentProps, type ReactNode, useRef } from "react";
 import { Platform, Pressable, View } from "react-native";
 import { cn } from "../lib/cn";

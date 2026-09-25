@@ -4738,45 +4738,11 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
-function toolInputString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function subagentInputBlocks(toolData: unknown): string[] {
-  const input =
-    toolData && typeof toolData === "object" ? (toolData as Record<string, unknown>) : null;
-  if (!input) {
-    return [];
-  }
-  const blocks: string[] = [];
-  const meta: string[] = [];
-  const subagentType = toolInputString(input.subagent_type);
-  if (subagentType) {
-    meta.push(`Type: ${subagentType}`);
-  }
-  const model = toolInputString(input.model);
-  if (model) {
-    meta.push(`Model: ${model}`);
-  }
-  if (meta.length > 0) {
-    blocks.push(meta.join("\n"));
-  }
-  const prompt = toolInputString(input.prompt);
-  if (prompt) {
-    blocks.push(prompt);
-  }
-  return blocks;
-}
-
-export function buildToolCallExpandedBody(
+function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
-  visibleLabel: string = "",
-  viewedImagePath: string | null = null,
+  visibleLabel: string,
+  viewedImagePath: string | null,
 ): string | null {
   const blocks: string[] = [];
   const seen = new Set<string>([visibleLabel.trim()]);
@@ -4797,10 +4763,6 @@ export function buildToolCallExpandedBody(
           : undefined;
     if (input !== undefined) addBlock(`Tool input\n${JSON.stringify(input, null, 2)}`);
   }
-  const isSubagent = workEntry.itemType === "collab_agent_tool_call";
-  if (isSubagent) {
-    for (const block of subagentInputBlocks(workEntry.toolData)) addBlock(block);
-  }
   const command = workEntry.command?.trim();
   const raw = workEntryRawCommand(workEntry);
   if (command === visibleLabel.trim()) {
@@ -4809,7 +4771,7 @@ export function buildToolCallExpandedBody(
     addBlock(raw ?? command);
   }
   const detail = workEntry.detail?.trim();
-  if (!isSubagent && detail !== viewedImagePath?.trim()) {
+  if (detail !== viewedImagePath?.trim()) {
     addBlock(detail);
   }
   const viewedImagePaths = new Set(

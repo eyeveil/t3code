@@ -122,6 +122,7 @@ function makeTestAdapter(input: {
   readonly tokenUsageByRunOrdinal?: Readonly<
     Record<number, Omit<OrchestrationV2ProviderTurnTokenUsage, "updatedAt">>
   >;
+  readonly failureClass?: "usage_limit" | "provider_error";
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
@@ -327,7 +328,7 @@ function makeTestAdapter(input: {
                         failure: makeProviderFailure({
                           message: "Simulated provider failure.",
                           code: "simulated_failure",
-                          class: "provider_error",
+                          class: input.failureClass ?? "provider_error",
                         }),
                       }
                     : { status: terminalStatus, failure: null }),
@@ -385,6 +386,129 @@ const waitForIdle = Effect.fn("ProviderSwitchTest.waitForIdle")(function* (
 });
 
 describe("orchestration v2 provider switching", () => {
+  it.live(
+    "retries a limited run on a sibling account once without duplicating the user message",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* checkpointWorkspace("account-fallback");
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const sibling = {
+            ...CODEX_MODEL_SELECTION,
+            instanceId: ProviderInstanceId.make("codex-sibling"),
+          };
+          const registry = makeProviderAdapterRegistryLayer([
+            makeTestAdapter({
+              instanceId: CODEX_MODEL_SELECTION.instanceId,
+              driver: CODEX_DRIVER,
+              capabilities: CodexProviderCapabilitiesV2,
+              modelSelection: CODEX_MODEL_SELECTION,
+              capturedTurns,
+              responseByRunOrdinal: {},
+              failedRunOrdinals: new Set([1]),
+              failureClass: "usage_limit",
+            }),
+            makeTestAdapter({
+              instanceId: sibling.instanceId,
+              driver: CODEX_DRIVER,
+              capabilities: CodexProviderCapabilitiesV2,
+              modelSelection: sibling,
+              capturedTurns,
+              responseByRunOrdinal: { 2: "Finished on sibling" },
+            }),
+          ]);
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* OrchestratorV2;
+            const worker = yield* OrchestrationEffectWorkerV2;
+            const wait = (ordinal: number) =>
+              orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.payload.ordinal === ordinal &&
+                    (event.payload.status === "completed" || event.payload.status === "failed"),
+                ),
+                Stream.runHead,
+                Effect.andThen(worker.drain()),
+              );
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("fallback:create"),
+              threadId,
+              projectId,
+              createdBy: "user",
+              creationSource: "web",
+              title: "Fallback",
+              modelSelection: CODEX_MODEL_SELECTION,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+            });
+            const messageId = MessageId.make("fallback:user");
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("fallback:send"),
+              threadId,
+              messageId,
+              text: "Finish this exact task",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+              dispatchMode: { type: "start_immediately" },
+            });
+            yield* wait(1);
+            const failed = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+            assert.equal(failed.status, "failed");
+            const retry = {
+              type: "message.dispatch",
+              commandId: CommandId.make(`account-fallback:${failed.id}`),
+              threadId,
+              messageId,
+              text: "Finish this exact task",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "server",
+              dispatchMode: { type: "start_immediately" },
+              modelSelection: sibling,
+              accountFallbackOfRunId: failed.id,
+            } satisfies OrchestrationV2Command;
+            yield* orchestrator.dispatch(retry);
+            yield* wait(2);
+            yield* orchestrator.dispatch(retry);
+            const result = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(result.runs.length, 2);
+            assert.equal(result.runs.at(-1)?.status, "completed");
+            assert.equal(result.thread.modelSelection.instanceId, sibling.instanceId);
+            assert.equal(result.messages.filter((m) => m.role === "user").length, 1);
+            assert.match(
+              (yield* Ref.get(capturedTurns)).at(-1)!.text,
+              /User message:\nFinish this exact task$/,
+            );
+            const stale = yield* orchestrator
+              .dispatch({ ...retry, commandId: CommandId.make("fallback:stale") })
+              .pipe(Effect.flip);
+            assert.equal(stale._tag, "OrchestratorDispatchError");
+            assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.length, 2);
+          }).pipe(
+            Effect.provide(
+              makeOrchestratorV2ReplayLayerWithRegistry(
+                {
+                  name: "account-fallback",
+                  runtimePolicyOverride: {
+                    cwd,
+                    approvalPolicy: "never",
+                    sandboxPolicy: { type: "readOnly" },
+                  },
+                },
+                registry,
+              ),
+            ),
+          );
+        }),
+      ),
+  );
+
   for (const scenario of [
     "compact-native",
     "compact-fallback",

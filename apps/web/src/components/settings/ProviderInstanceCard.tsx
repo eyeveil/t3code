@@ -20,7 +20,6 @@ import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "
 import {
   isProviderDriverKind,
   resolveProviderInstanceEnabled,
-  type EnvironmentId,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
@@ -182,7 +181,7 @@ function ProviderUsageBars(props: {
         return (
           <Tooltip key={id}>
             <TooltipTrigger render={<div className="grid gap-1" />}>
-              <div className="flex items-center justify-between gap-2 text-[10px] leading-none text-muted-foreground/75">
+              <div className="flex items-center justify-between gap-2 text-3xs leading-none text-muted-foreground/75">
                 <span className="font-medium">{label}</span>
                 <span className="tabular-nums">{percentLabel}</span>
               </div>

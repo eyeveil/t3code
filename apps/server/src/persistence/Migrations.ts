@@ -177,7 +177,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
   const previewMigrations =
-    toMigrationInclusive === undefined || toMigrationInclusive >= 55
+    toMigrationInclusive === undefined || toMigrationInclusive >= 56
       ? yield* reconcileV2PreviewMigration()
       : [];
   const executedMigrations = [

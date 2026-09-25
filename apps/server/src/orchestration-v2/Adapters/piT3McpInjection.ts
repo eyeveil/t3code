@@ -5,7 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import type { McpProviderSessionConfig } from "../../mcp/McpProviderSession.ts";
 import {
   PI_T3_MCP_EXTENSION_FILENAME,
-  PI_T3_MCP_EXTENSION_SOURCE,
+  buildPiT3McpExtensionSource,
   T3_MCP_BEARER_ENV,
   T3_MCP_URL_ENV,
   T3_PI_RUNTIME_MODE_ENV,
@@ -231,8 +231,9 @@ export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtensio
   yield* fs.makeDirectory(cacheDir, { recursive: true });
   const dest = piT3McpExtensionDestPath(cacheDir);
   const existing = yield* fs.readFileString(dest).pipe(Effect.orElseSucceed(() => ""));
-  if (existing !== PI_T3_MCP_EXTENSION_SOURCE) {
-    yield* fs.writeFileString(dest, PI_T3_MCP_EXTENSION_SOURCE);
+  const source = buildPiT3McpExtensionSource();
+  if (existing !== source) {
+    yield* fs.writeFileString(dest, source);
   }
   return dest;
 });

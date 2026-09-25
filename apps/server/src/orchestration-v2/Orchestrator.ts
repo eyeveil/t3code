@@ -3997,6 +3997,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      if (command.accountFallbackOfRunId !== undefined) {
+        const run = projection.runs.at(-1);
+        const failure = latestRootProviderFailure(run ?? null, projection.turnItems);
+        if (
+          run?.id !== command.accountFallbackOfRunId ||
+          run.status !== "failed" ||
+          failure?.class !== "usage_limit" ||
+          projection.thread.providerInstanceId !== run.providerInstanceId ||
+          projection.thread.archivedAt !== null ||
+          projection.thread.deletedAt !== null ||
+          projection.thread.settledOverride === "settled" ||
+          projection.thread.snoozedUntil != null ||
+          projection.runtimeRequests.some((request) => request.status === "pending") ||
+          command.messageId !== run.userMessageId ||
+          command.modelSelection === undefined ||
+          command.modelSelection.model !== run.modelSelection.model ||
+          command.dispatchMode.type !== "start_immediately"
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The account fallback no longer targets the latest failed run.",
+          });
+        }
+      }
       if (command.usageLimitContinuationOfRunId !== undefined) {
         const run = projection.runs.at(-1) ?? null;
         const failure = latestRootProviderFailure(run, projection.turnItems);

@@ -124,7 +124,6 @@ interface RightPanelTabsProps {
   onAddFiles: () => void;
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
-  onAddAgents: () => void;
   onAddKiCad?: () => void;
   onAddDevice: () => void;
   browserAvailable: boolean;
@@ -133,7 +132,6 @@ interface RightPanelTabsProps {
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
-  agentsAvailable: boolean;
   kicadAvailable?: boolean;
   deviceAvailable: boolean;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
@@ -163,7 +161,6 @@ const SURFACE_DISABLED_REASONS = {
   diff: "Diff is only available for server threads in Git repositories.",
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
-  agents: "Agents are only available from a thread.",
   kicad: "KiCad is only available when a project is open.",
   device: "Devices are only available from a thread.",
 } as const;
@@ -188,7 +185,6 @@ const SURFACE_UNAVAILABLE_HINTS = {
   diff: "Available for Git repositories.",
   pullRequest: "No pull request on this branch yet.",
   pullRequests: "No linked pull requests available.",
-  agents: "Available from a thread.",
   kicad: "Available when a project is open.",
   device: "Available from a thread.",
 } as const;
@@ -329,7 +325,6 @@ function RightPanelEmptyState(props: {
   onAddFiles: () => void;
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
-  onAddAgents: () => void;
   onAddKiCad: () => void;
   onAddDevice: () => void;
   browserAvailable: boolean;
@@ -338,7 +333,6 @@ function RightPanelEmptyState(props: {
   filesAvailable: boolean;
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
-  agentsAvailable: boolean;
   kicadAvailable: boolean;
   deviceAvailable: boolean;
 }) {
@@ -620,8 +614,6 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
-    case "agents":
-      return "Agents";
     case "kicad":
       return "KiCad";
     case "device":
@@ -707,8 +699,6 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
-    case "agents":
-      return <Bot className="size-3 shrink-0" />;
     case "kicad":
       return <CircuitBoard className="size-3 shrink-0" />;
     case "device":
@@ -912,14 +902,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.pullRequestsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.pullRequests,
       onClick: props.onAddPullRequests,
-    },
-    {
-      label: "Agents",
-      icon: Bot,
-      shortcut: "A",
-      available: props.agentsAvailable,
-      disabledReason: SURFACE_DISABLED_REASONS.agents,
-      onClick: props.onAddAgents,
     },
     {
       label: "KiCad",
@@ -1419,7 +1401,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddFiles={props.onAddFiles}
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
-            onAddAgents={props.onAddAgents}
             onAddKiCad={props.onAddKiCad ?? (() => undefined)}
             onAddDevice={props.onAddDevice}
             browserAvailable={props.browserAvailable}
@@ -1428,7 +1409,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             filesAvailable={props.filesAvailable}
             pullRequestAvailable={props.pullRequestAvailable}
             pullRequestsAvailable={props.pullRequestsAvailable}
-            agentsAvailable={props.agentsAvailable}
             kicadAvailable={props.kicadAvailable ?? false}
             deviceAvailable={props.deviceAvailable}
           />

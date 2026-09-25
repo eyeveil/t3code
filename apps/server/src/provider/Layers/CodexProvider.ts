@@ -335,7 +335,7 @@ const requestAllCodexModels = Effect.fn("requestAllCodexModels")(function* (
   return models;
 });
 
-function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
+export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   return {
     clientInfo: {
       name: "t3code_desktop",

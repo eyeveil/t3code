@@ -30,7 +30,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
-  ServerProviderSkill,
+  ServerProvider,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -76,9 +76,7 @@ export interface ProviderInstance {
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
   readonly snapshot: ServerProviderShape;
-  readonly snapshotForCwd?: (
-    cwd: string,
-  ) => Effect.Effect<ProviderWorkspaceCatalog, ProviderDriverError>;
+  readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
   /** Invalidate T3-owned discovery caches before an explicit provider refresh. */
   readonly invalidateCaches?: Effect.Effect<void>;
@@ -117,12 +115,6 @@ export interface ProviderInstance {
       readonly providerId: string;
     }) => Effect.Effect<void, AcpRegistryOperationError>;
   };
-}
-
-export interface ProviderWorkspaceCatalog {
-  readonly skills: ReadonlyArray<ServerProviderSkill>;
-  /** False when discovery retained healthy roots but another root could not be read. */
-  readonly complete?: boolean;
 }
 
 export interface ProviderContinuationIdentity {

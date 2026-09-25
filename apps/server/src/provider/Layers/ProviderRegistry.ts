@@ -1,3 +1,4 @@
+import { mergeKiStackProviderSkills } from "../KiStackSkills.ts";
 /**
  * ProviderRegistryLive — aggregates per-instance snapshot streams into a
  * single materialized list.
@@ -91,7 +92,7 @@ export function upsertProviderWorkspaceSnapshot(
     cwd,
     checkedAt: scopedSnapshot.checkedAt,
     slashCommands: scopedSnapshot.slashCommands,
-    skills: scopedSnapshot.skills,
+    skills: mergeKiStackProviderSkills(scopedSnapshot.skills),
   } satisfies NonNullable<ServerProvider["workspaceSnapshots"]>[number];
   return {
     ...provider,
@@ -288,7 +289,7 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(snapshot);
+  return Effect.succeed({ ...snapshot, skills: mergeKiStackProviderSkills(snapshot.skills) });
 };
 
 /**

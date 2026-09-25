@@ -12,10 +12,6 @@ import {
 import {
   derivePrimaryUsageWindows,
   deriveProviderModelsForDisplay,
-  ProviderInstanceCard,
-});
-
-  deriveProviderModelsForDisplay,
   nextProviderEnvironmentWithFieldValue,
   providerEnvironmentWithoutNames,
   ProviderInstanceCard,

@@ -30,8 +30,6 @@ const makeThread = (
   settledAt: null,
   session: null,
   latestUserMessageAt: "2026-08-20T00:00:00.000Z",
-  lastActivitySummary: null,
-  lastActivityAt: null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,

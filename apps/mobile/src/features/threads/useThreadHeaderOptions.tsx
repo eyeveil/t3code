@@ -18,11 +18,40 @@ export function useThreadHeaderOptions(props: {
   readonly usesNativeHeaderGlass: boolean;
   readonly gitControls: Parameters<typeof ThreadGitControls>[0];
   readonly onReturnToThread?: () => void;
+  readonly onOpenKiCad?: (() => void) | undefined;
+  readonly onOpenBrowserClone?: (() => void) | undefined;
 }) {
   const navigation = useNavigation();
   const { layout, panes, togglePrimarySidebar } = useAdaptiveWorkspaceLayout();
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(props.gitControls);
   const compactRightHeaderItems = useThreadGitRightHeaderItems(props.gitControls);
+  const extraHeaderItems = useMemo(
+    () => [
+      ...(props.onOpenBrowserClone
+        ? [
+            withNativeGlassHeaderItem({
+              accessibilityLabel: "Open browser clone",
+              icon: { name: "safari", type: "sfSymbol" as const },
+              identifier: "thread-browser-clone",
+              onPress: props.onOpenBrowserClone,
+              type: "button" as const,
+            }),
+          ]
+        : []),
+      ...(props.onOpenKiCad
+        ? [
+            withNativeGlassHeaderItem({
+              accessibilityLabel: "Open KiCad viewer",
+              icon: { name: "cpu", type: "sfSymbol" as const },
+              identifier: "thread-kicad",
+              onPress: props.onOpenKiCad,
+              type: "button" as const,
+            }),
+          ]
+        : []),
+    ],
+    [props.onOpenBrowserClone, props.onOpenKiCad],
+  );
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [
       {
@@ -103,8 +132,10 @@ export function useThreadHeaderOptions(props: {
     // Search lives in the persistent sidebar, so the split header keeps
     // the git controls on the RIGHT (no center items — center space is
     // reserved for future breadcrumbs/status).
-    unstable_headerRightItems: () =>
-      layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems,
+    unstable_headerRightItems: () => [
+      ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
+      ...extraHeaderItems,
+    ],
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,
   };

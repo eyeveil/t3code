@@ -82,8 +82,6 @@ function makeThread(
     session: null,
     latestUserMessageAt: "2026-08-20T00:00:00.000Z",
     hasPendingApprovals: false,
-    lastActivitySummary: null,
-    lastActivityAt: null,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     ...overrides,

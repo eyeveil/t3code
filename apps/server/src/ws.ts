@@ -1,3 +1,5 @@
+import { AutoFallbackCooldownTracker } from "./orchestration/autoFallback/CooldownTracker.ts";
+import { ProviderUsageTracker } from "./provider/usage/ProviderUsageTracker.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import { OrchestratorV2 } from "./orchestration-v2/Orchestrator.ts";
@@ -85,7 +87,6 @@ import {
   EnvironmentAuthorizationError,
   type ProjectId,
   type ProviderDriverKind,
-  type ProviderInstanceId,
   ThreadId,
   ProviderInstanceId,
   type PreviewCloneResult,
@@ -1148,6 +1149,8 @@ const makeWsRpcLayer = (
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const providerLoginManager = yield* ProviderLoginManager;
+      const autoFallbackCooldownTracker = yield* AutoFallbackCooldownTracker;
+      const providerUsageTracker = yield* ProviderUsageTracker;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;

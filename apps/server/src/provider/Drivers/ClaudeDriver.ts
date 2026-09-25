@@ -12,14 +12,13 @@
  *
  * @module provider/Drivers/ClaudeDriver
  */
-import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -42,7 +41,6 @@ import {
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
-  probeClaudeUsageLimits,
 } from "../Layers/ClaudeProvider.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import * as ModelManifest from "../ModelManifest.ts";
@@ -54,7 +52,6 @@ import {
 } from "../ProviderDriver.ts";
 import { withInstanceIdentity } from "./instanceIdentity.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import { inspectClaudeSkills } from "./ClaudeSkills.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makeCachedProviderMaintenanceResolution,
@@ -77,30 +74,6 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
-
-interface RetainedClaudeUsage {
-  readonly accountIdentity: string;
-  readonly usage: NonNullable<ServerProvider["usage"]>;
-}
-
-export function resolveRetainedClaudeUsage(
-  previous: RetainedClaudeUsage | undefined,
-  accountIdentity: string | undefined,
-  next: ServerProvider["usage"] | undefined,
-): {
-  readonly retained: RetainedClaudeUsage | undefined;
-  readonly usage: ServerProvider["usage"] | undefined;
-} {
-  if (!accountIdentity) {
-    return { retained: undefined, usage: next };
-  }
-  if (next) {
-    return { retained: { accountIdentity, usage: next }, usage: next };
-  }
-  return previous?.accountIdentity === accountIdentity
-    ? { retained: previous, usage: previous.usage }
-    : { retained: undefined, usage: undefined };
-}
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
@@ -247,22 +220,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                 processEnv,
                 cwd,
                 resolveClaudeModelCatalog(manifest),
-                (accountIdentity) =>
-                  Cache.get(
-                    usageProbeCache,
-                    `${capabilitiesCacheKey}:${accountIdentity ?? "unknown"}`,
-                  ).pipe(
-                    Effect.flatMap((usage) =>
-                      Ref.modify(lastAvailableUsageRef, (previous) => {
-                        const resolved = resolveRetainedClaudeUsage(
-                          previous,
-                          accountIdentity,
-                          usage,
-                        );
-                        return [resolved.usage, resolved.retained] as const;
-                      }),
-                    ),
-                  ),
                 scopedLimitNames,
                 (version) =>
                   ClaudeResetCredits.readClaudeResetCredits(configDir, version).pipe(

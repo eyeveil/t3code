@@ -132,10 +132,18 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
   }, []);
   const themeVariablesByAppearance = useMemo(() => {
     const resolve = (appearance: MobileThemeAppearance) => {
-      const authored = getMobileThemeRuntimeVariables(themeIds[appearance], appearance, Platform.OS);
-      const base = Platform.OS === "android" && themeIds[appearance] === "t3-code"
-        ? { ...authored, ...resolveMaterialAccentVariables(materialTheme[appearance], appearance) }
-        : authored;
+      const authored = getMobileThemeRuntimeVariables(
+        themeIds[appearance],
+        appearance,
+        Platform.OS,
+      );
+      const base =
+        Platform.OS === "android" && themeIds[appearance] === "t3-code"
+          ? {
+              ...authored,
+              ...resolveMaterialAccentVariables(materialTheme[appearance], appearance),
+            }
+          : authored;
       return themeIds[appearance] === "material-you" && systemColorPalettes
         ? materialYouPaletteToMobileThemeVariables(
             systemColorPalettes[appearance],

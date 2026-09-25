@@ -30,7 +30,7 @@ import { runMigrations } from "../persistence/Migrations.ts";
 import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
 import Migration0042 from "../persistence/Migrations/042_ProjectionThreadLinkedPullRequest.ts";
 import Migration0043 from "../persistence/Migrations/043_ProjectionThreadsUnsettledAt.ts";
-import Migration0044 from "../persistence/Migrations/044_ClearAutomaticProjectModelDefaults.ts";
+import Migration0044 from "../persistence/Migrations/045_ClearAutomaticProjectModelDefaults.ts";
 import Migration0045 from "../persistence/Migrations/045_ProjectionProjectsAutoPull.ts";
 import Migration0046 from "../persistence/Migrations/046_RepairAutomaticSettlementTimestamps.ts";
 import Migration0047 from "../persistence/Migrations/047_ProjectionProjectIcon.ts";
@@ -106,10 +106,10 @@ const seedV1Database = (fixturePath: string, workspace: string) =>
       yield* sql`PRAGMA busy_timeout = 5000;`;
       yield* sql`PRAGMA foreign_keys = ON;`;
       yield* sql`PRAGMA journal_mode = WAL;`;
-      yield* runMigrations({ toMigrationInclusive: 40 });
+      yield* runMigrations({ toMigrationInclusive: 41 });
       yield* sql`
         INSERT INTO effect_sql_migrations (migration_id, name)
-        VALUES (41, 'ThreadSummaryTimeline')
+        VALUES (42, 'ThreadSummaryTimeline')
       `;
       yield* sql`
         CREATE TABLE thread_summary_timeline_entries (
@@ -119,14 +119,14 @@ const seedV1Database = (fixturePath: string, workspace: string) =>
         )
       `;
       const tailMigrations = [
-        [42, "ProjectionThreadLinkedPullRequest", Migration0042],
-        [43, "ProjectionThreadsUnsettledAt", Migration0043],
-        [44, "ClearAutomaticProjectModelDefaults", Migration0044],
-        [45, "ProjectionProjectsAutoPull", Migration0045],
-        [46, "RepairAutomaticSettlementTimestamps", Migration0046],
-        [47, "ProjectionProjectIcon", Migration0047],
-        [48, "ProjectionThreadBranchPullRequest", Migration0048],
-        [49, "ProjectionThreadsActiveOrderKey", Migration0049],
+        [43, "ProjectionThreadLinkedPullRequest", Migration0042],
+        [44, "ProjectionThreadsUnsettledAt", Migration0043],
+        [45, "ClearAutomaticProjectModelDefaults", Migration0044],
+        [46, "ProjectionProjectsAutoPull", Migration0045],
+        [47, "RepairAutomaticSettlementTimestamps", Migration0046],
+        [48, "ProjectionProjectIcon", Migration0047],
+        [49, "ProjectionThreadBranchPullRequest", Migration0048],
+        [50, "ProjectionThreadsActiveOrderKey", Migration0049],
       ] as const;
       for (const [id, name, migration] of tailMigrations) {
         yield* migration;
@@ -898,8 +898,8 @@ describe("orchestration v2 legacy v1 cutover", () => {
               const legacyThreadCount = yield* sql<{ readonly count: number }>`
               SELECT COUNT(*) AS count FROM projection_threads
             `;
-              const recordedMigration41 = yield* sql<{ readonly name: string }>`
-              SELECT name FROM effect_sql_migrations WHERE migration_id = 41
+              const recordedMigration42 = yield* sql<{ readonly name: string }>`
+              SELECT name FROM effect_sql_migrations WHERE migration_id = 42
             `;
               const authSessionColumns = yield* sql<{ readonly name: string }>`
               PRAGMA table_info(auth_sessions)
@@ -910,7 +910,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
                 legacyMessageCount: legacyMessageCount[0]?.count ?? 0,
                 legacyThreadCount: legacyThreadCount[0]?.count ?? 0,
                 longProjection: continuedAgain,
-                migration41Name: recordedMigration41[0]?.name ?? null,
+                migration42Name: recordedMigration42[0]?.name ?? null,
                 authSessionColumnNames: authSessionColumns.map((column) => column.name),
               };
             }).pipe(
@@ -937,9 +937,9 @@ describe("orchestration v2 legacy v1 cutover", () => {
             String(log.message).includes("migration history diverges"),
           );
           assert.deepStrictEqual(divergenceLog?.annotations.divergent, [
-            "41:ThreadSummaryTimeline (this build: AuthSessionClientConnection)",
+            "42:ThreadSummaryTimeline (this build: AuthSessionClientConnection)",
           ]);
-          assert.equal(firstBoot.migration41Name, "ThreadSummaryTimeline");
+          assert.equal(firstBoot.migration42Name, "ThreadSummaryTimeline");
           // The skipped migration's columns never landed; the schema gap is
           // what the startup warning points at.
           assert.notInclude(firstBoot.authSessionColumnNames, "client_surface");

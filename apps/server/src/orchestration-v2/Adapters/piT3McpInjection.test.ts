@@ -146,6 +146,8 @@ describe("pi T3 MCP injection", () => {
       const mcpSource = yield* fs.readFileString(mcpDest);
       assert.include(mcpSource, "export default async function t3McpExtension");
       assert.include(mcpSource, "before_agent_start");
+      assert.include(mcpSource, "<kistack_skills>");
+      assert.include(mcpSource, "<kicad_runtime>");
       assert.include(mcpSource, 'pi.on("tool_call"');
       assert.include(mcpSource, "Allow ${event.toolName}?");
       assert.include(mcpSource, '"mcp-protocol-version"');

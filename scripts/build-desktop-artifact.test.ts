@@ -465,6 +465,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       },
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "win", arch: "arm64" }), {
+      nodeLinker: "hoisted",
       supportedArchitectures: {
         os: ["win32"],
         cpu: ["arm64"],

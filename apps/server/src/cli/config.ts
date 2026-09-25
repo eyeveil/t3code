@@ -193,7 +193,7 @@ export interface CliServerFlags {
   readonly mode: Option.Option<ServerConfig.RuntimeMode>;
   readonly port: Option.Option<number>;
   readonly host: Option.Option<string>;
-  readonly publicUrl: Option.Option<string>;
+  readonly publicUrl?: Option.Option<string>;
   readonly baseDir: Option.Option<string>;
   readonly cwd: Option.Option<string>;
   readonly devUrl: Option.Option<URL>;

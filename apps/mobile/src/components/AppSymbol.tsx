@@ -202,6 +202,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "point.3.connected.trianglepath.dotted": IconNetwork,
   "point.topleft.down.curvedto.point.bottomright.up": IconGitMerge,
   safari: IconExternalLink,
+  cpu: IconDeviceDesktop,
   "server.rack": IconServer,
   stethoscope: IconStethoscope,
   "sidebar.left": IconLayoutSidebar,

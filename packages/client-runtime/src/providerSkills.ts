@@ -117,3 +117,10 @@ export function resolveProviderSkillsForCwd(
 ): ServerProvider["skills"] {
   return resolveProviderWorkspaceSnapshot(provider, cwd)?.skills ?? provider.skills;
 }
+
+export function resolveProviderSlashCommandsForCwd(
+  provider: ServerProvider,
+  cwd: string | null | undefined,
+): ServerProvider["slashCommands"] {
+  return resolveProviderWorkspaceSnapshot(provider, cwd)?.slashCommands ?? provider.slashCommands;
+}
