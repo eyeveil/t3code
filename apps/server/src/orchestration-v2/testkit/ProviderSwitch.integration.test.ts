@@ -83,6 +83,8 @@ import {
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "./ReplayFixtureWorkspace.ts";
 
+const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const threadId = ThreadId.make("thread:provider-switch");
@@ -478,7 +480,7 @@ describe("orchestration v2 provider switching", () => {
               modelSelection: sibling,
               accountFallbackOfRunId: failed.id,
             } satisfies OrchestrationV2Command;
-            const preferences = Schema.decodeUnknownSync(ServerSettings)({
+            const preferences = yield* decodeServerSettings({
               providerInstances: {
                 [CODEX_MODEL_SELECTION.instanceId]: { driver: "codex", enabled: true },
                 [sibling.instanceId]: { driver: "codex", enabled: true },

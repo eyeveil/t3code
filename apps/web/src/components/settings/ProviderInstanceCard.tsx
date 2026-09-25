@@ -1280,6 +1280,45 @@ export function ProviderInstanceCard({
           isAuthenticated={isAuthenticated}
         />
       ) : null}
+      {supportsAutoFallback ? (
+        <div className="space-y-3 border-t border-border/60 px-4 py-3 sm:px-5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <span className="text-xs font-medium text-foreground">Participate in fallback</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Let threads continue on this account when another account of the same provider hits
+                its usage limit.
+              </span>
+            </div>
+            <Switch
+              disabled={readOnly}
+              checked={participateInFallback}
+              onCheckedChange={(checked) => updateParticipateInFallback(Boolean(checked))}
+              aria-label={`Participate in fallback for ${displayName}`}
+            />
+          </div>
+          {!isDefaultInstance ? (
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <span className="text-xs font-medium text-foreground">
+                  Mirror primary custom models
+                </span>
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  Inherit the primary account&apos;s custom model list so fallback can continue
+                  threads on the exact same model.
+                </span>
+              </div>
+              <Switch
+                disabled={readOnly}
+                checked={mirrorPrimaryCustomModels}
+                onCheckedChange={(checked) => updateMirrorPrimaryCustomModels(Boolean(checked))}
+                aria-label={`Mirror primary custom models for ${displayName}`}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {setup || environmentFields.length > 0 ? (
         <SettingsSection title="Setup">
           {setup}

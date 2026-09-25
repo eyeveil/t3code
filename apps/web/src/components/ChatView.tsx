@@ -71,7 +71,6 @@ import {
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
-import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import {
   wasBootstrapThreadDeleted,
   wasBootstrapThreadNotCreated,
@@ -199,8 +198,6 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
-  isBrowserPreviewAttachment,
-  isImageAttachment,
   type SessionPhase,
   type Thread,
 } from "../types";
@@ -283,7 +280,6 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
-import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities } from "../providerModels";
 import {
@@ -389,21 +385,7 @@ import {
   waitForThreadShell,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
-import {
-  claimQueuedMessageDispatch,
-  dispatchingQueuedMessageIdAtom,
-  enqueueThreadOutboxMessage,
-  finishDispatchingQueuedMessage,
-  holdEditingQueuedMessage,
-  releaseEditingQueuedMessage,
-  removeThreadOutboxMessage,
-  useThreadOutboxMessages,
-} from "../state/threadOutbox";
-import { useThreadOutboxDelivery } from "../state/threadOutboxDelivery";
-import type { QueuedThreadMessage } from "@t3tools/client-runtime/state/thread-outbox-model";
-import type { DraftComposerImageAttachment } from "@t3tools/client-runtime/state/composer-attachment";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
-import { ComposerQueuedMessages } from "./chat/ComposerQueuedMessages";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -667,7 +649,6 @@ const DevicePanel = lazy(() =>
 );
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
-const EMPTY_QUEUED_MESSAGES: ReadonlyArray<QueuedThreadMessage> = [];
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
   "textarea",
@@ -5137,7 +5118,6 @@ export default function ChatView(props: ChatViewProps) {
         linkedThreadPullRequest.number,
       ])
     : null;
-  const threadRepository = linkedThreadPullRequest?.repository ?? activeProjectRepository;
   const threadPrRelinkKeysRef = useRef(new Map<string, string>());
   const threadPrRelinkWriteRef = useRef(Promise.resolve());
   useEffect(() => {
@@ -10249,7 +10229,7 @@ export default function ChatView(props: ChatViewProps) {
         : undefined,
     onEnvironmentChange,
     onEnvModeChange,
-    ...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {}),
+    envMode,
     ...(canOverrideServerThreadEnvMode
       ? {
           activeThreadBranchOverride: activeThreadBranch,

@@ -69,6 +69,7 @@ describe("ThreadDetailsPanel", () => {
       envLocked: false,
       availableEnvironments: [],
       onEnvironmentChange: vi.fn(),
+      envMode: "local",
       onEnvModeChange: vi.fn(),
       startFromOrigin: false,
       onStartFromOriginChange: vi.fn(),

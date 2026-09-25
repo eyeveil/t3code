@@ -14,7 +14,6 @@ import type {
 } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
-  Bot,
   CircuitBoard,
   Smartphone,
   ChevronDown,
