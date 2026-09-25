@@ -5,7 +5,7 @@
  * ~/.t3 database, then run this checkout's migrations against it.
  *
  * `vp run migrate-dev-db` from a worktree:
- *   1. Nukes `<worktree>/.t3/userdata/state.sqlite`.
+ *   1. Nukes `<worktree>/.t3/userdata/statev2.sqlite`.
  *   2. Snapshots the real db (read-only VACUUM INTO) and prunes it to the
  *      most recently updated projects and, per project, the most recent
  *      threads that have fully stopped. Working, settled, and monitored
@@ -373,7 +373,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     return yield* new MigrateDevDbNotInWorktreeError();
   }
   const stateDir = path.join(baseDir, "userdata");
-  const databasePath = path.join(stateDir, "state.sqlite");
+  const databasePath = path.join(stateDir, "statev2.sqlite");
   const snapshotPath = `${databasePath}.migrate-dev-db-tmp`;
 
   if (!(yield* fs.exists(sourcePath))) {
@@ -506,19 +506,19 @@ const formatSize = (bytes: number): string =>
 export const migrateDevDbCommand = Command.make(
   "migrate-dev-db",
   {
-    projects: Flag.integer("projects").pipe(
+    projects: Flag.Int("projects").pipe(
       Flag.withDefault(5),
       Flag.withDescription("How many recently updated projects to keep."),
     ),
-    threadsPerProject: Flag.integer("threads-per-project").pipe(
+    threadsPerProject: Flag.Int("threads-per-project").pipe(
       Flag.withDefault(10),
       Flag.withDescription("How many recent stopped threads to keep per project."),
     ),
-    baseDir: Flag.string("base-dir").pipe(
+    baseDir: Flag.String("base-dir").pipe(
       Flag.optional,
       Flag.withDescription("Isolated .t3 directory. Defaults to the current worktree's .t3."),
     ),
-    source: Flag.string("source").pipe(
+    source: Flag.String("source").pipe(
       Flag.optional,
       Flag.withDescription("Source database. Defaults to ~/.t3/userdata/state.sqlite."),
     ),

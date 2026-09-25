@@ -46,7 +46,7 @@ const decodeQuestion = Schema.decodeUnknownOption(
 );
 
 /** Older activities use native request types instead of a request kind. */
-export function requestKindFromRequestType(requestType: unknown): ProviderRequestKind | null {
+function requestKindFromRequestType(requestType: unknown): ProviderRequestKind | null {
   switch (requestType) {
     case "command_execution_approval":
     case "exec_command_approval":
@@ -59,6 +59,8 @@ export function requestKindFromRequestType(requestType: unknown): ProviderReques
       return "file-change";
     case "mcp_elicitation_approval":
       return "mcp-elicitation";
+    case "permission_approval":
+      return "permission";
     default:
       return null;
   }

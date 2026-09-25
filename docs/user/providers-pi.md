@@ -1,80 +1,65 @@
 # Pi
 
-T3 Code can run Pi through Pi's RPC mode. Pi keeps control of its models, accounts, extensions,
-skills, tools, configuration, and session files.
+T3 Code can use your existing Pi coding agent installation while keeping Pi's models, auth,
+extensions, skills, context files, and native session history.
 
 ## Set Up Pi
 
-Install and configure Pi first. Confirm that the command works in the same environment as the T3
-server:
+1. Install Pi 0.80.5 or newer on the machine running the T3 Code server.
+2. Run Pi once in a terminal and finish the provider login or API-key setup you normally use.
+3. Open T3 Code Settings, enable Pi, and refresh the provider.
 
-```bash
-pi --version
-```
+If `pi` is not on the server's `PATH`, set Pi's binary path to the executable. Provider environment
+variables and launch arguments are also available for installations that need a custom agent
+directory, endpoint, or model configuration. T3 Code rejects launch arguments that change Pi's
+execution mode or select a session because T3 owns those parts of the process lifecycle.
 
-Then open **Settings**, add a **Pi** provider, and refresh its status. T3 uses `pi` from `PATH` by
-default. Set **Binary path** when Pi lives elsewhere.
+## What Carries Over
 
-T3 marks the provider unavailable when it cannot run the configured binary.
+T3 Code discovers the models reported by Pi and exposes their supported thinking levels. The
+thinking picker marks Pi's current configured level as the default without overriding it. Threads
+use Pi's native session files for resume, rollback, and forks within the same Pi instance. Forks
+preserve the native conversation through the selected turn in the destination workspace.
+Switching providers uses portable conversation context. Extension
+dialogs appear in the T3 Code composer, and the composer context meter follows Pi's own usage
+reporting while a response streams and after it settles.
 
-## Models And Reasoning
+Pi skills appear in the composer's `$` menu. This includes user skills and project skills that Pi
+loads for the current workspace; selecting one uses Pi's native skill expansion.
 
-T3 asks Pi for its current model list. Sign in to providers and manage custom models through Pi as
-you normally would. T3 does not keep a separate fallback model list.
+Pi loads its normal user and project extensions. Blocking `select`, `confirm`, `input`, and `editor`
+dialogs work in T3 Code. Notifications appear in the work log. Pi terminal decoration such as
+titles, status lines, and widgets does not have a T3 Code equivalent.
 
-The model picker shows the models Pi reports. The reasoning picker only shows levels supported by
-the selected model.
+## Permission Modes
 
-## MCP, Subagents, Commands, And Skills
+T3 Code applies the composer permission mode through Pi's blocking tool hook:
 
-Pi keeps MCP and subagents outside its core. A useful T3 setup must enable extensions for both.
-Install the MCP adapter in Pi's normal configuration:
+- **Supervised** asks before commands, file changes, and extension tools. Read-only tools continue.
+- **Auto-accept edits** allows Pi's edit and write tools, but asks before commands and extension
+  tools.
+- **Full access** allows tools without T3 Code approval prompts.
 
-```bash
-pi install npm:pi-mcp-adapter
-```
+The **Auto** option is not shown for Pi because Pi does not expose an AI approval reviewer.
+Threads that already stored Auto before Pi support was added behave and display as Supervised.
 
-T3 reports a warning when it cannot detect that adapter. The adapter reads `.mcp.json`,
-`~/.config/mcp/mcp.json`, and its Pi-specific override files. Its proxy and direct MCP calls appear
-as MCP tool activity in T3. Remote OAuth can use the adapter's `auth-start` and `auth-complete`
-tool actions.
+Changing the mode restarts the Pi provider session and resumes the same native conversation. The
+policy covers Pi tool calls; it is not an operating-system sandbox, and code that a trusted Pi
+extension runs outside a tool call remains governed by Pi's own extension trust model.
 
-Enable a Pi subagent extension for isolated agents. T3 supports Pi's current `subagent` extension
-result format, including single, parallel, and chained work. It also supports the older
-`subagent_spawn` and `workflow` formats. Claude Code-style `Agent` extensions, including
-`@tintinweb/pi-subagents`, can keep background agents running while the main Pi orchestrator
-accepts new messages. T3 tracks their completion notifications and `get_subagent_result` calls.
-Agent status, model, and token use appear in the Agents panel.
+T3 Code's `delegate_task` tool creates durable child threads in the shared subagent UI. If the user
+installs Pi's example `subagent` extension, T3 Code also shows its task progress and results in that
+UI. Pi runs those children without a session, so they cannot be opened or resumed as T3 Code
+threads.
 
-T3 reads the user-level Pi command catalog when it checks the provider:
+## Troubleshooting
 
-- User-level Pi extension and prompt commands appear in the `/` menu.
-- User-level Pi skills appear in both the `/skill:` menu and the `$` skill menu.
-- Project commands and skills load inside the project session but are not advertised as a global
-  provider catalog.
-- Extension `select`, `confirm`, `input`, and `editor` requests use T3's user-input panel.
-
-Extensions must use Pi's RPC-compatible UI methods for remote input. TUI-only custom views cannot
-run in RPC mode.
-
-## Sessions And Configuration
-
-T3 stores the Pi session file path with each thread and resumes that same file later. It does not
-copy or replace Pi's configuration directory. Changes made through Pi remain available in T3, and
-changes made by a T3-hosted Pi session remain available to Pi.
-
-You can set environment variables on each Pi provider instance in Settings. T3 passes them to the
-Pi process without replacing the rest of the server environment.
-
-## Context Use
-
-T3 reads Pi's session statistics after each settled turn. The thread meter shows the tokens in the
-current model context, while processed-token totals remain cumulative for the session. Immediately
-after Pi compacts a session, current usage can be temporarily unavailable until the next model
-response.
-
-## Current Limits
-
-Pi sessions use **Full access** mode. T3 does not add an approval gate around Pi tools. MCP and
-subagent behavior comes from the enabled Pi extensions, and T3 translates their RPC events. T3
-does not support restoring a Pi turn from a T3 checkpoint.
+- If Pi is unavailable, confirm that the configured binary runs on the server machine, then refresh
+  the provider in Settings.
+- If no models appear, open Pi directly and confirm its authentication and model configuration.
+- If discovery cannot complete, T3 Code keeps Pi available with the `Pi default` model. Start a
+  thread to let the interactive Pi session handle any startup prompt.
+- If a project extension is missing, approve the project in Pi, then start a fresh provider session.
+- If a project skill is missing from the `$` menu, approve the project in Pi and refresh the provider.
+- The context meter appears once Pi reports usage for the thread. Some model providers only
+  report usage when a response completes, so the meter can wait for the first reply.

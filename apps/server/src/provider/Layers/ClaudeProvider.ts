@@ -2,7 +2,7 @@ import {
   type ClaudeSettings,
   type ModelCapabilities,
   type ServerProviderSlashCommand,
-  type ProviderAccountUsageWindow,
+  type ServerProviderResetCredits,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -48,7 +48,6 @@ import {
   formatClaudeVersionUpgradeMessage,
   resolveClaudeModelsForVersion,
 } from "../ClaudeModelCatalog.ts";
-import { parseClaudeUsageLimitsJson } from "../usage/providerUsage.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -59,7 +58,6 @@ const CLAUDE_PRESENTATION = {
   showInteractionModeToggle: true,
   reportsContextWindow: true,
 } as const;
-const USAGE_PROBE_TIMEOUT_MS = 4_000;
 function toTitleCaseWords(value: string): string {
   const parts: Array<string> = [];
   for (const part of value.split(/[\s_-]+/g)) {
@@ -407,7 +405,6 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
   environment?: NodeJS.ProcessEnv,
-  options?: { readonly closeStdin?: boolean; readonly cwd?: string },
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const spawnCommand = yield* resolveSpawnCommand(claudeSettings.binaryPath, args, {
@@ -416,54 +413,8 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     env: claudeEnvironment,
     shell: spawnCommand.shell,
-    ...(options?.cwd ? { cwd: options.cwd } : {}),
-    ...(options?.closeStdin ? { stdin: "ignore" as const } : {}),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
-});
-
-export const probeClaudeUsageLimits = Effect.fn("probeClaudeUsageLimits")(function* (
-  claudeSettings: ClaudeSettings,
-  environment?: NodeJS.ProcessEnv,
-  cwd?: string,
-): Effect.fn.Return<
-  ReadonlyArray<ProviderAccountUsageWindow> | undefined,
-  never,
-  ChildProcessSpawner.ChildProcessSpawner | Path.Path
-> {
-  const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  return yield* runClaudeCommand(
-    claudeSettings,
-    [
-      "--print",
-      "/usage",
-      "--output-format",
-      "json",
-      "--permission-mode",
-      "plan",
-      "--strict-mcp-config",
-      "--mcp-config",
-      '{"mcpServers":{}}',
-    ],
-    {
-      ...(environment ?? process.env),
-      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-    },
-    { closeStdin: true, ...(cwd ? { cwd } : {}) },
-  ).pipe(
-    Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
-    Effect.map(
-      Option.flatMap((result) => {
-        if (result.code !== 0) return Option.none();
-        const windows = parseClaudeUsageLimitsJson(result.stdout, checkedAt);
-        return windows.length > 0
-          ? Option.some(windows.map((entry) => entry.window))
-          : Option.none();
-      }),
-    ),
-    Effect.catchCause(() => Effect.succeed(Option.none())),
-    Effect.map(Option.getOrUndefined),
-  );
 });
 
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
@@ -474,11 +425,10 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
   modelCatalog: ClaudeModelCatalog = BUNDLED_CLAUDE_MODEL_CATALOG,
-  resolveUsage?: (
-    accountIdentity: string | undefined,
-  ) => Effect.Effect<ReadonlyArray<ProviderAccountUsageWindow> | undefined>,
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
+  /** Banked resets for a subscription login, given the CLI version for the user agent. */
+  resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -613,12 +563,6 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
-  const usage =
-    authMetadata?.type === "apiKey" || authMetadata?.type === "bedrock" || !resolveUsage
-      ? undefined
-      : yield* resolveUsage(capabilities.email?.trim() || undefined).pipe(
-          Effect.orElseSucceed(() => undefined),
-        );
   const usageLimits = !capabilities.usage
     ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
     : scopedLimitNames
@@ -627,6 +571,13 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           checkedAt,
         })
       : claudeUsageResponseToLimits({ response: capabilities.usage, checkedAt }).limits;
+  const resetCredits =
+    resolveResetCredits &&
+    capabilities.subscriptionType &&
+    !usageLimits.unavailable &&
+    parsedVersion
+      ? yield* resolveResetCredits(parsedVersion)
+      : undefined;
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -634,7 +585,6 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     models,
     slashCommands: dedupedSlashCommands,
     skills,
-    ...(usage ? { usage } : {}),
     probe: {
       installed: true,
       version: parsedVersion,
@@ -645,7 +595,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(authMetadata ? authMetadata : {}),
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
-      usageLimits,
+      usageLimits: resetCredits ? { ...usageLimits, resetCredits } : usageLimits,
     },
   });
 });

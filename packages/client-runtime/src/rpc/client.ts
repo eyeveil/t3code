@@ -1,10 +1,11 @@
-import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
+import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { RpcClientError } from "effect/unstable/rpc";
@@ -42,11 +43,12 @@ type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.providerAuthSubscribe
   | typeof WS_METHODS.providerInstallSubscribe
-  | typeof ORCHESTRATION_WS_METHODS.subscribeShell
-  | typeof ORCHESTRATION_WS_METHODS.subscribeThread
+  | typeof ORCHESTRATION_V2_WS_METHODS.subscribeShell
+  | typeof ORCHESTRATION_V2_WS_METHODS.subscribeThread
   | typeof WS_METHODS.subscribeAuthAccess
   | typeof WS_METHODS.subscribeServerConfig
   | typeof WS_METHODS.subscribeServerLifecycle
+  | typeof WS_METHODS.scheduledTasksSubscribe
   | typeof WS_METHODS.subscribeTerminalEvents
   | typeof WS_METHODS.subscribeTerminalMetadata
   | typeof WS_METHODS.subscribePreviewEvents
@@ -56,6 +58,8 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.pullRequestsSubscribeRefreshes
   | typeof WS_METHODS.previewAutomationConnect
   | typeof WS_METHODS.subscribeVcsStatus
+  | typeof WS_METHODS.subscribeWorktreeSetup
+  | typeof WS_METHODS.subscribeProjectClones
   | typeof WS_METHODS.terminalAttach
   | typeof WS_METHODS.providerLoginStart;
 
@@ -127,6 +131,13 @@ const currentSession = Effect.fn("EnvironmentRpc.currentSession")(function* () {
     ),
   );
 });
+
+export const getInitialServerConfig = Effect.fn("EnvironmentRpc.getInitialServerConfig")(
+  function* () {
+    const session = yield* currentSession();
+    return yield* session.initialConfig;
+  },
+);
 
 export const request = Effect.fn("EnvironmentRpc.request")(function* <
   TTag extends EnvironmentUnaryRpcTag,
@@ -232,9 +243,15 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                         method: tag,
                         input,
                       });
-                      return mapStream(session, method(input)).pipe(
-                        Stream.ensuring(completeObservation),
-                      );
+                      const stream = mapStream(session, method(input));
+                      // An evicted preview host completes its registration stream.
+                      // Re-register only after completion; failures still follow the
+                      // session recovery policy and browser actions are never replayed.
+                      return (
+                        tag === WS_METHODS.previewAutomationConnect
+                          ? stream.pipe(Stream.repeat(Schedule.spaced("1 second")))
+                          : stream
+                      ).pipe(Stream.ensuring(completeObservation));
                     }),
                   ).pipe(
                     Stream.tapCause((cause) =>

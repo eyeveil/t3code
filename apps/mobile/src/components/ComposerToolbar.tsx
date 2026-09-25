@@ -8,6 +8,7 @@ import {
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type PressableProps,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -224,6 +225,10 @@ export function ComposerActionButton(props: {
   readonly icon: ComponentProps<typeof SymbolView>["name"];
   readonly onPress: () => void;
   readonly variant?: "primary" | "danger";
+  // Forwarded so a ControlPillMenu can drive this button as its long-press
+  // anchor: Android injects onLongPress, iOS injects onTouchStart and onPress.
+  readonly onLongPress?: PressableProps["onLongPress"];
+  readonly onTouchStart?: PressableProps["onTouchStart"];
 }) {
   return (
     <Pressable
@@ -233,6 +238,8 @@ export function ComposerActionButton(props: {
       className="size-[44px] shrink-0 items-center justify-center active:opacity-70"
       disabled={props.disabled}
       onPress={props.onPress}
+      onLongPress={props.onLongPress}
+      onTouchStart={props.onTouchStart}
     >
       <View
         className={cn(

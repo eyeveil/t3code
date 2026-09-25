@@ -3,7 +3,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  type OrchestrationCommand,
+  type OrchestrationV2Command as OrchestrationCommand,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type ThreadPullRequestLink,
@@ -19,9 +19,11 @@ import type { Tool } from "effect/unstable/ai";
 
 import { OrchestrationCommandInvariantError } from "../../../orchestration/Errors.ts";
 import {
-  OrchestrationEngineService,
-  type OrchestrationEngineShape,
-} from "../../../orchestration/Services/OrchestrationEngine.ts";
+  OrchestratorV2,
+  type OrchestratorV2Shape,
+  OrchestratorDispatchError,
+} from "../../../orchestration-v2/Orchestrator.ts";
+import { v2PullRequestThread } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { listThreadPullRequests, PullRequestsToolkitHandlersLive } from "./handlers.ts";
@@ -143,12 +145,17 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
   const thread = options.thread === undefined ? makeThread([]) : options.thread;
   const project = options.project === undefined ? makeProject() : options.project;
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  const dispatch: OrchestratorV2Shape["dispatch"] = (command) =>
     Effect.gen(function* () {
       const rejection = options.reject?.(command) ?? null;
-      if (rejection !== null) return yield* rejection;
+      if (rejection !== null)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: rejection,
+        });
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
-      return { sequence: 1 };
+      return { sequence: 1, storedEvents: [] };
     });
   const dependencies = Layer.mergeAll(
     Layer.mock(ProjectionSnapshotQuery)({
@@ -156,11 +163,10 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
         Effect.succeed(threadId === THREAD_ID ? Option.fromNullishOr(thread) : Option.none()),
       getProjectShellById: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
-    Layer.mock(OrchestrationEngineService)({
-      readEvents: () => Stream.empty,
+    Layer.mock(OrchestratorV2)({
+      getThreadShell: (id) =>
+        Effect.succeed(id === THREAD_ID && thread ? v2PullRequestThread(thread) : null),
       dispatch,
-      streamDomainEvents: Stream.empty,
-      latestSequence: Effect.succeed(0),
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
   );
@@ -267,6 +273,40 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("links a numeric Forgejo reference with its remote's web origin and mount path", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        project: makeProject({
+          canonicalKey: "forge.example/git/owner/repo",
+          locator: {
+            source: "git-remote",
+            remoteName: "origin",
+            remoteUrl: "http://forge.example:3000/git/owner/repo.git",
+          },
+          provider: "forgejo",
+          displayName: "git/owner/repo",
+        }),
+      });
+      const result = yield* harness.call("link_pull_request", {
+        repository: "git/owner/repo",
+        number: 42,
+      });
+      expect(result).toEqual({
+        host: "forge.example:3000",
+        repository: "git/owner/repo",
+        number: 42,
+        url: "http://forge.example:3000/git/owner/repo/pulls/42",
+        alreadyLinked: false,
+      });
+      const other = yield* harness.call("link_pull_request", {
+        host: "other.example",
+        repository: "owner/repo",
+        number: 42,
+      });
+      expect(other.url).toBe("https://other.example/owner/repo/pull/42");
+    }),
+  );
+
   it.effect("rejects a target that names neither a URL nor repository and number", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -335,6 +375,18 @@ describe("pull request toolkit handlers", () => {
       ]);
     }),
   );
+
+  it("reports an older Forgejo link's HTTP port when listing thread links", () => {
+    const result = listThreadPullRequests(
+      makeThread([
+        makeLink(42, {
+          host: "forge.example",
+          url: "http://forge.example:3000/t3tools/t3code/pulls/42",
+        }),
+      ]),
+    );
+    expect(result.pullRequests[0]?.host).toBe("forge.example:3000");
+  });
 
   it.effect("fails cleanly when the token's thread no longer exists", () =>
     Effect.gen(function* () {

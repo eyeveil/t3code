@@ -17,7 +17,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { layerTest as codexResetCreditLayerTest } from "../Layers/codexResetCredit.ts";
+import * as ResetCreditCoordinator from "../Layers/resetCreditCoordinator.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
@@ -26,14 +26,22 @@ import {
   resolveLatestProviderVersion,
 } from "../providerMaintenance.ts";
 import { CodexDriver } from "./CodexDriver.ts";
+import { CodexAppServerClientFactory } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { layer as idAllocatorLayer } from "../../orchestration-v2/IdAllocator.ts";
 
 const testLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-codex-driver-maintenance-",
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(idAllocatorLayer),
+  Layer.provideMerge(
+    Layer.mock(CodexAppServerClientFactory)({
+      open: () => Effect.die("Maintenance resolution must not open a Codex session"),
+    }),
+  ),
   Layer.provideMerge(ServerSettingsService.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
-  Layer.provideMerge(codexResetCreditLayerTest),
+  Layer.provideMerge(ResetCreditCoordinator.layerTest),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),

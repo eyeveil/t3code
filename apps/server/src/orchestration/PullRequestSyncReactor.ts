@@ -1,7 +1,7 @@
 import { siblingPullRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import {
   CommandId,
-  type OrchestrationThreadShell,
+  type OrchestrationV2ThreadShell,
   type PullRequestSummary,
   type ThreadPullRequestKey,
   type ThreadPullRequestLink,
@@ -11,6 +11,7 @@ import {
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import {
   threadPullRequestKeyOf,
+  normalizeThreadPullRequestKey,
   threadPullRequestKeysEqual,
   visibleThreadPullRequests,
 } from "@t3tools/shared/threadPullRequests";
@@ -22,18 +23,19 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
-import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
+import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 
 const SLOW_SYNC_INTERVAL_MS = 15 * 60 * 1_000;
 
 type SnapshotFields = Omit<ThreadPullRequestSnapshot, "syncedAt">;
 
 interface LinkEntry {
-  readonly thread: OrchestrationThreadShell;
+  readonly thread: OrchestrationV2ThreadShell;
   readonly link: ThreadPullRequestLink;
 }
 
@@ -101,7 +103,7 @@ function stacksEqual(
   );
 }
 
-function isUnsettled(thread: OrchestrationThreadShell): boolean {
+function isUnsettled(thread: OrchestrationV2ThreadShell): boolean {
   return thread.settledOverride !== "settled" && thread.settledAt === null;
 }
 
@@ -123,8 +125,7 @@ export class PullRequestSyncReactor extends Context.Service<
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
-  const engine = yield* OrchestrationEngine.OrchestrationEngineService;
-  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const engine = yield* OrchestratorV2;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
 
@@ -149,8 +150,8 @@ export const make = Effect.gen(function* () {
     <E>(cause: Cause.Cause<E>): Effect.Effect<void, E> =>
       Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.logWarning(message, fields);
 
-  const sweep = Effect.fn("PullRequestSyncReactor.sweep")(function* () {
-    const snapshot = yield* snapshots.getShellSnapshot();
+  const sweep = Effect.fn("PullRequestSyncReactor.sweep")(function* (requestedKey?: string) {
+    const snapshot = yield* engine.getShellSnapshot();
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
     const nowIso = DateTime.formatIso(now);
@@ -158,7 +159,7 @@ export const make = Effect.gen(function* () {
     const groups = new Map<string, Array<LinkEntry>>();
     for (const thread of snapshot.threads) {
       if (thread.archivedAt !== null) continue;
-      for (const link of visibleThreadPullRequests(thread.pullRequests)) {
+      for (const link of visibleThreadPullRequests(thread.pullRequests ?? [])) {
         const key = threadPullRequestKeyOf(link);
         const entries = groups.get(key) ?? [];
         entries.push({ thread, link });
@@ -173,6 +174,7 @@ export const make = Effect.gen(function* () {
     // Layers auto-linked this sweep, so two links of one thread that share a
     // stack do not both try to add the same sibling.
     const linkedThisSweep = new Set<string>();
+    const persistence = yield* Semaphore.make(1);
 
     const syncEntry = Effect.fn("PullRequestSyncReactor.syncEntry")(function* (
       entry: LinkEntry,
@@ -185,51 +187,48 @@ export const make = Effect.gen(function* () {
         link.snapshot === null ||
         !snapshotFieldsEqual(link.snapshot, fields) ||
         !stacksEqual(link.stack, nextStack);
+      // Persist discovered siblings before a terminal snapshot can trigger settlement.
+      for (const layer of fetchedStack?.stack?.layers ?? []) {
+        const layerKey = {
+          host: normalizeThreadPullRequestKey(link).host,
+          repository: link.repository,
+          number: layer.number,
+        };
+        const dedupeKey = `${thread.id}:${threadPullRequestKeyOf(layerKey)}`;
+        if (linkedThisSweep.has(dedupeKey)) continue;
+        // Tombstones count as present: a dismissed layer is never re-added.
+        if (
+          (thread.pullRequests ?? []).some((existing) =>
+            threadPullRequestKeysEqual(existing, layerKey),
+          )
+        ) {
+          continue;
+        }
+        const url = siblingPullRequestUrl(link.url, layer.number);
+        if (url === null) continue;
+        const uuid = yield* crypto.randomUUIDv4;
+        yield* engine.dispatch({
+          type: "thread.pull-request.link",
+          commandId: CommandId.make(`server:pr-stack-link:${thread.id}:${uuid}`),
+          threadId: thread.id,
+          ...layerKey,
+          url,
+          source: "stack",
+        });
+        linkedThisSweep.add(dedupeKey);
+      }
       if (changed) {
         const uuid = yield* crypto.randomUUIDv4;
         yield* engine.dispatch({
           type: "thread.pull-request-link.sync",
           commandId: CommandId.make(`server:pr-sync:${thread.id}:${uuid}`),
           threadId: thread.id,
-          host: link.host,
+          host: normalizeThreadPullRequestKey(link).host,
           repository: link.repository,
           number: link.number,
           snapshot: { ...fields, syncedAt: nowIso },
           stack: nextStack,
         });
-      }
-      if (fetchedStack === null || fetchedStack.stack === null) return;
-      for (const layer of fetchedStack.stack.layers) {
-        const layerKey = { host: link.host, repository: link.repository, number: layer.number };
-        const dedupeKey = `${thread.id}:${threadPullRequestKeyOf(layerKey)}`;
-        if (linkedThisSweep.has(dedupeKey)) continue;
-        // Tombstones count as present: a dismissed layer is never re-added.
-        if (
-          thread.pullRequests.some((existing) => threadPullRequestKeysEqual(existing, layerKey))
-        ) {
-          continue;
-        }
-        const url = siblingPullRequestUrl(link.url, layer.number);
-        if (url === null) continue;
-        linkedThisSweep.add(dedupeKey);
-        const uuid = yield* crypto.randomUUIDv4;
-        yield* engine
-          .dispatch({
-            type: "thread.pull-request.link",
-            commandId: CommandId.make(`server:pr-stack-link:${thread.id}:${uuid}`),
-            threadId: thread.id,
-            ...layerKey,
-            url,
-            source: "stack",
-          })
-          .pipe(
-            Effect.catchCause(
-              logSkipped("pull request stack layer link skipped", {
-                threadId: thread.id,
-                number: layer.number,
-              }),
-            ),
-          );
       }
     });
 
@@ -240,7 +239,7 @@ export const make = Effect.gen(function* () {
       const first = entries[0]!;
       const ref = {
         projectId: first.thread.projectId,
-        host: first.link.host,
+        host: normalizeThreadPullRequestKey(first.link).host,
         repository: first.link.repository,
         number: first.link.number,
       };
@@ -260,18 +259,21 @@ export const make = Effect.gen(function* () {
             Effect.map((stack) => ({
               stack: stack === null ? null : ({ kind: "native", ...stack } as const),
             })),
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.failCause(cause)
-                : Effect.logWarning("pull request stack lookup failed", {
-                    key,
-                  }).pipe(Effect.as(null)),
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              () =>
+                Effect.logWarning("pull request stack lookup failed", {
+                  key,
+                }).pipe(Effect.as(null)),
             ),
           )
         : null;
       if (needsStack) {
-        if (fetchedStack === null) retryStacks.add(key);
-        else retryStacks.delete(key);
+        if (fetchedStack === null) {
+          retryStacks.add(key);
+          return;
+        }
+        retryStacks.delete(key);
       }
       // The host answered, so the cadence clock ticks even if a dispatch below is rejected.
       lastSyncedAt.set(key, nowMs);
@@ -281,9 +283,13 @@ export const make = Effect.gen(function* () {
         entries,
         (entry) =>
           syncEntry(entry, fields, fetchedStack).pipe(
-            Effect.catchCause(
-              logSkipped("pull request sync skipped", { threadId: entry.thread.id, key }),
-            ),
+            persistence.withPermits(1),
+            Effect.catchCause((cause) => {
+              if (!Cause.hasInterruptsOnly(cause)) retryStacks.add(key);
+              return logSkipped("pull request sync skipped", { threadId: entry.thread.id, key })(
+                cause,
+              );
+            }),
           ),
         { discard: true },
       );
@@ -292,22 +298,38 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       groups,
       ([key, entries]) =>
-        isDue(key, entries, nowMs)
+        (requestedKey === undefined || requestedKey === key) && isDue(key, entries, nowMs)
           ? syncGroup(key, entries).pipe(
               Effect.catchCause(logSkipped("pull request sync skipped", { key })),
             )
           : Effect.void,
-      { concurrency: 8, discard: true },
+      // As wide as one batched summary read, so the sweep's reads on a host arrive together and
+      // GitHub answers them in one request rather than one `gh pr view` apiece.
+      { concurrency: 25, discard: true },
     );
   });
 
-  const worker = yield* makeDrainableWorker(() =>
-    sweep().pipe(Effect.catchCause(logSkipped("pull request sync sweep failed", {}))),
+  const worker = yield* makeDrainableWorker((key: string | undefined) =>
+    sweep(key).pipe(Effect.catchCause(logSkipped("pull request sync sweep failed", {}))),
   );
 
   const start: PullRequestSyncReactor["Service"]["start"] = Effect.fn(
     "PullRequestSyncReactor.start",
   )(function* () {
+    const events = engine.streamDomainEvents;
+    yield* forkParked(
+      Stream.runForEach(events, (event) =>
+        event.type === "thread.pull-request-synced"
+          ? Effect.forEach(
+              visibleThreadPullRequests(event.payload.pullRequests ?? []).filter(
+                (link) => link.snapshot === null,
+              ),
+              requestSync,
+              { discard: true },
+            )
+          : Effect.void,
+      ).pipe(Effect.catchCause(logSkipped("pull request sync event stream failed", {}))),
+    );
     yield* forkParked(
       Effect.gen(function* () {
         yield* worker.enqueue(undefined);
@@ -318,8 +340,9 @@ export const make = Effect.gen(function* () {
 
   const requestSync: PullRequestSyncReactor["Service"]["requestSync"] = (key) =>
     Effect.suspend(() => {
-      requested.set(threadPullRequestKeyOf(key), ++requestGeneration);
-      return worker.enqueue(undefined);
+      const syncKey = threadPullRequestKeyOf(key);
+      requested.set(syncKey, ++requestGeneration);
+      return worker.enqueue(syncKey);
     });
 
   return { start, drain: worker.drain, requestSync } satisfies PullRequestSyncReactor["Service"];

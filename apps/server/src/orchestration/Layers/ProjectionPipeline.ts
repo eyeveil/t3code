@@ -1,13 +1,17 @@
 import {
   ApprovalRequestId,
+  IsoDateTime,
   isImportedAgentSessionMessageId,
+  NonNegativeInt,
   UserInputAttachmentAnswerPayload,
   type ChatAttachment,
-  type OrchestrationEvent,
-  type OrchestrationSessionStatus,
   ThreadId,
 } from "@t3tools/contracts";
 import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
+import type {
+  OrchestrationEvent,
+  OrchestrationSessionStatus,
+} from "@t3tools/contracts/legacy-orchestration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -16,12 +20,17 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import {
   legacyThreadPullRequestKey,
   threadPullRequestKeysEqual,
 } from "@t3tools/shared/threadPullRequests";
 
-import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import {
+  toPersistenceDecodeError,
+  toPersistenceSqlError,
+  type ProjectionRepositoryError,
+} from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -114,6 +123,13 @@ interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
+
+const AttachmentCleanupReplayRow = Schema.Struct({
+  sequence: NonNegativeInt,
+  occurredAt: IsoDateTime,
+  cleanupType: Schema.NullOr(Schema.Literals(["thread.reverted", "thread.deleted"])),
+  threadId: Schema.NullOr(ThreadId),
+});
 
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
   (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
@@ -496,6 +512,49 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
 
+    // Attachment cleanup has a separate retry cursor because its filesystem work
+    // runs after projection transactions commit. Normal runtime events therefore
+    // accumulate behind that cursor. Bootstrap only needs the latest event for
+    // the new cursor plus revert/delete metadata; reading full event payloads here
+    // made restart cost grow with every event since the previous restart.
+    const listAttachmentCleanupReplayRows = SqlSchema.findAll({
+      Request: Schema.Struct({ sequenceExclusive: NonNegativeInt }),
+      Result: AttachmentCleanupReplayRow,
+      execute: ({ sequenceExclusive }) => sql`
+        SELECT
+          sequence,
+          occurred_at AS "occurredAt",
+          CASE
+            WHEN aggregate_kind = 'thread'
+              AND event_type IN ('thread.reverted', 'thread.deleted')
+            THEN event_type
+            ELSE NULL
+          END AS "cleanupType",
+          CASE
+            WHEN aggregate_kind = 'thread'
+              AND event_type IN ('thread.reverted', 'thread.deleted')
+            THEN stream_id
+            ELSE NULL
+          END AS "threadId"
+        -- Force the sequence rowid range. With this OR predicate SQLite can
+        -- otherwise choose the aggregate index and scan every thread event.
+        FROM orchestration_events NOT INDEXED
+        WHERE sequence > ${sequenceExclusive}
+          AND (
+            sequence = (
+              SELECT MAX(sequence)
+              FROM orchestration_events
+              WHERE sequence > ${sequenceExclusive}
+            )
+            OR (
+              aggregate_kind = 'thread'
+              AND event_type IN ('thread.reverted', 'thread.deleted')
+            )
+          )
+        ORDER BY sequence ASC
+      `,
+    });
+
     const applyProjectsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyProjectsProjection",
     )(function* (event, _attachmentSideEffects) {
@@ -633,6 +692,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pinnedAt: null,
             pinOrderKey: null,
             activeOrderKey: null,
+            autoSettleDisabledAt: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
@@ -784,6 +844,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.auto-settle-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            autoSettleDisabledAt: event.payload.autoSettleDisabledAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
         case "thread.pin-reordered": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -811,6 +886,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             ...(event.payload.activeOrderKey !== undefined
               ? { activeOrderKey: event.payload.activeOrderKey }
+              : {}),
+            ...(event.payload.titleState !== undefined
+              ? { titleState: event.payload.titleState }
               : {}),
             ...(event.payload.titleRegeneration !== undefined
               ? {
@@ -885,12 +963,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          yield* projectionThreadPullRequestRepository.delete({
+          const links = yield* projectionThreadPullRequestRepository.listByThreadId({
             threadId: event.payload.threadId,
-            host: event.payload.host.toLowerCase(),
-            repository: event.payload.repository.toLowerCase(),
-            number: event.payload.number,
           });
+          const link = links.find((candidate) =>
+            threadPullRequestKeysEqual(candidate, event.payload),
+          );
+          if (link !== undefined) {
+            yield* projectionThreadPullRequestRepository.delete({
+              threadId: event.payload.threadId,
+              host: link.host,
+              repository: link.repository,
+              number: link.number,
+            });
+          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             updatedAt: event.payload.updatedAt,
@@ -1128,35 +1214,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
 
         case "thread.message-sent": {
-          if (event.payload.streaming) {
-            const attachments =
-              event.payload.attachments !== undefined
-                ? yield* materializeAttachmentsForProjection({
-                    attachments: event.payload.attachments,
-                  })
-                : undefined;
-            yield* projectionThreadMessageRepository.appendStreaming({
-              messageId: event.payload.messageId,
-              threadId: event.payload.threadId,
-              turnId: event.payload.turnId,
-              role: event.payload.role,
-              text: event.payload.text,
-              ...(attachments !== undefined ? { attachments: [...attachments] } : {}),
-              ...(event.payload.context !== undefined ? { context: event.payload.context } : {}),
-              createdAt: event.payload.createdAt,
-              updatedAt: event.payload.updatedAt,
-            });
-            return;
-          }
-
           const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
             messageId: event.payload.messageId,
           });
           const previousMessage = Option.getOrUndefined(existingMessage);
           const nextText = Option.match(existingMessage, {
             onNone: () => event.payload.text,
-            onSome: (message) =>
-              event.payload.text.length === 0 ? message.text : event.payload.text,
+            onSome: (message) => {
+              if (event.payload.streaming) {
+                return `${message.text}${event.payload.text}`;
+              }
+              if (event.payload.text.length === 0) {
+                return message.text;
+              }
+              return event.payload.text;
+            },
           });
           const nextAttachments =
             event.payload.attachments !== undefined
@@ -1174,7 +1246,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...((event.payload.context ?? previousMessage?.context) !== undefined
               ? { context: event.payload.context ?? previousMessage?.context }
               : {}),
-            isStreaming: false,
+            isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
           });
@@ -1676,6 +1748,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
           });
+          // Do not let a placeholder (status "missing") overwrite a checkpoint
+          // that has already been captured with a real git ref. In-memory
+          // projectEvent already refuses this. SQL did not, so thread detail
+          // and diffs could show missing after a ready capture.
+          if (
+            Option.isSome(existingTurn) &&
+            existingTurn.value.checkpointStatus !== null &&
+            existingTurn.value.checkpointStatus !== "missing" &&
+            event.payload.status === "missing"
+          ) {
+            return;
+          }
           const nextState = event.payload.status === "error" ? "error" : "completed";
           yield* projectionTurnRepository.clearCheckpointTurnConflict({
             threadId: event.payload.threadId,
@@ -1963,7 +2047,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     ];
 
     const applyAttachmentSideEffects = Effect.fn("applyAttachmentSideEffects")(
-      function* (event: OrchestrationEvent, sideEffects: AttachmentSideEffects) {
+      function* (
+        event: Pick<OrchestrationEvent, "sequence" | "type">,
+        sideEffects: AttachmentSideEffects,
+      ) {
         if (
           sideEffects.deletedThreadIds.size === 0 &&
           sideEffects.prunedThreadRelativePaths.size === 0
@@ -2125,27 +2212,37 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
       // Cleanup has its own cursor so retries never have to replay committed text.
       // All message and activity references are current before any files are removed.
-      const pendingCleanup = new Map<string, OrchestrationEvent>();
-      let lastEvent: OrchestrationEvent | undefined;
-      yield* Stream.runForEach(
-        eventStore.readFromSequence(cleanupStart, Number.MAX_SAFE_INTEGER),
-        (event) =>
-          Effect.sync(() => {
-            lastEvent = event;
-            if (event.type === "thread.reverted" || event.type === "thread.deleted") {
-              pendingCleanup.set(`${event.type}:${event.payload.threadId}`, event);
-            }
-          }),
+      const pendingCleanup = new Map<
+        string,
+        Schema.Schema.Type<typeof AttachmentCleanupReplayRow>
+      >();
+      const cleanupReplayRows = yield* listAttachmentCleanupReplayRows({
+        sequenceExclusive: cleanupStart,
+      }).pipe(
+        Effect.mapError((cause) =>
+          Schema.isSchemaError(cause)
+            ? toPersistenceDecodeError("ProjectionPipeline.bootstrap:decodeCleanupRows")(cause)
+            : toPersistenceSqlError("ProjectionPipeline.bootstrap:listCleanupRows")(cause),
+        ),
       );
+      const lastEvent = cleanupReplayRows.at(-1);
+      for (const row of cleanupReplayRows) {
+        if (row.cleanupType !== null && row.threadId !== null) {
+          pendingCleanup.set(`${row.cleanupType}:${row.threadId}`, row);
+        }
+      }
       for (const event of pendingCleanup.values()) {
-        if (event.type !== "thread.reverted" && event.type !== "thread.deleted") continue;
-        const threadId = event.payload.threadId;
-        const cleaned = yield* applyAttachmentSideEffects(event, {
-          deletedThreadIds: new Set(event.type === "thread.deleted" ? [threadId] : []),
-          prunedThreadRelativePaths: new Map(
-            event.type === "thread.reverted" ? [[threadId, new Set<string>()]] : [],
-          ),
-        });
+        if (event.cleanupType === null || event.threadId === null) continue;
+        const threadId = event.threadId;
+        const cleaned = yield* applyAttachmentSideEffects(
+          { sequence: event.sequence, type: event.cleanupType },
+          {
+            deletedThreadIds: new Set(event.cleanupType === "thread.deleted" ? [threadId] : []),
+            prunedThreadRelativePaths: new Map(
+              event.cleanupType === "thread.reverted" ? [[threadId, new Set<string>()]] : [],
+            ),
+          },
+        );
         // Leave the cleanup cursor behind this event so the next bootstrap retries it.
         if (!cleaned) return;
       }

@@ -15,7 +15,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
@@ -28,6 +28,7 @@ import { normalizeAntigravitySessionUpdate } from "./AntigravityProtocol.ts";
 export interface AntigravityAcpRuntimeInput extends Omit<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
   | "authMethodId"
+  | "authenticateEagerly"
   | "cancelBehavior"
   | "clientCapabilities"
   | "onStderr"
@@ -63,6 +64,7 @@ export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(
     AcpSessionRuntime.layer({
       ...input,
       authMethodId: input.authMethod ?? "oauth-personal",
+      authenticateEagerly: true,
       resumeMethod: "resume",
       cancelBehavior: "wait-for-prompt",
       clientCapabilities: {
@@ -100,7 +102,7 @@ export function antigravityPermissionMode(runtimeMode: RuntimeMode): string {
   }
 }
 
-export function antigravityModelOptions(
+function antigravityModelOptions(
   configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
 ) {
   const model = configOptions.find((option) => option.id === "model");
@@ -114,7 +116,7 @@ export function antigravityModelOptions(
  * account offers it, so T3 can pick a newer model than the one Google marks
  * current. Otherwise the agent's current selection stands.
  */
-export function resolveAntigravityModel(input: {
+function resolveAntigravityModel(input: {
   readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
   readonly model: string | null | undefined;
   readonly defaultModel?: string | undefined;
@@ -264,6 +266,13 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
   let totalBytes = 0;
 
   for (const attachment of input.attachments ?? []) {
+    const isPastedText =
+      attachment.type === "file" &&
+      "source" in attachment &&
+      attachment.source?._tag === "pasted-text";
+    // ProviderService has already put the file path in the text block. Keep a
+    // folded clipboard paste lazy so the agent can search or sample it rather
+    // than paying to embed the entire resource in context immediately.
     const mimeType = attachment.mimeType.toLowerCase().split(";", 1)[0] ?? "";
     const image = attachment.type === "image" && IMAGE_MIME_TYPES.has(mimeType);
     const audio = attachment.type === "file" && AUDIO_MIME_TYPES.has(mimeType);
@@ -296,6 +305,14 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
           ),
         ),
       );
+    if (isPastedText) {
+      if (info.type !== "File") {
+        return yield* EffectAcpErrors.AcpRequestError.invalidParams(
+          `Could not read attachment '${attachment.name}'.`,
+        );
+      }
+      continue;
+    }
     const size = Number(info.size);
     const limit = image
       ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES

@@ -1,11 +1,10 @@
+import type { ProjectId, ThreadId } from "@t3tools/contracts";
 import type {
   OrchestrationCommand,
   OrchestrationProject,
   OrchestrationReadModel,
   OrchestrationThread,
-  ProjectId,
-  ThreadId,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/legacy-orchestration";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
@@ -119,15 +118,13 @@ export function requireThreadArchived(input: {
   readonly threadId: ThreadId;
 }): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
   return requireThread(input).pipe(
-    Effect.flatMap((thread) =>
-      thread.archivedAt !== null
-        ? Effect.succeed(thread)
-        : Effect.fail(
-            invariantError(
-              input.command.type,
-              `Thread '${input.threadId}' is not archived for command '${input.command.type}'.`,
-            ),
-          ),
+    Effect.filterOrFail(
+      (thread) => thread.archivedAt !== null,
+      () =>
+        invariantError(
+          input.command.type,
+          `Thread '${input.threadId}' is not archived for command '${input.command.type}'.`,
+        ),
     ),
   );
 }
@@ -138,15 +135,13 @@ export function requireThreadNotArchived(input: {
   readonly threadId: ThreadId;
 }): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
   return requireThread(input).pipe(
-    Effect.flatMap((thread) =>
-      thread.archivedAt === null
-        ? Effect.succeed(thread)
-        : Effect.fail(
-            invariantError(
-              input.command.type,
-              `Thread '${input.threadId}' is already archived and cannot handle command '${input.command.type}'.`,
-            ),
-          ),
+    Effect.filterOrFail(
+      (thread) => thread.archivedAt === null,
+      () =>
+        invariantError(
+          input.command.type,
+          `Thread '${input.threadId}' is already archived and cannot handle command '${input.command.type}'.`,
+        ),
     ),
   );
 }

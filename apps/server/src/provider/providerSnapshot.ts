@@ -2,6 +2,7 @@ import type {
   CustomModelSetting,
   ProviderDriverKind,
   ModelCapabilities,
+  RuntimeMode,
   ServerProvider,
   ServerProviderAuth,
   ServerProviderSkill,
@@ -66,6 +67,7 @@ export interface ServerProviderPresentation {
   readonly badgeLabel?: string;
   readonly showInteractionModeToggle?: boolean;
   readonly reportsContextWindow?: boolean;
+  readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
   readonly requiresNewThreadForModelChange?: boolean;
   readonly supportsConversationRollback?: boolean;
 }
@@ -108,8 +110,14 @@ export const spawnAndCollect = (binaryPath: string, command: ChildProcess.Comman
     return result;
   }).pipe(Effect.scoped);
 
+/**
+ * Return the first semantic version found in CLI output, or null. Accepts a
+ * leading "v" (for example `opencode v2.0.3`).
+ */
 export function parseGenericCliVersion(output: string): string | null {
-  const match = output.match(/\b(\d+\.\d+\.\d+)\b/);
+  // "opencode v2.0.3"-style output: the optional "v" has to be consumed first,
+  // since "v2" itself contains no word boundary.
+  const match = output.match(/\bv?(\d+\.\d+\.\d+)\b/);
   return match?.[1] ?? null;
 }
 
@@ -222,6 +230,9 @@ export function buildServerProvider(input: {
     ...(typeof input.presentation.reportsContextWindow === "boolean"
       ? { reportsContextWindow: input.presentation.reportsContextWindow }
       : {}),
+    ...(input.presentation.supportedRuntimeModes === undefined
+      ? {}
+      : { supportedRuntimeModes: [...input.presentation.supportedRuntimeModes] }),
     ...(typeof input.presentation.requiresNewThreadForModelChange === "boolean"
       ? { requiresNewThreadForModelChange: input.presentation.requiresNewThreadForModelChange }
       : {}),

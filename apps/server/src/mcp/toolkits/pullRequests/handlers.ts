@@ -1,14 +1,19 @@
 import {
+  threadPullRequestsOf,
+  threadPullRequestKeysEqual,
+} from "@t3tools/shared/threadPullRequests";
+import {
   CommandId,
   pullRequestHostOf,
   type OrchestrationProjectShell,
-  type OrchestrationThreadShell,
+  type OrchestrationV2ThreadShell,
   type SourceControlProviderKind,
   type ThreadId,
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { changeRequestUrlFor, parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import {
+  normalizeThreadPullRequestKey,
   resolveThreadPullRequestChains,
   threadPullRequestKeyOf,
   visibleThreadPullRequests,
@@ -18,7 +23,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
-import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
+import { OrchestratorV2 } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
@@ -71,7 +76,7 @@ const resolveTarget = Effect.fn("PullRequestsToolkit.resolveTarget")(function* (
     if (parsed === null) {
       return yield* new PullRequestUrlInvalidError({});
     }
-    return { ...parsed, url: input.url } satisfies ResolvedTarget;
+    return { ...normalizeThreadPullRequestKey(parsed), url: input.url } satisfies ResolvedTarget;
   }
   if (input.repository === undefined || input.number === undefined) {
     return yield* new PullRequestTargetIncompleteError({});
@@ -89,8 +94,12 @@ const resolveTarget = Effect.fn("PullRequestsToolkit.resolveTarget")(function* (
       host,
       repository,
       input.number,
+      project?.repositoryIdentity?.locator.remoteUrl,
     ) ?? `https://${host}/${repository}/pull/${input.number}`;
-  return { host, repository, number: input.number, url } satisfies ResolvedTarget;
+  return {
+    ...normalizeThreadPullRequestKey({ host, repository, number: input.number, url }),
+    url,
+  } satisfies ResolvedTarget;
 });
 
 function entryOf(
@@ -108,7 +117,7 @@ function entryOf(
     }
   }
   return {
-    host: link.host,
+    host: normalizeThreadPullRequestKey(link).host,
     repository: link.repository,
     number: link.number,
     url: link.url,
@@ -124,11 +133,11 @@ function entryOf(
 
 /** What the tools report from a thread shell; exported so the shape is testable without a layer. */
 export function listThreadPullRequests(
-  thread: Pick<OrchestrationThreadShell, "pullRequests">,
+  thread: Pick<OrchestrationV2ThreadShell, "pullRequests">,
 ): ListThreadPullRequestsResult {
-  const chains = resolveThreadPullRequestChains(thread.pullRequests);
+  const chains = resolveThreadPullRequestChains(thread.pullRequests ?? []);
   return {
-    pullRequests: visibleThreadPullRequests(thread.pullRequests).map((link) =>
+    pullRequests: visibleThreadPullRequests(thread.pullRequests ?? []).map((link) =>
       entryOf(link, chains),
     ),
     chains: chains.map((chain) => ({
@@ -139,7 +148,8 @@ export function listThreadPullRequests(
 }
 
 const make = Effect.gen(function* () {
-  const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const engine = yield* OrchestratorV2;
+
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
 
@@ -156,8 +166,9 @@ const make = Effect.gen(function* () {
       | typeof PullRequestListFailedError,
   ) {
     const scope = yield* McpInvocationContext.requireMcpCapability("pull-requests");
-    const thread = yield* snapshots
-      .getThreadShellById(scope.threadId)
+    const thread = yield* engine
+      .getThreadShell(scope.threadId)
+      .pipe(Effect.map(Option.fromNullishOr))
       .pipe(Effect.mapError((cause) => new Failure({ cause })));
     if (Option.isNone(thread)) {
       return yield* new PullRequestThreadNotFoundError({ threadId: scope.threadId });
@@ -166,7 +177,7 @@ const make = Effect.gen(function* () {
   });
 
   const projectOf = (
-    thread: OrchestrationThreadShell,
+    thread: OrchestrationV2ThreadShell,
     Failure: typeof PullRequestLinkFailedError | typeof PullRequestUnlinkFailedError,
   ) =>
     snapshots.getProjectShellById(thread.projectId).pipe(
@@ -189,6 +200,11 @@ const make = Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestLinkFailedError);
         const project = yield* projectOf(thread, PullRequestLinkFailedError);
         const target = yield* resolveTarget(input, project);
+        const existing = threadPullRequestsOf(thread).find((link) =>
+          threadPullRequestKeysEqual(link, target),
+        );
+        if (existing && existing.source !== "stack-dismissed")
+          return { ...target, alreadyLinked: true };
         const alreadyLinked = yield* engine
           .dispatch({
             type: "thread.pull-request.link",
@@ -204,7 +220,7 @@ const make = Effect.gen(function* () {
             Effect.as(false),
             // The decider rejects a second link of the same PR; for the agent that is
             // the outcome it asked for, not an error.
-            Effect.catchTags({ OrchestrationCommandInvariantError: () => Effect.succeed(true) }),
+
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
         return { ...target, alreadyLinked };
@@ -214,6 +230,13 @@ const make = Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestUnlinkFailedError);
         const project = yield* projectOf(thread, PullRequestUnlinkFailedError);
         const target = yield* resolveTarget(input, project);
+        if (!threadPullRequestsOf(thread).some((link) => threadPullRequestKeysEqual(link, target)))
+          return {
+            host: target.host,
+            repository: target.repository,
+            number: target.number,
+            wasLinked: false,
+          };
         const wasLinked = yield* engine
           .dispatch({
             type: "thread.pull-request.unlink",
@@ -225,7 +248,7 @@ const make = Effect.gen(function* () {
           })
           .pipe(
             Effect.as(true),
-            Effect.catchTags({ OrchestrationCommandInvariantError: () => Effect.succeed(false) }),
+
             Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)),
           );
         return {

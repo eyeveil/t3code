@@ -1,4 +1,4 @@
-import { OrchestrationCheckpointFile } from "@t3tools/contracts";
+import { OrchestrationCheckpointFile } from "@t3tools/contracts/legacy-orchestration";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
@@ -317,9 +317,8 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       ),
       Effect.flatMap((rowOption) =>
         Option.match(rowOption, {
-          onNone: () => Effect.succeed(Option.none()),
-          onSome: (row) =>
-            Effect.succeed(Option.some(row as Schema.Schema.Type<typeof ProjectionTurnById>)),
+          onNone: () => Effect.succeedNone,
+          onSome: (row) => Effect.succeedSome(row as Schema.Schema.Type<typeof ProjectionTurnById>),
         }),
       ),
     );

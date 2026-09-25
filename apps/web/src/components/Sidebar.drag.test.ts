@@ -253,6 +253,73 @@ describe("sidebar collision detection", () => {
 });
 
 describe("sidebar drag projection", () => {
+  it.each([
+    ["a2", "a1"],
+    ["p", "a1"],
+    ["s", sidebarMarkerId("pinned-header")],
+    ["z", sidebarMarkerId("settled-header")],
+  ])("restores every row and marker when dragging %s out after hovering %s", (active, over) => {
+    const items = [
+      pinnedHeader,
+      thread("p", "pinned"),
+      divider,
+      marker("active-placeholder"),
+      thread("a1", "active"),
+      thread("a2", "active"),
+      marker("snoozed-header"),
+      thread("z", "snoozed"),
+      settledHeader,
+      marker("settled-placeholder"),
+      thread("s", "settled"),
+    ];
+    const input = {
+      items,
+      settledOrder: ["z", "s"],
+      settledExpanded: true,
+      boundaryLabelHeight: 24,
+      snoozedThreadCount: 1,
+    };
+    const reordered = preview(input, active, over);
+    expect([...reordered.values()].some((transform) => transform?.y !== 0)).toBe(true);
+
+    const restored = preview({ ...input, enabled: false }, active, over);
+    for (const transform of restored.values()) expect(transform).toEqual(stationary);
+
+    // Returning to the sidebar resumes the same live reorder preview.
+    expect(preview({ ...input, enabled: true }, active, over)).toEqual(reordered);
+  });
+
+  it.each([
+    ["a1", "a2"],
+    ["a1", sidebarMarkerId("settled-header")],
+    ["z", "a2"],
+  ])("keeps sparse shelves at the bottom when dragging %s over %s", (active, over) => {
+    const items = [
+      pinnedHeader,
+      divider,
+      thread("a1", "active"),
+      thread("a2", "active"),
+      marker("snoozed-header"),
+      thread("z", "snoozed"),
+      settledHeader,
+      thread("s", "settled"),
+    ];
+    const strategy = createSidebarSortingStrategy({
+      items,
+      settledOrder: over === sidebarMarkerId("settled-header") ? ["a1", "s"] : ["s"],
+      settledExpanded: true,
+      boundaryLabelHeight: 24,
+      snoozedThreadCount: 1,
+    });
+    const args = layout(items, active, over);
+    for (const rect of args.rects.slice(4)) {
+      rect.top += 400;
+      rect.bottom += 400;
+    }
+    const lastIndex = items.length - 1;
+    expect(strategy({ ...args, index: lastIndex })).toEqual(stationary);
+  });
+
   const pinned = [
     pinnedHeader,
     thread("p1", "pinned"),
