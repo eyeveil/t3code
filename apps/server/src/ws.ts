@@ -87,6 +87,8 @@ import {
   type ProviderDriverKind,
   type ProviderInstanceId,
   ThreadId,
+  ProviderInstanceId,
+  type PreviewCloneResult,
   type TerminalAttachStreamEvent,
   type TerminalError,
   type TerminalEvent,
@@ -3409,6 +3411,35 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.previewAutomationFocusHost,
             previewAutomationBroker.focusHost(input),
+            { "rpc.aggregate": "preview-automation" },
+          ),
+        [WS_METHODS.previewCloneInvoke]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewCloneInvoke,
+            previewAutomationBroker
+              .invokePinned<PreviewCloneResult>({
+                scope: {
+                  environmentId: input.environmentId,
+                  threadId: input.threadId,
+                  providerSessionId: `clone_${currentSessionId}_${input.threadId}_${input.cloneId}`,
+                  providerInstanceId: ProviderInstanceId.make("clone"),
+                  capabilities: new Set(["preview"]),
+                  issuedAt: 0,
+                },
+                operation: input.operation === "capture" ? "captureFrame" : input.operation,
+                input: input.input,
+                tabId: input.tabId,
+                ...(input.clientId === undefined ? {} : { clientId: input.clientId }),
+                ...(input.connectionId === undefined ? {} : { connectionId: input.connectionId }),
+                ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+              })
+              .pipe(
+                Effect.map((r) => ({
+                  clientId: r.clientId,
+                  connectionId: r.connectionId,
+                  result: r.result,
+                })),
+              ),
             { "rpc.aggregate": "preview-automation" },
           ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>

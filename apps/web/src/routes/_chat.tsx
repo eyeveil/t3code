@@ -21,7 +21,10 @@ import { isModelPickerOpen } from "../modelPickerVisibility";
 import { undoLatestThreadAction } from "../hooks/showThreadUndoNotice";
 import { resolveShortcutCommand } from "../keybindings";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
-import { isPreviewSupportedInRuntime } from "../previewStateStore";
+import {
+  isPreviewSupportedInRuntime,
+  isBrowserCloneSupportedInRuntime,
+} from "../previewStateStore";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -128,7 +131,7 @@ function ChatRouteGlobalShortcuts() {
         event.preventDefault();
         event.stopPropagation();
         if (!routeThreadRef) return;
-        if (!isPreviewSupportedInRuntime()) {
+        if (!isPreviewSupportedInRuntime() && !isBrowserCloneSupportedInRuntime()) {
           toastManager.add(
             stackedThreadToast({
               type: "info",

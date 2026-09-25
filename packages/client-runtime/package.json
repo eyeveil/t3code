@@ -22,6 +22,15 @@
     "./worktree-setup": {
       "types": "./src/worktreeSetup.ts",
       "default": "./src/worktreeSetup.ts"
+
+    },
+    "./browser-clone-session": {
+      "types": "./src/browserCloneSession.ts",
+      "default": "./src/browserCloneSession.ts"
+    },
+    "./browser-clone-gestures": {
+      "types": "./src/browserCloneGestures.ts",
+      "default": "./src/browserCloneGestures.ts"
     },
     "./load-balancing": {
       "types": "./src/load-balancing.ts",

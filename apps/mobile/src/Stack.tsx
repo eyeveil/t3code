@@ -44,6 +44,7 @@ import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentCompo
 import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { DevicePreviewRouteScreen } from "./features/devices/DevicePreviewRouteScreen";
+import { BrowserCloneRouteScreen } from "./features/browser/BrowserCloneRouteScreen";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
@@ -698,6 +699,11 @@ const RootStackConfig = createNativeStackNavigator({
         headerShown: false,
         gestureEnabled: false,
       },
+    }),
+    BrowserClone: createNativeStackScreen({
+      screen: BrowserCloneRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/browser`,
+      options: { presentation: "fullScreenModal", headerShown: false },
     }),
     ThreadReview: createNativeStackScreen({
       screen: ReviewSheet,

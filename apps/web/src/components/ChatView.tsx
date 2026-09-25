@@ -228,6 +228,7 @@ import {
 } from "../rightPanelStore";
 import {
   isPreviewSupportedInRuntime,
+  isBrowserCloneSupportedInRuntime,
   setActivePreviewTab,
   useThreadPreviewState,
 } from "../previewStateStore";
@@ -2206,7 +2207,9 @@ export default function ChatView(props: ChatViewProps) {
     () => [...new Set([...activeKnownTerminalIds, ...panelTerminalIds])],
     [activeKnownTerminalIds, panelTerminalIds],
   );
-  const previewPanelOpen = activeRightPanelKind === "preview" && isPreviewSupportedInRuntime();
+  const previewPanelOpen =
+    activeRightPanelKind === "preview" &&
+    (isPreviewSupportedInRuntime() || isBrowserCloneSupportedInRuntime());
   const rightPanelOpen = rightPanelState.isOpen;
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
@@ -5047,6 +5050,10 @@ export default function ChatView(props: ChatViewProps) {
   const createBrowserSurface = useCallback(
     (profileId?: string) => {
       if (!activeThreadRef) return;
+      if (!isPreviewSupportedInRuntime()) {
+        useRightPanelStore.getState().openBrowser(activeThreadRef, null);
+        return;
+      }
       void addBrowserSurface({
         threadRef: activeThreadRef,
         openPreview,
@@ -5474,7 +5481,8 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [activeRightPanelSurface, activeThreadRef]);
   const togglePreviewPanel = useCallback(() => {
-    if (!activeThreadRef || !isPreviewSupportedInRuntime()) return;
+    if (!activeThreadRef || (!isPreviewSupportedInRuntime() && !isBrowserCloneSupportedInRuntime()))
+      return;
     if (previewPanelOpen) {
       closePreviewPanel();
       return;
@@ -5646,7 +5654,7 @@ export default function ChatView(props: ChatViewProps) {
     (surfaces: readonly RightPanelSurface[]) => {
       if (!activeThreadRef) return;
       for (const surface of surfaces) {
-        if (surface.kind === "preview" && surface.resourceId) {
+        if (surface.kind === "preview" && surface.resourceId && isPreviewSupportedInRuntime()) {
           void closePreviewSession({
             closePreview,
             snapshot: activePreviewState.sessions[surface.resourceId] ?? null,
@@ -11122,7 +11130,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddAgents={addAgentsSurface}
           onAddKiCad={addKiCadSurface}
           onAddDevice={addDeviceSurface}
-          browserAvailable={isPreviewSupportedInRuntime()}
+          browserAvailable={isPreviewSupportedInRuntime() || isBrowserCloneSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
@@ -11179,8 +11187,8 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequests={addPullRequestsSurface}
             onAddAgents={addAgentsSurface}
             onAddKiCad={addKiCadSurface}
-            onAddDevice={addDeviceSurface}
-            browserAvailable={isPreviewSupportedInRuntime()}
+          onAddDevice={addDeviceSurface}
+            browserAvailable={isPreviewSupportedInRuntime() || isBrowserCloneSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
