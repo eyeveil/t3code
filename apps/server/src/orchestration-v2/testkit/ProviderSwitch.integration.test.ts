@@ -1,3 +1,8 @@
+import { makeAccountFallback } from "../AccountFallbackWorker.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import { AutoFallbackCooldownTrackerLive } from "../../orchestration/autoFallback/CooldownTracker.ts";
+import { ServerSettings } from "@t3tools/contracts";
 import { vi } from "vite-plus/test";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { assert, describe, it } from "@effect/vitest";
@@ -473,8 +478,55 @@ describe("orchestration v2 provider switching", () => {
               modelSelection: sibling,
               accountFallbackOfRunId: failed.id,
             } satisfies OrchestrationV2Command;
-            yield* orchestrator.dispatch(retry);
+            const preferences = Schema.decodeUnknownSync(ServerSettings)({
+              providerInstances: {
+                [CODEX_MODEL_SELECTION.instanceId]: { driver: "codex", enabled: true },
+                [sibling.instanceId]: { driver: "codex", enabled: true },
+              },
+            });
+            const snapshots = [CODEX_MODEL_SELECTION, sibling].map((selection) => ({
+              instanceId: selection.instanceId,
+              driver: CODEX_DRIVER,
+              enabled: true,
+              installed: true,
+              status: "ready" as const,
+              version: "1",
+              checkedAt: "2026-09-25T00:00:00Z",
+              auth: { status: "authenticated" as const },
+              slashCommands: [],
+              skills: [],
+              models: [
+                {
+                  slug: selection.model,
+                  name: selection.model,
+                  isCustom: false,
+                  capabilities: null,
+                },
+              ],
+            }));
+            const handle = yield* makeAccountFallback.pipe(
+              Effect.provide(
+                Layer.mergeAll(
+                  Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed(snapshots) }),
+                  Layer.mock(ServerSettingsService)({ getSettings: Effect.succeed(preferences) }),
+                  AutoFallbackCooldownTrackerLive,
+                ),
+              ),
+            );
+            const failureEvent = yield* orchestrator.streamStoredEvents.pipe(
+              Stream.filter(
+                ({ event }) =>
+                  event.type === "run.updated" &&
+                  event.payload.id === failed.id &&
+                  event.payload.status === "failed",
+              ),
+              Stream.runHead,
+            );
+            assert.equal(failureEvent._tag, "Some");
+            if (failureEvent._tag !== "Some") return;
+            yield* handle(failureEvent.value.event);
             yield* wait(2);
+            yield* handle(failureEvent.value.event);
             yield* orchestrator.dispatch(retry);
             const result = yield* orchestrator.getThreadProjection(threadId);
             assert.equal(result.runs.length, 2);
