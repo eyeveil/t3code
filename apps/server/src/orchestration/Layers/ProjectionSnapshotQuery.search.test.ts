@@ -100,3 +100,18 @@ it.effect("search uses v2 visibility while legacy transcripts are still lazy", (
     );
   }).pipe(Effect.provide(TestLayer)),
 );
+
+it.effect("loads legacy threads with fork activity summaries during server startup", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const query = yield* ProjectionSnapshotQuery;
+    const now = "2026-09-25T00:00:00.000Z";
+    yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at) VALUES ('project:boot', 'Boot', '/tmp/boot', '[]', ${now}, ${now})`;
+    yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at, last_activity_summary, last_activity_at) VALUES ('thread:boot', 'project:boot', 'Existing thread', '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default', ${now}, ${now}, 'Running tests', ${now})`;
+    const model = yield* query.getCommandReadModel();
+    assert.equal(model.threads.length, 1);
+    assert.equal(model.threads[0]?.title, "Existing thread");
+    const snapshot = yield* query.getSnapshot();
+    assert.equal(snapshot.threads.length, 1);
+  }).pipe(Effect.provide(TestLayer)),
+);
