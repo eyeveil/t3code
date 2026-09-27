@@ -128,12 +128,16 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         data-composer-context-control
         onContextMenu={handleWorkspaceContextMenu}
       >
-        {forceNewWorktree || (!activeWorktreePath && effectiveEnvMode === "worktree") ? (
+        {forceNewWorktree ? (
           <FolderGit2Icon
             className={displayMode === "panel" ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3"}
           />
         ) : activeWorktreePath ? (
           <FolderGitIcon
+            className={displayMode === "panel" ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3"}
+          />
+        ) : effectiveEnvMode === "worktree" ? (
+          <FolderGit2Icon
             className={displayMode === "panel" ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3"}
           />
         ) : (
@@ -144,7 +148,8 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         <ComposerContextLabel displayMode={displayMode}>
           {forceNewWorktree
             ? resolveEnvModeLabel("worktree")
-            : (workspaceDisplayName ?? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode))}
+            : (workspaceDisplayName ??
+              resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode))}
         </ComposerContextLabel>
         {displayMode === "panel" ? (
           <span className="shrink-0 text-3xs font-normal text-muted-foreground/70">

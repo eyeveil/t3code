@@ -71,6 +71,7 @@ describe("ThreadDetailsPanel", () => {
       onEnvironmentChange: vi.fn(),
       envMode: "local",
       onEnvModeChange: vi.fn(),
+      envMode: "local",
       startFromOrigin: false,
       onStartFromOriginChange: vi.fn(),
       onComposerFocusRequest: vi.fn(),
