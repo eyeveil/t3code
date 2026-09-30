@@ -21,7 +21,7 @@ The live server runs the **npm-global `t3` package**
 (`~/.npm-global/lib/node_modules/t3`), NOT the repo checkout. It runs as the
 foreground command of a tmux window (owner: session `main`, window `t3-`,
 `t3 serve --host 0.0.0.0`, `0.0.0.0:3773`, health `GET /.well-known/t3/environment`).
-The idle signal is read from `~/.t3/userdata/state.sqlite`.
+The idle signal is read from `~/.t3/userdata/statev2.sqlite`.
 
 Deploy the complete package runtime, not only `dist/`. Server bundles
 externalize production dependencies, so a dependency bump such as Effect
@@ -97,7 +97,7 @@ tmux new-window -d -t main -n t3- 't3 serve --host 0.0.0.0'
   under npm and node-pty cannot gyp-rebuild without a host toolchain. The stage
   script resolves catalogs and copies the already-built host native module.
 
-Full rationale, the state.sqlite idle query, and the 2026-07-05 double-outage
+Full rationale, the statev2.sqlite idle query, and the 2026-07-05 double-outage
 post-mortem: `references/deploy-internals.md`.
 
 ## Dynamic deploy notification

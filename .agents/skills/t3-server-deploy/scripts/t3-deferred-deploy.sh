@@ -5,7 +5,7 @@ set -u
 STAGED_PKG=${STAGED_PKG:-$HOME/.local/state/t3-deploy/package}
 GLOBAL_PKG=${GLOBAL_PKG:-$HOME/.npm-global/lib/node_modules/t3}
 SQLITE=${SQLITE:-sqlite3}
-DB=${DB:-$HOME/.t3/userdata/state.sqlite}
+DB=${DB:-$HOME/.t3/userdata/statev2.sqlite}
 SERVE_CMD=${SERVE_CMD:-t3 serve --host 0.0.0.0 --no-browser}
 SERVE_PORT=${SERVE_PORT:-3773}
 HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:3773/.well-known/t3/environment}
@@ -45,9 +45,12 @@ if ! command -v "$SQLITE" >/dev/null 2>&1; then
   exit 1
 fi
 
+# V2 runs are the only live signal: the V1 projection_thread_sessions table
+# stopped updating at the v2 cutover and always reads idle. Fails closed.
 busy_sessions() {
   "$SQLITE" -readonly "$DB" \
-    "SELECT count(*) FROM projection_thread_sessions WHERE status IN ('running','starting');" \
+    "SELECT count(*) FROM orchestration_v2_projection_runs
+     WHERE status IN ('queued','preparing','starting','running','waiting');" \
     2>/dev/null || echo 1
 }
 
@@ -145,6 +148,14 @@ if [ -z "${serve_pid:-}" ]; then
   say "no running t3 serve found; runtime installed, nothing to restart"
   notify "t3 deployed (no restart needed)" "white_check_mark" "Complete t3 runtime installed; no serve process was running."
   exit 0
+fi
+
+# The serve watchdog respawns main:t3- when health fails; pause it so it cannot
+# kill the fresh window mid-startup or race the rollback.
+WATCHDOG_TIMER=${WATCHDOG_TIMER:-t3-serve-watchdog.timer}
+if systemctl --user is-active --quiet "$WATCHDOG_TIMER" 2>/dev/null; then
+  systemctl --user stop "$WATCHDOG_TIMER" 2>/dev/null \
+    && trap 'systemctl --user start "$WATCHDOG_TIMER" 2>/dev/null' EXIT
 fi
 
 say "restarting t3 serve in pane $pane"

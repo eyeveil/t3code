@@ -20,10 +20,17 @@ skew before the live server is stopped.
 
 ## The idle signal
 
-`busy_sessions()` counts rows in `projection_thread_sessions` with status
-`running` or `starting`. The gate requires **3 consecutive zero polls, 20s
-apart** — a single poll can catch a turn mid-settle and false-idle. Deadline is
-12h, after which it gives up and notifies rather than deploying blind.
+`busy_sessions()` counts active runs (`queued`, `preparing`, `starting`,
+`running`, `waiting`) in `statev2.sqlite`'s `orchestration_v2_projection_runs`.
+The V1 `projection_thread_sessions` table still exists in both databases but
+stopped updating at the v2 cutover, so it always reads idle — the 2026-09-27
+deploy restarted 40s after arming because of it. The gate requires **3
+consecutive zero polls, 20s apart** — a single poll can catch a turn mid-settle
+and false-idle. Deadline is 12h, after which it gives up and notifies rather
+than deploying blind.
+
+The restart pauses `t3-serve-watchdog.timer` (and restores it on exit) so the
+watchdog cannot kill the fresh serve window while it starts.
 
 Do NOT use log/WAL mtimes as an idle signal: a periodic health check (e.g. a
 Grok ping every 5 min) writes trace spans, so those files are never "quiet."
@@ -32,7 +39,8 @@ Grok ping every 5 min) writes trace spans, so those files are never "quiet."
 
 - Per-thread provider logs: `~/.t3/userdata/logs/provider/<threadId>.log`
   (CANON/NTIVE ndjson).
-- Projection tables in `~/.t3/userdata/state.sqlite` (`projection_*`).
+- V2 projection tables in `~/.t3/userdata/statev2.sqlite`
+  (`orchestration_v2_projection_*`); `state.sqlite` is the frozen V1 source.
 - Claude transcripts: `~/.claude/projects/<cwd-munged>/<sessionId>.jsonl`.
   Resume only searches the dir munged from the spawn cwd.
 

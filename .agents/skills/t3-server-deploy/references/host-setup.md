@@ -53,14 +53,14 @@ NixOS) — the user-manager PATH is systemd-only and won't find `bash`/`node`.
 
 ## 4. A sqlite3 binary for the idle query
 
-The idle gate reads `state.sqlite` read-only. NixOS ships no system `sqlite3`;
+The idle gate reads `statev2.sqlite` read-only. NixOS ships no system `sqlite3`;
 point `SQLITE` at any sqlite3 binary you have (the owner reuses one at
 `~/.local/state/omp-auth-check/sqlite-bin-bin/bin/sqlite3`). Alternatively query
 via `node --experimental-sqlite`. The query:
 
 ```sql
-SELECT count(*) FROM projection_thread_sessions
-WHERE status IN ('running','starting');
+SELECT count(*) FROM orchestration_v2_projection_runs
+WHERE status IN ('queued','preparing','starting','running','waiting');
 ```
 
 ## 5. Optional: ntfy notifications
