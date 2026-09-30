@@ -79,6 +79,22 @@ mv "$GP" "$GP.bad" && mv "$GP.old" "$GP"
 tmux new-window -d -t main -n t3- 't3 serve --host 0.0.0.0'
 ```
 
+## Clean up old t3 checkouts
+
+Every build or deploy ends by removing stale t3 checkouts; merge and
+integration worktrees otherwise pile up and fill the host disk.
+
+- Remove each `git -C ~/dev/t3code worktree list` entry except the main
+  checkout and any worktree a live thread is using, but only after checking it
+  has no uncommitted changes and its HEAD is already in `main`, a pushed branch,
+  or a `backup/*` branch. Use `git worktree remove`, then `git worktree prune`.
+  Keep the branches.
+- Delete old deploy artifacts: everything in `~/.local/state/t3-deploy` except
+  `deploy.log`, `deploy-manifest.txt`, and the staged `package` of an armed
+  deploy, plus `~/.npm-global/lib/node_modules/t3.*` except `t3.old`
+  (the rollback target).
+- Report what you removed and anything you skipped.
+
 ## CRITICAL safety rules (learned the hard way)
 
 - **Verify "Bundled web app" before staging.** A failed vite build exits 0

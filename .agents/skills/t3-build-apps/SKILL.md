@@ -22,6 +22,11 @@ All desktop builds go through `node scripts/build-desktop-artifact.ts` (the
 `T3CODE_DESKTOP_UPDATE_REPOSITORY`/`GITHUB_REPOSITORY` is set at build time — so
 fork builds won't self-clobber.
 
+After a build, remove stale t3 checkouts on the build host as described in
+`t3-server-deploy` ("Clean up old t3 checkouts"). On the Mac, also delete
+superseded dmgs in `release/` and old `/Applications/T3 Code (Alpha).bak-*.app`
+copies, keeping the newest backup.
+
 ## Mac dmg
 
 ```bash
