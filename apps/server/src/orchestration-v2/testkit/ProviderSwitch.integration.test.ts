@@ -1,7 +1,7 @@
 import { makeAccountFallback } from "../AccountFallbackWorker.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { AutoFallbackCooldownTrackerLive } from "../../orchestration/autoFallback/CooldownTracker.ts";
+import { AutoFallbackCooldownTrackerLive } from "../autoFallback/CooldownTracker.ts";
 import { ServerSettings } from "@t3tools/contracts";
 import { vi } from "vite-plus/test";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
@@ -52,7 +52,7 @@ import { layer as eventStoreLayer } from "../EventStore.ts";
 import {
   LegacyV1ThreadImporter,
   layer as legacyV1ThreadImporterLayer,
-} from "../LegacyV1ThreadImporter.ts";
+} from "../legacy/LegacyV1ThreadImporter.ts";
 import { OrchestratorDispatchError, OrchestratorV2 } from "../Orchestrator.ts";
 import { OrchestrationEffectWorkerV2 } from "../EffectWorker.ts";
 import { EffectOutboxV2, layer as effectOutboxLayer } from "../EffectOutbox.ts";

@@ -92,6 +92,7 @@ import {
   deriveThreadActivityRun,
   deriveLatestThreadRun,
   deriveThreadRuntime,
+  presentPendingBackgroundWork,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import {
@@ -132,6 +133,7 @@ import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/unstable/reactivity";
 import {
+  Fragment,
   lazy,
   memo,
   type SetStateAction,
@@ -176,6 +178,7 @@ import {
   type TimelineEntriesProjection,
   deriveActivePlanState,
   deriveActiveWorkStartedAt,
+  deriveCanInterruptRunningThread,
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestRunSettled,
@@ -532,7 +535,7 @@ import { assetEnvironment } from "../state/assets";
 import { readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
-import { Button } from "./ui/button";
+import { Button, InlineButton } from "./ui/button";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -4287,7 +4290,10 @@ export default function ChatView(props: ChatViewProps) {
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
   }, [composerRef]);
-  const canInterruptRunningThread = activeThread !== undefined && phase === "running";
+  const canInterruptRunningThread = deriveCanInterruptRunningThread(
+    activeThread !== undefined,
+    activeRuntime,
+  );
   const onInterrupt = useCallback(async () => {
     if (!activeThread) return;
     const result = await interruptThreadTurn({
@@ -6859,11 +6865,21 @@ export default function ChatView(props: ChatViewProps) {
       }
     }
   }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
+  const onOpenRelatedThread = useCallback(
+    (threadId: ThreadId) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+      });
+    },
+    [environmentId, navigate],
+  );
+
   const backgroundWorkBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    if (activeBackgroundTasks.length === 0 || !activeThread) {
+    const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
+    if (presentation === null || !activeThread) {
       return null;
     }
-    const count = activeBackgroundTasks.length;
     return {
       id: `background-work:${activeThread.id}`,
       variant: "default",
@@ -6874,8 +6890,30 @@ export default function ChatView(props: ChatViewProps) {
           aria-hidden="true"
         />
       ),
-      title: count === 1 ? "Waiting on background task" : `Waiting on ${count} background tasks`,
-      description: activeBackgroundTasks.map((task) => task.description || task.taskId).join(", "),
+      title: presentation.title,
+      // A single named item is already in the title.
+      description:
+        presentation.items.length === 1 && presentation.items[0]?.childThreadId === undefined
+          ? undefined
+          : presentation.items.map((item, index) => {
+              const childThreadId = item.childThreadId;
+              return (
+                <Fragment key={item.taskId}>
+                  {index > 0 ? ", " : null}
+                  {childThreadId === undefined ? (
+                    item.label
+                  ) : (
+                    <InlineButton
+                      tone="muted"
+                      aria-label={`Open subagent ${item.label}`}
+                      onClick={() => onOpenRelatedThread(childThreadId)}
+                    >
+                      {item.label}
+                    </InlineButton>
+                  )}
+                </Fragment>
+              );
+            }),
       actions: (
         <Button
           size="xs"
@@ -6887,7 +6925,13 @@ export default function ChatView(props: ChatViewProps) {
         </Button>
       ),
     };
-  }, [activeBackgroundTasks, activeThread, handleStopBackgroundWork, isStoppingBackgroundWork]);
+  }, [
+    activeBackgroundTasks,
+    activeThread,
+    handleStopBackgroundWork,
+    isStoppingBackgroundWork,
+    onOpenRelatedThread,
+  ]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the
   // pill); sending a message clears it as a side effect of the send path.
@@ -7819,16 +7863,6 @@ export default function ChatView(props: ChatViewProps) {
       revertThreadCheckpoint,
       setThreadError,
     ],
-  );
-
-  const onOpenRelatedThread = useCallback(
-    (threadId: ThreadId) => {
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
-      });
-    },
-    [environmentId, navigate],
   );
 
   const onForkFromRun = useCallback(
@@ -10357,7 +10391,7 @@ export default function ChatView(props: ChatViewProps) {
     threadId: activeThread.id,
     ...(draftId ? { draftId } : {}),
     activeProjectName: activeProject?.title,
-    activeProjectScripts: activeProject?.scripts,
+    activeProjectScripts: activeProject ? activeProjectScripts : undefined,
     preferredScriptId: activeProject
       ? (lastInvokedScriptByProjectId[activeProject.id] ?? null)
       : null,
@@ -10815,6 +10849,7 @@ export default function ChatView(props: ChatViewProps) {
                                 isLocalDraftThread && activeProject === null
                               }
                               phase={phase}
+                              canInterrupt={canInterruptRunningThread}
                               isConnecting={isConnecting}
                               isSendBusy={isSendBusy || isSavingQueuedEdit || isResuming}
                               canResume={resumableRunId !== null || hasHeldQueuedRuns}

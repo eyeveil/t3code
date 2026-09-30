@@ -22,7 +22,6 @@
     "./worktree-setup": {
       "types": "./src/worktreeSetup.ts",
       "default": "./src/worktreeSetup.ts"
-
     },
     "./browser-clone-session": {
       "types": "./src/browserCloneSession.ts",
@@ -39,10 +38,6 @@
     "./project-favicon-cache": {
       "types": "./src/projectFaviconCache.ts",
       "default": "./src/projectFaviconCache.ts"
-    },
-    "./pending-requests": {
-      "types": "./src/pendingRequests.ts",
-      "default": "./src/pendingRequests.ts"
     },
     "./user-message": {
       "types": "./src/userMessage.ts",

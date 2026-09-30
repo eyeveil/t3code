@@ -1305,7 +1305,7 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20" }],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
           runtime: {
             ...baseThread.runtime,
             status: "idle",
@@ -1326,7 +1326,7 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20" }],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
         },
       }),
     ).toMatchObject({ label: "Working", pulse: true });
