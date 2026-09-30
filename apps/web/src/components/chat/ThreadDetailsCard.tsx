@@ -52,7 +52,10 @@ export function ThreadDetailsCard({
   const contentHeights =
     measurements.key === measurementKey ? measurements.heights : { full: 0, compact: 0 };
   const height = placement?.height ?? Math.max(0, (canvas?.container.height ?? 0) - 52);
-  const density = resolveThreadDetailsCardDensity(height, contentHeights);
+  const density = resolveThreadDetailsCardDensity(
+    placement?.densityHeight ?? height,
+    contentHeights,
+  );
   const reportDetailsCard = canvas?.reportDetailsCard;
   const cardLeft = preferredPlacement?.x;
   const cardRight = preferredPlacement

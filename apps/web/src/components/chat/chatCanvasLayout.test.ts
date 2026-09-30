@@ -185,7 +185,7 @@ describe("chat canvas layout", () => {
     expect(layout(560)).toEqual(narrowed);
   });
   it.each(["west", "north"] as const)(
-    "folds the card before moving a %s resize beside it",
+    "shortens the card instead of folding it before moving a %s resize beside it",
     (direction) => {
       const container = { width: 1584, height: 988 };
       const source = { width: 1000, height: 1523 };
@@ -214,7 +214,7 @@ describe("chat canvas layout", () => {
       const density = (result: ReturnType<typeof layout>) => {
         const card = resolveThreadDetailsCardLayout({ container, ...result });
         return card
-          ? resolveThreadDetailsCardDensity(card.height, { full: 327, compact: 182 })
+          ? resolveThreadDetailsCardDensity(card.densityHeight, { full: 327, compact: 182 })
           : "hidden";
       };
       expect(density(layout(400))).toBe("full");
@@ -223,10 +223,11 @@ describe("chat canvas layout", () => {
       expect(compact.frame!.width).toBe(460);
       expect(compact.chat.left).toBe(364);
       expect(compact.overlapsDetailsCard).toBe(true);
-      expect(density(compact)).toBe("compact");
+      expect(density(compact)).toBe("full");
+      expect(resolveThreadDetailsCardLayout({ container, ...compact })!.height).toBeLessThan(327);
       expectClear(compact);
-      expect(density(layout(500))).toBe("compact");
-      expect(density(layout(520))).toBe("essential");
+      expect(density(layout(500))).toBe("full");
+      expect(density(layout(520))).toBe("full");
       expect(density(layout(540))).toBe("hidden");
       expect(layout(600).frame!.width).toBe(600);
       expect(layout(460)).toEqual(compact);

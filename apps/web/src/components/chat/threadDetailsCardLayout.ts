@@ -25,17 +25,18 @@ export function resolveThreadDetailsCardLayout({
   const width = Math.min(312, container.width - chat.left - chat.width - gap * 2);
   if (width < 240) return null;
   const x = container.width - width - gap;
-  // Resizing consumes the height above the player. Dragging first tries to
-  // clear the full card and folds it only when there is no readable placement.
+  const densityHeight = container.height - gap * 2;
+  // The player limits how tall the card's viewport is, never which controls it shows.
   const height =
     overlapsDetailsCard && frame && frame.x + frame.width > x - gap && frame.x < x + width + gap
-      ? Math.min(container.height - gap * 2, frame.y - gap * 2)
-      : container.height - gap * 2;
+      ? Math.min(densityHeight, frame.y - gap * 2)
+      : densityHeight;
   if (height < 160) return null;
   return {
     x,
     width,
     y: gap,
     height,
+    densityHeight,
   } as const;
 }

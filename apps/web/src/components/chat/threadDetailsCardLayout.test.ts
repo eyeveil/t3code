@@ -18,6 +18,7 @@ describe("floating details card", () => {
       y: 12,
       width: 312,
       height: 876,
+      densityHeight: 876,
     });
     expect(resolve(1344, 900)?.width).toBe(280);
   });
@@ -26,7 +27,13 @@ describe("floating details card", () => {
   });
   it("keeps the card at the top right while the preview is freely dragged vertically", () => {
     for (const y of [12, 170, 250, 400, 648]) {
-      expect(resolve(1600, 900, y)).toEqual({ x: 1276, y: 12, width: 312, height: 876 });
+      expect(resolve(1600, 900, y)).toEqual({
+        x: 1276,
+        y: 12,
+        width: 312,
+        height: 876,
+        densityHeight: 876,
+      });
     }
   });
   it("keeps width and height independent", () => {
@@ -58,11 +65,39 @@ describe("card content fitting", () => {
       );
     }
   });
-  it("folds only after the preview cannot fit around the full card", () => {
+  it("limits the card height under an overlapping preview without folding it", () => {
     const content = { full: 327, compact: 182 };
-    expect(resolveThreadDetailsCardDensity(place(351, 625, true)!.height, content)).toBe("full");
-    expect(resolveThreadDetailsCardDensity(place(350, 626, true)!.height, content)).toBe("compact");
-    expect(resolveThreadDetailsCardDensity(place(12)!.height, content)).toBe("full");
+    expect(place(351, 625, true)).toMatchObject({ height: 327, densityHeight: 964 });
+    const overlapped = place(350, 626, true)!;
+    expect(overlapped).toMatchObject({ height: 326, densityHeight: 964 });
+    expect(resolveThreadDetailsCardDensity(overlapped.densityHeight, content)).toBe("full");
+    expect(resolveThreadDetailsCardDensity(place(12)!.densityHeight, content)).toBe("full");
+  });
+  it("keeps expanded content full and scrollable when it grows past the preview", () => {
+    const placement = resolveThreadDetailsCardLayout({
+      container: { width: 1584, height: 700 },
+      chat: { left: 424, width: 736 },
+      frame: { x: 1260, y: 400, width: 240, height: 288 },
+      overlapsDetailsCard: true,
+    })!;
+    expect(placement.height).toBeLessThanOrEqual(400 - 24);
+    expect(
+      resolveThreadDetailsCardDensity(placement.densityHeight, { full: 612, compact: 182 }),
+    ).toBe("full");
+  });
+  it("still folds when the window itself is too short", () => {
+    const short = (height: number) =>
+      resolveThreadDetailsCardLayout({
+        container: { width: 1584, height },
+        chat: { left: 424, width: 736 },
+        frame: null,
+      })!.densityHeight;
+    expect(resolveThreadDetailsCardDensity(short(400), { full: 612, compact: 182 })).toBe(
+      "compact",
+    );
+    expect(resolveThreadDetailsCardDensity(short(190), { full: 612, compact: 182 })).toBe(
+      "essential",
+    );
   });
   it("hides only when the available height cannot hold readable controls", () => {
     expect(place(184, 792, true)).toMatchObject({ y: 12, height: 160 });
