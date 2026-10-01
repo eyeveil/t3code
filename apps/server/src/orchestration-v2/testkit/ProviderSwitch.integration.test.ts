@@ -393,7 +393,7 @@ describe("orchestration v2 provider switching", () => {
             ...CODEX_MODEL_SELECTION,
             instanceId: ProviderInstanceId.make("codex-sibling"),
           };
-          const registry = makeProviderAdapterRegistryLayer([
+          const registry = ProviderAdapterRegistry.makeLayer([
             makeTestAdapter({
               instanceId: CODEX_MODEL_SELECTION.instanceId,
               driver: CODEX_DRIVER,
@@ -414,8 +414,8 @@ describe("orchestration v2 provider switching", () => {
             }),
           ]);
           yield* Effect.gen(function* () {
-            const orchestrator = yield* OrchestratorV2;
-            const worker = yield* OrchestrationEffectWorkerV2;
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
             const wait = (ordinal: number) =>
               orchestrator.streamStoredEvents.pipe(
                 Stream.filter(

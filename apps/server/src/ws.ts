@@ -62,6 +62,7 @@ import {
   OrchestrationV2ThreadLaunchError,
   type OrchestrationProjectShell,
   type OrchestrationV2ShellSnapshot,
+  type ProjectCreateNewInput,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
@@ -87,7 +88,7 @@ import {
   PersistChatAttachmentsError,
   RpcClientId,
   EnvironmentAuthorizationError,
-  type ProjectId,
+  ProjectId,
   type ProviderDriverKind,
   ThreadId,
   ProviderInstanceId,
@@ -205,6 +206,7 @@ import * as ScratchWorkspace from "./project/ScratchWorkspace.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
+import * as NewProject from "./project/NewProject.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -1089,6 +1091,8 @@ const makeWsRpcLayer = (
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
       const scratchWorkspace = yield* ScratchWorkspace.ScratchWorkspace;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1597,6 +1601,52 @@ const makeWsRpcLayer = (
           ),
         );
 
+      // Projects started from just a name live beside Scratch and worktrees,
+      // away from folders the user organizes by hand. A nested repository is
+      // fine here (unlike Scratch) because each project gets its own `git init`.
+      const newProjectsRoot = path.resolve(config.baseDir, "projects");
+      const createNewProject = (input: ProjectCreateNewInput) =>
+        Effect.gen(function* () {
+          const folder = yield* NewProject.createNewProjectFolder({
+            root: newProjectsRoot,
+            name: input.name,
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationDispatchCommandError({
+                  message: "Failed to create the project folder.",
+                  cause,
+                }),
+            ),
+          );
+          const project = yield* projectService
+            .create({
+              commandId: yield* serverCommandId("project-create-new"),
+              projectId: ProjectId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie)),
+              title: input.name,
+              workspaceRoot: folder.workspaceRoot,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationDispatchCommandError({
+                    message: "Failed to create the project.",
+                    cause,
+                  }),
+              ),
+              // Only a rejected create means no project uses the folder. An
+              // interrupt can land after the command is queued, so keep it then.
+              Effect.tapError(() =>
+                fileSystem.remove(folder.workspaceRoot, { recursive: true }).pipe(Effect.ignore),
+              ),
+            );
+          return {
+            projectId: project.id,
+            workspaceRoot: folder.workspaceRoot,
+            ...(folder.commitError === undefined ? {} : { commitError: folder.commitError }),
+          };
+        });
+
       const loadServerConfig = (options: { readonly usageLimitsCommand: boolean }) =>
         Effect.gen(function* () {
           const keybindingsConfig = yield* keybindings.loadConfigState;
@@ -1665,6 +1715,7 @@ const makeWsRpcLayer = (
               onNone: () => ({}),
               onSome: (root) => ({ scratchWorkspaceRoot: root }),
             }),
+            newProjectsRoot,
           };
         });
 
@@ -2227,6 +2278,7 @@ const makeWsRpcLayer = (
                 ? providerRegistry.refreshWorkspaceSnapshot({
                     instanceId: input.instanceId,
                     cwd: input.cwd,
+                    fresh: input.fresh === true,
                   })
                 : input.instanceId !== undefined
                   ? providerRegistry.refreshInstance(input.instanceId)
@@ -2915,6 +2967,10 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [WS_METHODS.projectsCreateNew]: (input) =>
+          observeRpcEffect(WS_METHODS.projectsCreateNew, createNewProject(input), {
+            "rpc.aggregate": "orchestration",
+          }),
         [WS_METHODS.projectCloneCancel]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectCloneCancel,
