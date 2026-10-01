@@ -20,7 +20,17 @@ All desktop builds go through `node scripts/build-desktop-artifact.ts` (the
 `--skip-build` (reuse existing dist), `--keep-stage`, `--wsl-prebuild <pty.node>`,
 `--signed`. No auto-update feed is baked in unless
 `T3CODE_DESKTOP_UPDATE_REPOSITORY`/`GITHUB_REPOSITORY` is set at build time — so
-fork builds won't self-clobber.
+local builds won't self-clobber.
+
+Autoupdating builds come from `.github/workflows/fork-release.yml`: every push to
+`main` publishes a `vX.Y.Z-nightly.<date>.<run>` prerelease on issuelt/t3code
+(mac arm64 dmg+zip, Linux AppImage+deb, Windows nsis), and installed nightlies
+update from it. The Mac build is signed with the dedicated self-signed cert in
+`.github/fork/mac-signing-cert.pem` (key and password in the
+`FORK_MAC_SIGNING_P12`/`FORK_MAC_SIGNING_PASSWORD` secrets, local copy in
+`~/.local/share/t3code-fork-signing`). Squirrel.Mac only accepts updates
+signed by that same cert, so never rotate it casually; an ad hoc local build
+installed over a fork release stops it updating until you reinstall a release.
 
 After a build, remove stale t3 checkouts on the build host as described in
 `t3-server-deploy` ("Clean up old t3 checkouts"). On the Mac, also delete

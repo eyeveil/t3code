@@ -1,0 +1,187 @@
+name: Fork Release
+
+# Publishes the fork's desktop builds as nightly-channel prereleases on this
+# repository, which installed fork builds poll through electron-updater.
+# Upstream's release.yml needs Blacksmith runners and org secrets, so it stays
+# disabled here.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      name: ${{ steps.meta.outputs.name }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+        with:
+          sparse-checkout: |
+            scripts
+            apps/desktop/package.json
+            package.json
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: package.json
+      - id: meta
+        run: |
+          node scripts/resolve-nightly-release.ts \
+            --date "$(date -u +%Y%m%d)" \
+            --run-number "${{ github.run_number }}" \
+            --sha "${{ github.sha }}" \
+            --github-output
+
+  desktop:
+    needs: version
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: mac, target: dmg, arch: arm64, runner: macos-15 }
+          - { platform: linux, target: AppImage, arch: x64, runner: ubuntu-24.04 }
+          - { platform: win, target: nsis, arch: x64, runner: windows-2025 }
+    steps:
+      - name: Checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: ${{ matrix.platform != 'win' }}
+          run-install: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install Linux desktop build libraries
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config imagemagick
+
+      - name: Install Spectre-mitigated MSVC libs
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) { exit 1 }
+
+      # Squirrel.Mac installs an update only if it satisfies the running app's
+      # designated requirement, which pins this certificate. Ad hoc signatures
+      # change every build, so they can never update.
+      - name: Import fork macOS signing certificate
+        if: matrix.platform == 'mac'
+        env:
+          P12: ${{ secrets.FORK_MAC_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.FORK_MAC_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/fork-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 16)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/fork-signing.p12"
+          security import "$RUNNER_TEMP/fork-signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/fork-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain .github/fork/mac-signing-cert.pem
+          security find-identity -v -p codesigning "$keychain" | grep -F '"T3 Code Fork Signing"'
+          echo "CSC_NAME=T3 Code Fork Signing" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: vp install
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ needs.version.outputs.version }}"
+
+      - name: Build desktop artifact
+        shell: bash
+        run: |
+          vp run dist:desktop:artifact \
+            --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.version.outputs.version }}" \
+            --verbose
+
+      - name: Verify macOS signature pins the fork certificate
+        if: matrix.platform == 'mac'
+        run: |
+          set -euo pipefail
+          fingerprint="$(openssl x509 -in .github/fork/mac-signing-cert.pem -noout -fingerprint -sha1 | cut -d= -f2 | tr -d : | tr '[:upper:]' '[:lower:]')"
+          app="$(find release -maxdepth 2 -name '*.app' -type d | head -n 1)"
+          codesign --verify --deep --strict "$app"
+          requirement="$(codesign -d -r- "$app" 2>&1)"
+          echo "$requirement"
+          grep -q "H\"$fingerprint\"" <<<"$requirement"
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p release-publish
+          for file in release/*.dmg release/*.zip release/*.AppImage release/*.deb release/*.exe release/*.blockmap release/*.yml; do
+            [[ "$file" == */builder-debug.yml ]] && continue
+            cp "$file" release-publish/
+          done
+          ls -la release-publish
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+
+  publish:
+    needs: [version, desktop]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls release-assets/nightly-mac.yml release-assets/nightly-linux.yml release-assets/nightly.yml
+          gh release create "${{ needs.version.outputs.tag }}" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "${{ needs.version.outputs.name }}" \
+            --notes "Fork nightly built from $GITHUB_SHA." \
+            --prerelease
