@@ -53,7 +53,6 @@
     "@legendapp/list": "catalog:",
     "@material/material-color-utilities": "0.3.0",
     "@noble/curves": "catalog:",
-    "@noble/hashes": "catalog:",
     "@pchmn/expo-material3-theme": "^1.4.0",
     "@pierre/diffs": "catalog:",
     "@react-native-ai/apple": "0.12.0",

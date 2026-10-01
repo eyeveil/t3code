@@ -84,7 +84,6 @@ export const PiRpcResponse = Schema.Struct({
 });
 export type PiRpcResponse = typeof PiRpcResponse.Type;
 
-export const isPiRpcResponse = Schema.is(PiRpcResponse);
 export type PiRpcRawEvent = Readonly<Record<string, unknown>>;
 
 export interface PiRpcProtocolFailureEvent {

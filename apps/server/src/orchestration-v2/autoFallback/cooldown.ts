@@ -31,7 +31,7 @@ export interface LimitCooldownDisplayState {
 export type LimitCooldownMap = ReadonlyMap<string, LimitCooldownEntry>;
 
 /** When the cooldown for an entry ends (the later of the constant window and any reset time). */
-export function cooldownExpiry(entry: LimitCooldownEntry): number {
+function cooldownExpiry(entry: LimitCooldownEntry): number {
   const windowEnd = entry.limitedAt + LIMIT_COOLDOWN_MS;
   return entry.resetAt !== undefined ? Math.max(windowEnd, entry.resetAt) : windowEnd;
 }
