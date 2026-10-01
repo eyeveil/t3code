@@ -140,7 +140,9 @@ jobs:
         run: |
           set -euo pipefail
           fingerprint="$(openssl x509 -in .github/fork/mac-signing-cert.pem -noout -fingerprint -sha1 | cut -d= -f2 | tr -d : | tr '[:upper:]' '[:lower:]')"
-          app="$(find release -maxdepth 2 -name '*.app' -type d | head -n 1)"
+          unpacked="$RUNNER_TEMP/verify-zip"
+          ditto -x -k "$(find release -maxdepth 1 -name '*.zip' | head -n 1)" "$unpacked"
+          app="$(find "$unpacked" -maxdepth 1 -name '*.app' -type d | head -n 1)"
           codesign --verify --deep --strict "$app"
           requirement="$(codesign -d -r- "$app" 2>&1)"
           echo "$requirement"
