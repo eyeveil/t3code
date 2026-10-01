@@ -8,6 +8,7 @@ import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
+import { STREAMING_MARKDOWN_RENDER_INTERVAL_MS } from "./ChatMarkdown.logic";
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
@@ -64,6 +65,13 @@ import ChatMarkdown, {
   hasMarkdownFilePrimaryAction,
   shouldUseMarkdownFileBrowserPrimaryAction,
 } from "./ChatMarkdown";
+
+// Streaming text re-renders at most once per interval. Tests that fake
+// setTimeout flush the pending render before asserting on it.
+const flushStreamingRender = () =>
+  act(async () => {
+    vi.advanceTimersByTime(STREAMING_MARKDOWN_RENDER_INTERVAL_MS);
+  });
 
 function codeButton(renderer: ReactTestRenderer, label: string) {
   const button = renderer.root
@@ -282,6 +290,7 @@ describe("ChatMarkdown streaming", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let renderer: ReactTestRenderer | undefined;
 
     try {
@@ -305,11 +314,13 @@ describe("ChatMarkdown streaming", () => {
           <ChatMarkdown cwd="/tmp/project" text={"```text\nrecovered\n```"} isStreaming />,
         );
       });
+      await flushStreamingRender();
       expect(mounted.root.findAllByProps({ className: "chat-markdown-shiki" })).toHaveLength(1);
       expect(mounted.root.findByProps({ "data-language": "text" })).toBe(codeBlock);
       expect(codeBlock.props["data-wrap"]).toBe(String(!initialWrap));
     } finally {
       await act(async () => renderer?.unmount());
+      vi.useRealTimers();
       vi.unstubAllGlobals();
       vi.restoreAllMocks();
     }
@@ -367,6 +378,7 @@ describe("ChatMarkdown streaming", () => {
         await act(async () => {
           mounted.update(<ChatMarkdown cwd="/tmp/project" text={`${text} ${index}`} isStreaming />);
         });
+        await flushStreamingRender();
       }
 
       expect(highlight).toHaveBeenCalledTimes(1);
@@ -383,6 +395,7 @@ describe("ChatMarkdown streaming", () => {
           />,
         );
       });
+      await flushStreamingRender();
       const copyUpdated = codeButton(mounted, "Copied");
       await act(async () => {
         copyUpdated.onClick?.({} as Parameters<NonNullable<typeof copyUpdated.onClick>>[0]);
