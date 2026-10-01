@@ -26,10 +26,14 @@ import { grokAutoBlockedCommandInput } from "./grok_auto_blocked_command/input.t
 import { assertGrokAutoBlockedCommandOutput } from "./grok_auto_blocked_command/output.ts";
 import { grokBackgroundBashInput } from "./grok_background_bash/input.ts";
 import { assertGrokBackgroundBashOutput } from "./grok_background_bash/output.ts";
+import { grokBackgroundBashFastWakeInput } from "./grok_background_bash_fast_wake/input.ts";
+import { assertGrokBackgroundBashFastWakeOutput } from "./grok_background_bash_fast_wake/output.ts";
 import { grokBackgroundSubagentInput } from "./grok_background_subagent/input.ts";
 import { assertGrokBackgroundSubagentOutput } from "./grok_background_subagent/output.ts";
 import { grokMonitorInput } from "./grok_monitor/input.ts";
 import { assertGrokMonitorOutput } from "./grok_monitor/output.ts";
+import { grokPromptErrorInput } from "./grok_prompt_error/input.ts";
+import { assertGrokPromptErrorOutput } from "./grok_prompt_error/output.ts";
 import { grokSubagentLineageInput } from "./grok_subagent_lineage/input.ts";
 import { assertGrokSubagentLineageOutput } from "./grok_subagent_lineage/output.ts";
 import { assertClaudeMessageSteeringOutput } from "./message_steering/claude_output.ts";
@@ -51,6 +55,20 @@ import { assertOpenCodeChildApprovalOutput } from "./opencode_child_approval/out
 import { openCodeRunningChildApprovalInput } from "./opencode_running_child_approval/input.ts";
 import { assertOpenCodeRunningChildApprovalOutput } from "./opencode_running_child_approval/output.ts";
 import { openCodeSubagentInput } from "./opencode_subagent/input.ts";
+import { openCode2InterruptInput } from "./opencode2_interrupt/input.ts";
+import { assertOpenCode2InterruptOutput } from "./opencode2_interrupt/output.ts";
+import { openCode2PermissionInput } from "./opencode2_permission/input.ts";
+import { assertOpenCode2PermissionOutput } from "./opencode2_permission/output.ts";
+import { openCode2QuestionInput } from "./opencode2_question/input.ts";
+import { assertOpenCode2QuestionOutput } from "./opencode2_question/output.ts";
+import { openCode2BackgroundInput } from "./opencode2_background/input.ts";
+import { assertOpenCode2BackgroundOutput } from "./opencode2_background/output.ts";
+import { openCode2SubagentInput } from "./opencode2_subagent/input.ts";
+import { assertOpenCode2SubagentOutput } from "./opencode2_subagent/output.ts";
+import { openCode2SimpleInput } from "./opencode2_simple/input.ts";
+import { assertOpenCode2SimpleOutput } from "./opencode2_simple/output.ts";
+import { openCode2ToolCallInput } from "./opencode2_tool_call/input.ts";
+import { assertOpenCode2ToolCallOutput } from "./opencode2_tool_call/output.ts";
 import { assertOpenCodeSubagentOutput } from "./opencode_subagent/output.ts";
 import {
   assertCodexPlanQuestionsOutput,
@@ -141,6 +159,7 @@ import {
   CURSOR_MODEL_SELECTION,
   GROK_MODEL_SELECTION,
   OPENCODE_MODEL_SELECTION,
+  OPENCODE2_MODEL_SELECTION,
   PI_MODEL_SELECTION,
   READ_ONLY_NEVER_POLICY,
   READ_ONLY_ON_REQUEST_POLICY,
@@ -348,6 +367,22 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
     ],
   },
   {
+    name: "grok_background_bash_fast_wake",
+    buildInput: grokBackgroundBashFastWakeInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("grok"),
+        transcriptFile: new URL(
+          "./grok_background_bash_fast_wake/grok_transcript.ndjson",
+          import.meta.url,
+        ),
+        modelSelection: { ...GROK_MODEL_SELECTION, model: "grok-4.7-build-fast" },
+        runContinuationWorker: true,
+        assertOutput: assertGrokBackgroundBashFastWakeOutput,
+      },
+    ],
+  },
+  {
     name: "grok_background_subagent",
     buildInput: grokBackgroundSubagentInput,
     providers: [
@@ -373,6 +408,18 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         modelSelection: GROK_MODEL_SELECTION,
         runContinuationWorker: true,
         assertOutput: assertGrokMonitorOutput,
+      },
+    ],
+  },
+  {
+    name: "grok_prompt_error",
+    buildInput: grokPromptErrorInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("grok"),
+        transcriptFile: new URL("./grok_prompt_error/grok_transcript.ndjson", import.meta.url),
+        modelSelection: GROK_MODEL_SELECTION,
+        assertOutput: assertGrokPromptErrorOutput,
       },
     ],
   },
@@ -725,6 +772,122 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         transcriptFile: new URL("./opencode_subagent/opencode_transcript.ndjson", import.meta.url),
         modelSelection: OPENCODE_MODEL_SELECTION,
         assertOutput: assertOpenCodeSubagentOutput,
+      },
+    ],
+  },
+  // OpenCode 2 runtime of the same driver, recorded against 2.0.18 over HTTP and SSE.
+  {
+    name: "opencode2_simple",
+    buildInput: openCode2SimpleInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("opencode"),
+        transcriptFile: new URL("./opencode2_simple/opencode_transcript.ndjson", import.meta.url),
+        modelSelection: OPENCODE2_MODEL_SELECTION,
+        assertOutput: assertOpenCode2SimpleOutput,
+      },
+    ],
+  },
+  {
+    name: "opencode2_tool_call",
+    buildInput: openCode2ToolCallInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("opencode"),
+        transcriptFile: new URL(
+          "./opencode2_tool_call/opencode_transcript.ndjson",
+          import.meta.url,
+        ),
+        modelSelection: {
+          instanceId: OPENCODE2_MODEL_SELECTION.instanceId,
+          model: "opencode/big-pickle",
+        },
+        assertOutput: assertOpenCode2ToolCallOutput,
+      },
+    ],
+  },
+  {
+    name: "opencode2_interrupt",
+    buildInput: openCode2InterruptInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("opencode"),
+        transcriptFile: new URL(
+          "./opencode2_interrupt/opencode_transcript.ndjson",
+          import.meta.url,
+        ),
+        modelSelection: {
+          instanceId: OPENCODE2_MODEL_SELECTION.instanceId,
+          model: "opencode/big-pickle",
+        },
+        assertOutput: assertOpenCode2InterruptOutput,
+      },
+    ],
+  },
+  {
+    name: "opencode2_permission",
+    buildInput: openCode2PermissionInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("opencode"),
+        transcriptFile: new URL(
+          "./opencode2_permission/opencode_transcript.ndjson",
+          import.meta.url,
+        ),
+        modelSelection: {
+          instanceId: OPENCODE2_MODEL_SELECTION.instanceId,
+          model: "opencode/big-pickle",
+        },
+        assertOutput: assertOpenCode2PermissionOutput,
+      },
+    ],
+  },
+  {
+    name: "opencode2_question",
+    buildInput: openCode2QuestionInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("opencode"),
+        transcriptFile: new URL("./opencode2_question/opencode_transcript.ndjson", import.meta.url),
+        modelSelection: {
+          instanceId: OPENCODE2_MODEL_SELECTION.instanceId,
+          model: "opencode/big-pickle",
+        },
+        assertOutput: assertOpenCode2QuestionOutput,
+      },
+    ],
+  },
+  {
+    name: "opencode2_subagent",
+    buildInput: openCode2SubagentInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("opencode"),
+        transcriptFile: new URL("./opencode2_subagent/opencode_transcript.ndjson", import.meta.url),
+        modelSelection: {
+          instanceId: OPENCODE2_MODEL_SELECTION.instanceId,
+          model: "opencode/big-pickle",
+        },
+        assertOutput: assertOpenCode2SubagentOutput,
+      },
+    ],
+  },
+  {
+    name: "opencode2_background",
+    buildInput: openCode2BackgroundInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("opencode"),
+        transcriptFile: new URL(
+          "./opencode2_background/opencode_transcript.ndjson",
+          import.meta.url,
+        ),
+        modelSelection: {
+          instanceId: OPENCODE2_MODEL_SELECTION.instanceId,
+          model: "opencode/big-pickle",
+        },
+        runContinuationWorker: true,
+        assertOutput: assertOpenCode2BackgroundOutput,
       },
     ],
   },
