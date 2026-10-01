@@ -244,6 +244,10 @@ const config: ExpoConfig = {
     url: "https://u.expo.dev/fd29666e-aaba-4835-86a6-fb34063c496e",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
+    // Builds outside EAS Build carry no channel unless one is set here.
+    ...(repoEnv.T3CODE_MOBILE_UPDATE_CHANNEL
+      ? { requestHeaders: { "expo-channel-name": repoEnv.T3CODE_MOBILE_UPDATE_CHANNEL } }
+      : {}),
   },
   ios: {
     icon: variant.assets.iosIcon,
