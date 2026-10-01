@@ -142,7 +142,7 @@ const describeCause = (cause: unknown): string => {
   return String(cause);
 };
 
-export const make = Effect.fn("ProviderLoginManager.make")(function* () {
+const make = Effect.fn("ProviderLoginManager.make")(function* () {
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
   const ptyAdapter = yield* PtyAdapter;

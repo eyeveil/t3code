@@ -31,10 +31,7 @@ import {
  * Only these drivers get an auto-generated isolated home for newly-created
  * instances; every other driver keeps its config verbatim.
  */
-export const PROVIDER_DRIVERS_WITH_ISOLATED_HOME: ReadonlySet<string> = new Set([
-  "codex",
-  "claudeAgent",
-]);
+const PROVIDER_DRIVERS_WITH_ISOLATED_HOME: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
 
 function providerInstanceHomePathIsEmpty(config: unknown): boolean {
   if (config === null || typeof config !== "object") {

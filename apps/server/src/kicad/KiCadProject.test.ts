@@ -57,12 +57,14 @@ it.effect(
         NodePath.join(root, "link.kicad_pcb"),
       );
       const first = await discoverKiCadProject(root);
+      // Same size as "one", so the revision only changes through mtime. Set it
+      // after the write, which would otherwise reset it to a possibly equal now.
+      NodeFS.writeFileSync(NodePath.join(root, "board.kicad_pcb"), "two");
       NodeFS.utimesSync(
         NodePath.join(root, "board.kicad_pcb"),
         new Date(),
         new Date(Date.now() + 1000),
       );
-      NodeFS.writeFileSync(NodePath.join(root, "board.kicad_pcb"), "two");
       vi.spyOn(Date, "now").mockReturnValue(Date.now() + 350);
       expect((await discoverKiCadProject(root)).revision).not.toBe(first.revision);
       expect(await resolveKiCadProjectFile(root, "../outside.kicad_pcb")).toBeUndefined();
