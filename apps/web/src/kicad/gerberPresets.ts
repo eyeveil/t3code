@@ -13,7 +13,7 @@ const layerSuffix =
 export function gerberFamily(path: string): string {
   return path.replace(/\.[^./]+$/, "").replace(layerSuffix, "");
 }
-export function gerberLayer(path: string): string {
+function gerberLayer(path: string): string {
   const name = path.split("/").at(-1) ?? path;
   if (/(?:F[-_.]Cu(?:\.|$)|\.gtl$)/i.test(name)) return "front-copper";
   if (/(?:B[-_.]Cu(?:\.|$)|\.gbl$)/i.test(name)) return "back-copper";

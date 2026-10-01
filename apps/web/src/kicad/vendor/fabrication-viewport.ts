@@ -41,7 +41,7 @@ const FRAME_MARGIN = 8;
  */
 const MIN_FRAME_BOARD_FRACTION = 1 / 10;
 
-export function clampScale(scale: number): number {
+function clampScale(scale: number): number {
   return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
 }
 
@@ -51,7 +51,7 @@ function fitScale(board: BoardRect, pane: PaneSize): number {
 }
 
 /** Camera that frames `target`, keeping enough board around it to locate it. */
-export function frameCamera(board: BoardRect, target: BoardRect): Camera {
+function frameCamera(board: BoardRect, target: BoardRect): Camera {
   const floor = Math.min(board.width, board.height) * MIN_FRAME_BOARD_FRACTION;
   const width = Math.max(target.width * FRAME_MARGIN, floor);
   const height = Math.max(target.height * FRAME_MARGIN, floor);
@@ -62,7 +62,7 @@ export function frameCamera(board: BoardRect, target: BoardRect): Camera {
   };
 }
 
-export function centreCamera(board: BoardRect): Camera {
+function centreCamera(board: BoardRect): Camera {
   return {
     scale: 1,
     cx: board.x + board.width / 2,

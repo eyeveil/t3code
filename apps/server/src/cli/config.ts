@@ -37,7 +37,7 @@ const hostFlag = Flag.String("host").pipe(
   Flag.withDescription("Host/interface to bind (for example 127.0.0.1, 0.0.0.0, or a Tailnet IP)."),
   Flag.optional,
 );
-export const publicUrlFlag = Flag.String("public-url").pipe(
+const publicUrlFlag = Flag.String("public-url").pipe(
   Flag.withDescription(
     "Public base URL to advertise in the pairing URL/QR (for example https://t3.rjmp.net). Overrides the auto-detected host:port.",
   ),

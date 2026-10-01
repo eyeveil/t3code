@@ -264,7 +264,7 @@ export function createKiCadPanelizationCache(options: KiCadPanelizationOptions =
   return { get, clear: () => cache.clear() };
 }
 
-export const kiCadPanelizationCache = createKiCadPanelizationCache();
+const kiCadPanelizationCache = createKiCadPanelizationCache();
 export function getKiCadPanelization(
   root: string,
   boardPath: string,

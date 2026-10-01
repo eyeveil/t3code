@@ -34,7 +34,7 @@ export class CodexDeviceAuth extends Context.Service<
   }
 >()("t3/provider/CodexDeviceAuth") {}
 
-export const make = Effect.fn("CodexDeviceAuth.make")(function* () {
+const make = Effect.fn("CodexDeviceAuth.make")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   const start = Effect.fn("CodexDeviceAuth.start")(function* (input: CodexDeviceAuthStartInput) {

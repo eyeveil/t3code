@@ -341,15 +341,9 @@ export function createKiStackSkills(options: {
   };
 }
 
-export const kiStackCacheDirectory = NodePath.join(
-  NodeOS.homedir(),
-  ".cache",
-  "backplane",
-  "kistack",
-);
+const kiStackCacheDirectory = NodePath.join(NodeOS.homedir(), ".cache", "backplane", "kistack");
 const defaultSkills = createKiStackSkills({ cacheDirectory: kiStackCacheDirectory });
-export let kiStackSkillsDirectory = defaultSkills.directory;
-export const getKiStackRevision = () => defaultSkills.revision;
+let kiStackSkillsDirectory = defaultSkills.directory;
 
 export async function installKiStackSkills(directory?: string): Promise<void> {
   if (directory !== undefined) return installBundledFiles(directory);

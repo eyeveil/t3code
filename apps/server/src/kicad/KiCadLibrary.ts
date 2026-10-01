@@ -16,7 +16,7 @@ const cleanEnv = () => {
 };
 
 import type { KiCadLibraryMember } from "@t3tools/contracts";
-export async function exportKiCadLibrary(
+async function exportKiCadLibrary(
   kind: "footprint" | "symbol",
   input: string,
   name?: string,

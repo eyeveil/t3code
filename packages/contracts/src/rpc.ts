@@ -1364,24 +1364,24 @@ const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
   error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderLoginStartRpc = Rpc.make(WS_METHODS.providerLoginStart, {
+const WsProviderLoginStartRpc = Rpc.make(WS_METHODS.providerLoginStart, {
   payload: ProviderLoginStartInput,
   success: ProviderLoginStreamEvent,
   error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
   stream: true,
 });
 
-export const WsProviderLoginWriteRpc = Rpc.make(WS_METHODS.providerLoginWrite, {
+const WsProviderLoginWriteRpc = Rpc.make(WS_METHODS.providerLoginWrite, {
   payload: ProviderLoginWriteInput,
   error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderLoginResizeRpc = Rpc.make(WS_METHODS.providerLoginResize, {
+const WsProviderLoginResizeRpc = Rpc.make(WS_METHODS.providerLoginResize, {
   payload: ProviderLoginResizeInput,
   error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
 });
 
-export const WsProviderLoginCancelRpc = Rpc.make(WS_METHODS.providerLoginCancel, {
+const WsProviderLoginCancelRpc = Rpc.make(WS_METHODS.providerLoginCancel, {
   payload: ProviderLoginCancelInput,
   error: Schema.Union([ProviderLoginError, EnvironmentAuthorizationError]),
 });
