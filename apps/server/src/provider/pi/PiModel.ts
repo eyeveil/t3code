@@ -43,7 +43,7 @@ export function decodePiModelSlug(
   }
 }
 
-export function piDiscoveredModelToServerProviderModel(
+function piDiscoveredModelToServerProviderModel(
   model: PiDiscoveredModel,
   defaults?: PiModelDefaults,
 ): ServerProviderModel | undefined {
