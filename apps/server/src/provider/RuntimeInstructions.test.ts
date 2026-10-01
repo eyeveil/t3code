@@ -10,10 +10,6 @@ describe("buildRuntimeInstructions", () => {
       expect(instructions).toContain("embed images and videos");
       expect(instructions).toContain("Markdown with absolute file paths");
       expect(instructions).not.toContain("undefined");
-      expect(instructions).toContain("<kistack_skills>");
-      expect(instructions).toContain("kicad-schematic");
-      expect(instructions).toContain("kicad-bom");
-      expect(instructions).toContain("pcb-product-render");
     },
   );
   it("requires explicit registration of every PR and stack layer", () => {

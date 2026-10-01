@@ -18,7 +18,6 @@ export function useThreadHeaderOptions(props: {
   readonly usesNativeHeaderGlass: boolean;
   readonly gitControls: Parameters<typeof ThreadGitControls>[0];
   readonly onReturnToThread?: () => void;
-  readonly onOpenKiCad?: (() => void) | undefined;
   readonly onOpenBrowserClone?: (() => void) | undefined;
 }) {
   const navigation = useNavigation();
@@ -26,8 +25,8 @@ export function useThreadHeaderOptions(props: {
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(props.gitControls);
   const compactRightHeaderItems = useThreadGitRightHeaderItems(props.gitControls);
   const extraHeaderItems = useMemo(
-    () => [
-      ...(props.onOpenBrowserClone
+    () =>
+      props.onOpenBrowserClone
         ? [
             withNativeGlassHeaderItem({
               accessibilityLabel: "Open browser clone",
@@ -37,20 +36,8 @@ export function useThreadHeaderOptions(props: {
               type: "button" as const,
             }),
           ]
-        : []),
-      ...(props.onOpenKiCad
-        ? [
-            withNativeGlassHeaderItem({
-              accessibilityLabel: "Open KiCad viewer",
-              icon: { name: "cpu", type: "sfSymbol" as const },
-              identifier: "thread-kicad",
-              onPress: props.onOpenKiCad,
-              type: "button" as const,
-            }),
-          ]
-        : []),
-    ],
-    [props.onOpenBrowserClone, props.onOpenKiCad],
+        : [],
+    [props.onOpenBrowserClone],
   );
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
     () => [

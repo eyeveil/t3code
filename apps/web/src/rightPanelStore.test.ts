@@ -389,6 +389,8 @@ describe("rightPanelStore", () => {
     { kind: "plan", isOpen: true },
     { kind: "agents", isOpen: true },
     { kind: "agents", isOpen: false },
+    { kind: "kicad", isOpen: true },
+    { kind: "kicad", isOpen: false },
   ])("drops $kind with isOpen=$isOpen and falls back", ({ kind, isOpen }) => {
     expect(
       migratePersistedRightPanelState({
@@ -532,18 +534,6 @@ describe("rightPanelStore", () => {
       isOpen: true,
       activeSurfaceId: "files",
       surfaces: [{ id: "files", kind: "files" }],
-    });
-  });
-
-  it("opens KiCad as a thread-scoped singleton surface", () => {
-    useRightPanelStore.getState().open(refA, "kicad");
-    useRightPanelStore.getState().open(refA, "kicad");
-
-    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
-    expect(state).toMatchObject({
-      isOpen: true,
-      activeSurfaceId: "kicad",
-      surfaces: [{ id: "kicad", kind: "kicad" }],
     });
   });
 

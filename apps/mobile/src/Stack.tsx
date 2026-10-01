@@ -34,7 +34,6 @@ import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboarding
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
 import { AttachmentFileScreen } from "./features/files/AttachmentFileScreen";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
-import { KiCadViewerRouteScreen } from "./features/kicad/KiCadViewerRouteScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import {
   HardwareKeyboardCommandOverlay,
@@ -734,14 +733,6 @@ const RootStackConfig = createNativeStackNavigator({
       options: {
         ...GLASS_HEADER_OPTIONS,
         title: "Files",
-      },
-    }),
-    KiCadViewer: createNativeStackScreen({
-      screen: KiCadViewerRouteScreen,
-      linking: `${THREAD_LINKING_PREFIX}/kicad`,
-      options: {
-        ...SOLID_HEADER_OPTIONS,
-        gestureEnabled: false,
       },
     }),
     ThreadFile: createNativeStackScreen({

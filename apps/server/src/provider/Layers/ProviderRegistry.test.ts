@@ -1,4 +1,3 @@
-import { mergeKiStackProviderSkills } from "../KiStackSkills.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "../CodexInstallation.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
@@ -87,7 +86,7 @@ const encoder = new TextEncoder();
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 const withBundledCompatibility = (snapshot: ServerProvider) =>
   applyProviderCompatibility(
-    { ...snapshot, skills: mergeKiStackProviderSkills(snapshot.skills) },
+    snapshot,
     undefined,
     ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
   );
@@ -639,7 +638,7 @@ it.layer(Layer.mergeAll(TestNodeServices, ServerSettingsModule.layerTest(), Test
             cwd: "/project",
             checkedAt: scopedSnapshot.checkedAt,
             slashCommands: scopedSnapshot.slashCommands,
-            skills: mergeKiStackProviderSkills(scopedSnapshot.skills),
+            skills: scopedSnapshot.skills,
           },
         ]);
       });
@@ -1538,9 +1537,7 @@ it.layer(Layer.mergeAll(TestNodeServices, ServerSettingsModule.layerTest(), Test
           ).pipe(Scope.provide(scope));
           yield* Effect.gen(function* () {
             const registry = yield* ProviderRegistry.ProviderRegistry;
-            assert.deepStrictEqual(yield* registry.getProviders, [
-              { ...initialProvider, skills: mergeKiStackProviderSkills(initialProvider.skills) },
-            ]);
+            assert.deepStrictEqual(yield* registry.getProviders, [initialProvider]);
             assert.strictEqual(yield* Ref.get(refreshCalls), 0);
           }).pipe(Effect.provide(runtimeServices));
         }),
@@ -1696,13 +1693,10 @@ it.layer(Layer.mergeAll(TestNodeServices, ServerSettingsModule.layerTest(), Test
             const published = yield* Fiber.join(workspaceUpdate);
             assert.strictEqual(published._tag, "Some");
             const providers = yield* registry.getProviders;
-            assert.deepStrictEqual(
-              providers[0]?.skills,
-              mergeKiStackProviderSkills(machineProvider.skills),
-            );
+            assert.deepStrictEqual(providers[0]?.skills, machineProvider.skills);
             assert.deepStrictEqual(
               providers[0]?.workspaceSnapshots?.[0]?.skills,
-              mergeKiStackProviderSkills(scopedProvider.skills),
+              scopedProvider.skills,
             );
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);

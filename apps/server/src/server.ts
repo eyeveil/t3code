@@ -34,10 +34,6 @@ import {
   staticAndDevRouteLayer,
   browserApiCorsLayer,
   httpCompressionLayer,
-  kicadProjectRouteLayer,
-  kicadViewerSessionRouteLayer,
-  kicadModelRouteLayer,
-  kicadGerberRouteLayer,
   untracedRequestsLayer,
 } from "./http.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
@@ -52,7 +48,6 @@ import * as SqlitePersistence from "./persistence/Layers/Sqlite.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
-import { installKiStackSkills } from "./provider/KiStackSkills.ts";
 import * as ProviderEventIngestor from "./orchestration-v2/ProviderEventIngestor.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ResetCreditCoordinator from "./provider/Layers/resetCreditCoordinator.ts";
@@ -662,10 +657,6 @@ const makeRoutesLayer = Layer.mergeAll(
     ),
     otlpTracesProxyRouteLayer,
     assetRouteLayer,
-    kicadProjectRouteLayer,
-    kicadViewerSessionRouteLayer,
-    kicadModelRouteLayer,
-    kicadGerberRouteLayer,
     attachmentUploadRouteLayer,
     deviceHubProxyRouteLayer,
     staticAndDevRouteLayer,
@@ -705,7 +696,6 @@ const makeServerLayer = Layer.unwrap(
     const launcherLayer = ServiceLauncherClient.layer;
 
     yield* fixPath();
-    yield* Effect.tryPromise(() => installKiStackSkills());
 
     const httpListeningLayer = Layer.effectDiscard(
       Effect.gen(function* () {

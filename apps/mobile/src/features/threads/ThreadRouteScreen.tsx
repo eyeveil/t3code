@@ -117,12 +117,6 @@ function ThreadHeader(
         onPress: filesVisible ? toggleAuxiliaryPane : props.onOpenFilesInspector,
       });
     }
-    if (props.onOpenKiCad)
-      actions.push({
-        accessibilityLabel: "Open KiCad viewer",
-        icon: "cpu",
-        onPress: props.onOpenKiCad,
-      });
     if (props.onOpenBrowserClone)
       actions.push({
         accessibilityLabel: "Open browser clone",
@@ -160,7 +154,6 @@ function ThreadHeader(
     props.onReturnToThread,
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
-    props.onOpenKiCad,
     props.onOpenBrowserClone,
   ]);
 
@@ -1105,16 +1098,6 @@ function ThreadRouteContent(
             environmentId: String(selectedThread.environmentId),
             threadId: String(selectedThread.id),
           })
-        }
-        onOpenKiCad={
-          selectedThreadCwd === null
-            ? undefined
-            : () =>
-                navigation.navigate("KiCadViewer", {
-                  environmentId: String(selectedThread.environmentId),
-                  threadId: String(selectedThread.id),
-                  cwd: selectedThreadCwd,
-                })
         }
         title={selectedThread.title}
         subtitle={headerSubtitle}

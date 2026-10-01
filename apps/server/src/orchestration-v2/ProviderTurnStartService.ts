@@ -1,4 +1,3 @@
-import { refreshKiStackSkills } from "../provider/KiStackSkills.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -1257,12 +1256,6 @@ export const layer: Layer.Layer<
     return ProviderTurnStartServiceV2.of({
       start: (input) =>
         start(input).pipe(
-          Effect.tap(() =>
-            Effect.tryPromise(() => refreshKiStackSkills()).pipe(
-              Effect.ignoreCause({ log: false }),
-              Effect.forkDetach,
-            ),
-          ),
           Effect.mapError((cause) =>
             isProviderTurnStartError(cause)
               ? cause
