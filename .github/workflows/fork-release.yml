@@ -28,12 +28,14 @@ jobs:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
         with:
           sparse-checkout: |
-            scripts
-            apps/desktop/package.json
-            package.json
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
+          cache: true
+          run-install: true
       - id: meta
         run: |
           node scripts/resolve-nightly-release.ts \
