@@ -755,9 +755,10 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
     expect(decoded.providers.pi).toEqual({
-      enabled: true,
+      enabled: false,
       binaryPath: "pi",
       customModels: [],
+      launchArgs: "",
     });
   });
 
@@ -770,6 +771,7 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
       enabled: false,
       binaryPath: "/opt/bin/pi",
       customModels: [],
+      launchArgs: "",
     });
     expect(encodeServerSettings(decoded).providers?.pi).toEqual(decoded.providers.pi);
   });
