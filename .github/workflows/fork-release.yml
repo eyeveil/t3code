@@ -52,9 +52,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: mac, target: dmg, arch: arm64, runner: macos-15 }
-          - { platform: linux, target: AppImage, arch: x64, runner: ubuntu-24.04 }
-          - { platform: win, target: nsis, arch: x64, runner: windows-2025 }
+          - platform: mac
+            target: dmg
+            arch: arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            resource_key: darwin-arm64
+          - platform: linux
+            target: AppImage
+            arch: x64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            resource_key: linux-x64
+          - platform: win
+            target: nsis
+            arch: x64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            resource_key: win32-x64
     steps:
       - name: Checkout
         shell: bash
@@ -148,13 +163,39 @@ jobs:
           echo "$requirement"
           grep -q "H\"$fingerprint\"" <<<"$requirement"
 
+      - name: Build CLI single-executable
+        shell: bash
+        env:
+          # Keep in step with SEA_NODE_VERSION in apps/server/vite.config.ts.
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build CLI archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_name="t3-resource-monitor${{ matrix.platform == 'win' && '.exe' || '' }}"
+          monitor_dir="$RUNNER_TEMP/cli-resource-monitor"
+          mkdir -p "$monitor_dir/${{ matrix.resource_key }}"
+          cp "native/resource-monitor/target/${{ matrix.rust_target }}/release/$binary_name" "$monitor_dir/${{ matrix.resource_key }}/$binary_name"
+          node scripts/build-cli-archive.ts \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --version "${{ needs.version.outputs.version }}" \
+            --resource-monitor-dir "$monitor_dir" \
+            --output-dir release-cli
+
+      - name: Smoke-test CLI archive
+        shell: bash
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "${{ needs.version.outputs.version }}"
+
       - name: Collect release assets
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
           mkdir -p release-publish
-          for file in release/*.dmg release/*.zip release/*.AppImage release/*.deb release/*.exe release/*.blockmap release/*.yml; do
+          for file in release-cli/* release/*.dmg release/*.zip release/*.AppImage release/*.deb release/*.exe release/*.blockmap release/*.yml; do
             [[ "$file" == */builder-debug.yml ]] && continue
             cp "$file" release-publish/
           done
@@ -183,6 +224,7 @@ jobs:
         run: |
           set -euo pipefail
           ls release-assets/nightly-mac.yml release-assets/nightly-linux.yml release-assets/nightly.yml
+          (cd release-assets && sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS && cat SHA256SUMS)
           gh release create "${{ needs.version.outputs.tag }}" release-assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
