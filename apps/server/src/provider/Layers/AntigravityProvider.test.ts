@@ -18,7 +18,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import type { AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
 import {
   buildAntigravityModelsFromSession,
@@ -110,7 +110,7 @@ const testLayer = Layer.merge(
   Layer.mock(BackgroundPolicy.BackgroundPolicy)({
     shouldRunScopeWork: () => Effect.succeed(false),
   }),
-  ServerSettingsService.layerTest(),
+  ServerSettings.layerTest(),
 );
 
 type ProbeError = EffectAcpErrors.AcpError | ProviderSetupError;
@@ -625,6 +625,18 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
           after.workspaceSnapshots?.find((entry) => entry.cwd === "/workspace")?.skills,
         ).toEqual(skills);
         expect((yield* harness.provider.snapshotForCwd("/workspace")).skills).toEqual(skills);
+
+        const rescanned = [
+          ...skills,
+          { name: "review", path: "/workspace/.agent/skills/review", enabled: true },
+        ];
+        yield* harness.provider.snapshotForCwd("/workspace", rescanned);
+        yield* harness.provider.onSessionStarted(started, "/workspace");
+        expect(
+          (yield* harness.provider.snapshot.getSnapshot).workspaceSnapshots?.find(
+            (entry) => entry.cwd === "/workspace",
+          )?.skills,
+        ).toEqual(rescanned);
       }),
     ),
   );

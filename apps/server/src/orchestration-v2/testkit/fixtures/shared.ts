@@ -27,7 +27,7 @@ import type {
   OrchestratorV2ScenarioResult,
   OrchestratorV2ScenarioStep,
 } from "../OrchestratorScenario.ts";
-import { IdAllocatorV2, type IdAllocatorV2Error } from "../../IdAllocator.ts";
+import * as IdAllocator from "../../IdAllocator.ts";
 import type { RuntimePolicyV2Override } from "../../RuntimePolicy.ts";
 
 export const SIMPLE_PROMPT = "Respond with the following text: fixture simple ok";
@@ -64,6 +64,21 @@ export const SUBAGENT_CONTINUE_PROMPT =
 export const SUBAGENT_CONTINUE_PARENT_PROMPT =
   "Have the same subagent you spawned earlier reply exactly: continued subagent response";
 export const SUBAGENT_CONTINUE_CHILD_PROMPT = "Reply exactly: continued subagent response";
+/** Prompts the OpenCode 2 spike recorded against 2.0.18 (`opencode2_*` fixtures). */
+export const OPENCODE2_SIMPLE_PROMPT =
+  "Think carefully step by step about whether 391 is prime, showing your reasoning, then answer in one short sentence.";
+export const OPENCODE2_TOOL_CALL_PROMPT =
+  "Use the read tool to read hello.txt, then run the shell command `echo TOOL_OK` with the bash tool, then reply DONE.";
+export const OPENCODE2_INTERRUPT_PROMPT =
+  "Run the shell command `sleep 60 && echo LATE` with the bash tool, then reply DONE.";
+export const OPENCODE2_PERMISSION_PROMPT =
+  "Run the shell command `echo FIRST` with the bash tool. After it completes, run `echo SECOND` with the bash tool. Then reply with what happened.";
+export const OPENCODE2_QUESTION_PROMPT =
+  "Before doing anything, use the question tool to ask me which color I prefer, offering the options red and blue. After I answer, reply with only the chosen color.";
+export const OPENCODE2_SUBAGENT_PROMPT =
+  "Use the subagent tool to delegate to the explore subagent with the prompt: 'List the files in the current directory and report their names.' Wait for it, then summarize its answer in one line.";
+export const OPENCODE2_BACKGROUND_PROMPT =
+  "Use the subagent tool with background enabled to delegate to the general subagent with the prompt: 'Run the shell command `sleep 20` with the bash tool and then reply exactly CHILD_OK.' As soon as it is launched, reply exactly PARENT_OK and end your turn without waiting for it.";
 export const TURN_INTERRUPT_PROMPT =
   "Do not answer immediately. First run the local shell command `sleep 30`, then respond with exactly: interrupt fixture should not finish naturally.";
 export const TURN_INTERRUPT_MID_TOOL_PROMPT =
@@ -337,6 +352,13 @@ export const OPENCODE_MODEL_SELECTION = {
   options: [{ id: "agent", value: "build" }],
 } satisfies ModelSelection;
 
+/** The free OpenCode Zen model and variant the OpenCode 2 spike recorded its reasoning run with. */
+export const OPENCODE2_MODEL_SELECTION = {
+  instanceId: ProviderInstanceId.make("opencode"),
+  model: "opencode/space-bunny-free",
+  options: [{ id: "variant", value: "high" }],
+} satisfies ModelSelection;
+
 /** Pi fixtures are recorded against this pinned OpenRouter model; the slug is `provider/model`. */
 export const PI_MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make("pi"),
@@ -460,9 +482,13 @@ export function materializeFixtureInput(input: {
   readonly fixtureInput: OrchestratorFixtureInput;
   readonly driver: ProviderDriverKind;
   readonly modelSelection: ModelSelection;
-}): Effect.Effect<MaterializedOrchestratorFixtureInput, IdAllocatorV2Error, IdAllocatorV2> {
+}): Effect.Effect<
+  MaterializedOrchestratorFixtureInput,
+  IdAllocator.IdAllocatorV2Error,
+  IdAllocator.IdAllocatorV2
+> {
   return Effect.gen(function* () {
-    const idAllocator = yield* IdAllocatorV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const projectId = yield* idAllocator.allocate.project({ fixtureName: input.scenario });
     const threadId = yield* idAllocator.allocate.thread({
       fixtureName: input.scenario,
@@ -516,6 +542,12 @@ export function materializeFixtureInput(input: {
       }),
     );
 
+    // A run that asks several times stays busy between answers, so the next
+    // answer waits for its request instead of for the thread to go idle.
+    const answersNext = (stepIndex: number) => {
+      const next = input.fixtureInput.steps[stepIndex + 1]?.type;
+      return next === "approve_next_runtime_request" || next === "answer_next_user_input_request";
+    };
     for (const [stepIndex, step] of input.fixtureInput.steps.entries()) {
       switch (step.type) {
         case "message":
@@ -668,7 +700,9 @@ export function materializeFixtureInput(input: {
             answers: step.answers,
           };
           steps.push({ type: "advance_clock", duration: "1 millis" });
-          steps.push({ type: "await_thread_idle", threadId: ids.threadId });
+          if (!answersNext(stepIndex)) {
+            steps.push({ type: "await_thread_idle", threadId: ids.threadId });
+          }
           break;
         case "approve_next_runtime_request":
           pushDispatch(
@@ -697,7 +731,9 @@ export function materializeFixtureInput(input: {
               : { shellSnapshotKeyWhilePending: step.shellSnapshotKeyWhilePending }),
           };
           steps.push({ type: "advance_clock", duration: "1 millis" });
-          steps.push({ type: "await_thread_idle", threadId: ids.threadId });
+          if (!answersNext(stepIndex)) {
+            steps.push({ type: "await_thread_idle", threadId: ids.threadId });
+          }
           break;
         case "steer":
           messageIndex += 1;
