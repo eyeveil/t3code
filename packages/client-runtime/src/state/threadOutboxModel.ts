@@ -119,7 +119,7 @@ export function decodeQueuedThreadMessage(value: unknown): QueuedThreadMessage {
   return message;
 }
 
-export function queuedThreadMessageKey(message: QueuedThreadMessage): string {
+function queuedThreadMessageKey(message: QueuedThreadMessage): string {
   return scopedThreadKey(scopeThreadRef(message.environmentId, message.threadId));
 }
 
