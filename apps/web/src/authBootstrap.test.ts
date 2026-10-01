@@ -644,31 +644,4 @@ describe("resolveInitialServerAuthGateState", () => {
     });
     expect(testApi.calls.browserSession).toEqual([{ credential: "rejected-token" }]);
   });
-
-  it("creates a pairing credential from the authenticated auth endpoint", async () => {
-    const testApi = await installAuthApi({
-      pairingCredential: (payload) =>
-        Effect.succeed({
-          id: "pairing-link-1",
-          credential: "pairing-token",
-          ...(payload.label === undefined ? {} : { label: payload.label }),
-          expiresAt: SESSION_EXPIRES_AT,
-        }),
-    });
-    const { createServerPairingCredential } = await import("./environments/primary");
-
-    const credential = await createServerPairingCredential({
-      label: "Julius iPhone",
-      scopes: ["orchestration:read"],
-    });
-    expect(credential).toMatchObject({
-      id: "pairing-link-1",
-      credential: "pairing-token",
-      label: "Julius iPhone",
-    });
-    expect(DateTime.formatIso(credential.expiresAt)).toBe("2026-04-05T00:00:00.000Z");
-    expect(testApi.calls.pairingCredential).toEqual([
-      { label: "Julius iPhone", scopes: ["orchestration:read"] },
-    ]);
-  });
 });

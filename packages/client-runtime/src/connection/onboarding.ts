@@ -94,10 +94,11 @@ export const preparePairingRegistration = Effect.fn(
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
   const compatibilityError = orchestrationProtocolCompatibilityError(descriptor);
   if (compatibilityError !== null) return yield* compatibilityError;
+  // No requested scopes: the server grants exactly what the pairing link
+  // allows, so an admin link yields an admin session.
   const access = yield* bootstrapRemoteBearerSession({
     httpBaseUrl: target.httpBaseUrl,
     credential: target.credential,
-    scopes: presentation.scopes,
     clientMetadata: presentation.metadata,
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
   const connectionId = `bearer:${descriptor.environmentId}`;

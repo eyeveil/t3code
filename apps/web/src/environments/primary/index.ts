@@ -6,15 +6,11 @@ export {
 } from "./context";
 
 export {
-  createServerPairingCredential,
   isPrimaryEnvironmentPairingCredentialRejectedError,
   peekPairingTokenFromUrl,
   PrimaryEnvironmentPairingCredentialRejectedError,
   PrimaryEnvironmentRequestError,
   resolveInitialServerAuthGateState,
-  revokeOtherServerClientSessions,
-  revokeServerClientSession,
-  revokeServerPairingLink,
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
   takePairingTokenFromUrl,
