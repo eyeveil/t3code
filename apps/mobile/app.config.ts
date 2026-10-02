@@ -229,8 +229,6 @@ const config: ExpoConfig = {
   slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
-  // Fork releases stamp their tag's version so Obtainium can match the
-  // installed APK to the GitHub release it came from.
   version: repoEnv.T3CODE_MOBILE_VERSION ?? "1.3.1",
   runtimeVersion: {
     // Development manifests resolve on every launch, so avoid fingerprint's

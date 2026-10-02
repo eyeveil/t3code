@@ -198,13 +198,14 @@ jobs:
             import fs from "node:fs";
             const path = "apps/mobile/app.config.ts";
             const source = fs.readFileSync(path, "utf8");
-            const next = source.replace(
-              /^(  version: ")[^"]+(".*)$/m,
-              `$1${process.env.RELEASE_VERSION}$2`,
-            );
-            if (next === source && !source.includes(`  version: "${process.env.RELEASE_VERSION}"`)) {
+            const versionPattern = /^(  version: (?:repoEnv\.T3CODE_MOBILE_VERSION \?\? )?")[^"]+(".*)$/m;
+            if (!versionPattern.test(source)) {
               throw new Error("Could not update app version");
             }
+            const next = source.replace(
+              versionPattern,
+              `$1${process.env.RELEASE_VERSION}$2`,
+            );
             fs.writeFileSync(path, next);
           '
           vp fmt apps/mobile/app.config.ts
