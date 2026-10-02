@@ -218,6 +218,7 @@ jobs:
     env:
       APP_VARIANT: preview
       T3CODE_MOBILE_UPDATE_CHANNEL: fork
+      T3CODE_MOBILE_VERSION: ${{ needs.version.outputs.version }}
       EXPO_NO_GIT_STATUS: "1"
     steps:
       - name: Checkout
@@ -316,6 +317,7 @@ jobs:
     env:
       APP_VARIANT: preview
       T3CODE_MOBILE_UPDATE_CHANNEL: fork
+      T3CODE_MOBILE_VERSION: ${{ needs.version.outputs.version }}
       EXPO_NO_GIT_STATUS: "1"
     steps:
       - name: Checkout
