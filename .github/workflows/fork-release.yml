@@ -8,11 +8,13 @@ name: Fork Release
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: fork-release
-  cancel-in-progress: false
+  group: fork-release-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -133,6 +135,9 @@ jobs:
           sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain .github/fork/mac-signing-cert.pem
           security find-identity -v -p codesigning "$keychain" | grep -F '"T3 Code Fork Signing"'
           echo "CSC_NAME=T3 Code Fork Signing" >> "$GITHUB_ENV"
+          # electron-builder skips signing on pull requests unless told otherwise.
+          # Only branches of this repository receive the signing secrets.
+          echo "CSC_FOR_PULL_REQUEST=true" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: vp install
@@ -207,8 +212,74 @@ jobs:
           path: release-publish/*
           if-no-files-found: error
 
+  android:
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      APP_VARIANT: preview
+      T3CODE_MOBILE_UPDATE_CHANNEL: fork
+      EXPO_NO_GIT_STATUS: "1"
+    steps:
+      - name: Checkout
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Install dependencies
+        run: vp install
+
+      - name: Build APK
+        working-directory: apps/mobile
+        run: |
+          node_modules/.bin/expo prebuild --clean --platform android
+          cd android
+          ./gradlew assembleRelease "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1536m"
+
+      # Android installs an update only when it is signed with the installed
+      # app's key, so every release APK is re-signed with the fork release key.
+      - name: Sign APK with the fork release key
+        env:
+          KEYSTORE: ${{ secrets.FORK_ANDROID_KEYSTORE }}
+          KEYSTORE_PASSWORD: ${{ secrets.FORK_ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/release.p12"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          mkdir -p release-android
+          apk="release-android/T3-Code-${{ needs.version.outputs.version }}-android.apk"
+          "$apksigner" sign --ks "$RUNNER_TEMP/release.p12" --ks-pass env:KEYSTORE_PASSWORD \
+            --ks-key-alias t3code-fork --out "$apk" \
+            apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          rm "$RUNNER_TEMP/release.p12"
+          "$apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+          grep -q "SHA-256 digest: 1efbb2ba4b48bd062959684e8bf4b955576e16b907f8853e0490d289a5cf0d22" "$RUNNER_TEMP/certs.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: android-apk
+          path: release-android/*.apk
+          if-no-files-found: error
+
   publish:
-    needs: [version, desktop]
+    if: github.event_name != 'pull_request'
+    needs: [version, desktop, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -217,6 +288,10 @@ jobs:
         with:
           pattern: desktop-*
           merge-multiple: true
+          path: release-assets
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: android-apk
           path: release-assets
       - name: Publish prerelease
         env:
@@ -231,3 +306,43 @@ jobs:
             --title "${{ needs.version.outputs.name }}" \
             --notes "Fork nightly built from $GITHUB_SHA." \
             --prerelease
+
+  # Ships JavaScript to installed Android builds whose native fingerprint
+  # matches this commit. After a native change the fingerprint differs, and
+  # those phones take the release APK instead.
+  mobile-update:
+    needs: [version, publish]
+    runs-on: ubuntu-24.04
+    env:
+      APP_VARIANT: preview
+      T3CODE_MOBILE_UPDATE_CHANNEL: fork
+      EXPO_NO_GIT_STATUS: "1"
+    steps:
+      - name: Checkout
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install
+
+      - name: Publish over-the-air update
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          npx --yes eas-cli@latest update \
+            --channel fork \
+            --platform android \
+            --message "${{ needs.version.outputs.name }}" \
+            --non-interactive
