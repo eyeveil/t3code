@@ -12,16 +12,19 @@
  *
  * @module provider/Drivers/OpenCodeDriver
  */
-import { OpenCodeSettings, ProviderDriverKind, TextGenerationError } from "@t3tools/contracts";
+import { OpenCodeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import * as OpenCode2TextGeneration from "../../textGeneration/OpenCode2TextGeneration.ts";
 import { makeOpenCodeTextGeneration } from "../../textGeneration/OpenCodeTextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
@@ -34,8 +37,11 @@ import { ProviderDriverError } from "../Errors.ts";
 import { readOpenCodeGoUsageLimits } from "../Layers/openCodeUsageLimits.ts";
 import {
   checkOpenCodeProviderStatus,
+  loadOpenCode2Workspace,
   makeOpenCode2ModelLoader,
   makePendingOpenCodeProvider,
+  openCode2CommandsToServerProviderSlashCommands,
+  openCode2SkillsToServerProviderSkills,
   openCodeSkillsToServerProviderSkills,
   openCodeCommandsToServerProviderSlashCommands,
 } from "../Layers/OpenCodeProvider.ts";
@@ -59,6 +65,7 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makeCachedProviderMaintenanceResolution,
+  makeManualOnlyProviderMaintenanceCapabilities,
   makePackageManagedProviderMaintenanceResolver,
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
@@ -80,17 +87,20 @@ function isOpenCodeNativeCommandPath(commandPath: string): boolean {
   );
 }
 
-const UPDATE = makePackageManagedProviderMaintenanceResolver({
-  provider: DRIVER_KIND,
-  npmPackageName: "opencode-ai",
-  nativeUpdate: {
-    args: ["upgrade"],
-    isCommandPath: isOpenCodeNativeCommandPath,
-  },
-});
-
-export const OPENCODE_2_TEXT_GENERATION_UNSUPPORTED =
-  "T3 Code cannot generate text with OpenCode 2 yet.";
+/**
+ * OpenCode 1.x ships as `opencode-ai` and 2.x as `@opencode/cli`. An install is
+ * only ever updated within its own package: T3 never moves a 1.x install onto
+ * 2.x or back, since 2.x converts the shared database in place.
+ */
+export const openCodeUpdateFor = (generation: ProbedOpenCode["generation"]) =>
+  makePackageManagedProviderMaintenanceResolver({
+    provider: DRIVER_KIND,
+    npmPackageName: generation === "v2" ? "@opencode/cli" : "opencode-ai",
+    nativeUpdate: {
+      args: ["upgrade"],
+      isCommandPath: isOpenCodeNativeCommandPath,
+    },
+  });
 
 type OpenCodeRuntimeProbe = Effect.Success<
   ReturnType<typeof makeOpenCodeRuntimeProbe<OpenCodeRuntime.OpenCodeRuntimeError>>
@@ -131,35 +141,32 @@ function selectOpenCodeRuntimeAdapter(input: {
   };
 }
 
-/** Text generation starts or connects to a 1.x server per call, so a 2.x is refused first. */
+/** Text generation runs on the server the instance's probe detected, each in its own protocol. */
 function selectOpenCodeRuntimeTextGeneration(
   probe: OpenCodeRuntimeProbe,
   v1: TextGeneration["Service"],
+  v2: TextGeneration["Service"],
 ): TextGeneration["Service"] {
-  const refuse = (operation: string) =>
-    Effect.fail(
-      new TextGenerationError({ operation, detail: OPENCODE_2_TEXT_GENERATION_UNSUPPORTED }),
-    );
   return {
     generateCommitMessage: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateCommitMessage(input),
-        v2: refuse("generateCommitMessage"),
+        v2: v2.generateCommitMessage(input),
       }),
     generatePrContent: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generatePrContent(input),
-        v2: refuse("generatePrContent"),
+        v2: v2.generatePrContent(input),
       }),
     generateBranchName: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateBranchName(input),
-        v2: refuse("generateBranchName"),
+        v2: v2.generateBranchName(input),
       }),
     generateThreadTitle: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateThreadTitle(input),
-        v2: refuse("generateThreadTitle"),
+        v2: v2.generateThreadTitle(input),
       }),
   };
 }
@@ -206,23 +213,50 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies OpenCodeSettings;
-      const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-        resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-          binaryPath: effectiveConfig.binaryPath,
-          env: processEnv,
-        }).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, pathService),
-        ),
-      );
-
       const runtimeProbe = yield* makeOpenCodeRuntimeProbe(
         probeOpenCodeRuntime(effectiveConfig, processEnv).pipe(
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
         ),
       );
+      // Updates follow the installed package, which the version probe names. An
+      // unknown version offers no package update, since a guess could move a
+      // 2.x install onto 1.x's package or the reverse. A disabled instance never
+      // runs its binary, so it has no version and offers no update.
+      const noUpdate = makeManualOnlyProviderMaintenanceCapabilities({
+        provider: DRIVER_KIND,
+        packageName: null,
+      });
+      const maintenanceFor = (probed: typeof runtimeProbe.get) =>
+        probed.pipe(
+          Effect.map((result) => result.generation),
+          Effect.option,
+          Effect.flatMap((generation) =>
+            Option.isNone(generation)
+              ? Effect.succeed(noUpdate)
+              : resolveProviderMaintenanceCapabilitiesEffect(openCodeUpdateFor(generation.value), {
+                  binaryPath: effectiveConfig.binaryPath,
+                  env: processEnv,
+                }),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
+        );
+      const cachedMaintenance = yield* makeCachedProviderMaintenanceResolution(
+        maintenanceFor(runtimeProbe.get),
+      );
+      // A fresh read (an update about to run, or a manual refresh) re-probes, so
+      // a binary replaced by the other major version gets its own package.
+      const resolveMaintenance = (options?: { readonly fresh?: boolean }) =>
+        !effectiveConfig.enabled
+          ? Effect.succeed(noUpdate)
+          : options?.fresh === true
+            ? runtimeProbe.refresh.pipe(
+                Effect.ignore,
+                Effect.andThen(cachedMaintenance({ fresh: true })),
+              )
+            : cachedMaintenance();
       const openCodeV1Adapter = yield* OpenCodeAdapterV2.OpenCodeAdapterV2Driver.create({
         instanceId,
         displayName,
@@ -279,6 +313,42 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           ),
         ),
       );
+      // A 2.x server lists skills and commands per directory, so one server
+      // answers every workspace. Its event stream says when a directory it had
+      // not served yet finished scanning.
+      const listOpenCode2Workspace = (cwd: string) =>
+        openCode2Server.withConnection(({ client, events }) =>
+          Effect.gen(function* () {
+            const location = { directory: cwd };
+            const scanned = yield* Deferred.make<void>();
+            const pending = new Set(["command.updated", "skill.updated"]);
+            const stream = yield* events.pipe(Effect.option);
+            if (stream._tag === "Some") {
+              yield* stream.value.pipe(
+                Stream.runForEach((event) =>
+                  "location" in event &&
+                  event.location?.directory === cwd &&
+                  pending.delete(event.type) &&
+                  pending.size === 0
+                    ? Deferred.succeed(scanned, undefined)
+                    : Effect.void,
+                ),
+                Effect.ignore,
+                Effect.forkScoped,
+              );
+            }
+            return yield* loadOpenCode2Workspace(
+              Effect.all(
+                {
+                  skills: client.skill.list({ location }).pipe(Effect.map((list) => list.data)),
+                  commands: client.command.list({ location }).pipe(Effect.map((list) => list.data)),
+                },
+                { concurrency: "unbounded" },
+              ),
+              Deferred.await(scanned),
+            );
+          }).pipe(Effect.scoped),
+        );
       const serverOwner = yield* OpenCodeServerOwner.make({
         binaryPath: effectiveConfig.binaryPath,
         directory: serverConfig.cwd,
@@ -291,6 +361,9 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         runtimeProbe,
         yield* makeOpenCodeTextGeneration(effectiveConfig).pipe(
           Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
+        ),
+        yield* OpenCode2TextGeneration.make().pipe(
+          Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server),
         ),
       );
 
@@ -417,13 +490,31 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         accentColor,
         enabled,
         snapshot,
-        // OpenCode 2 has no per-workspace skill and command inventory yet, so a
-        // 2.x workspace shows the machine snapshot instead of starting a 1.x server.
         snapshotForCwd: (cwd) =>
           !effectiveConfig.enabled
             ? snapshot.getSnapshot
             : byOpenCodeRuntime(runtimeProbe.get, {
-                v2: snapshot.getSnapshot,
+                v2: Effect.all([
+                  snapshot.getSnapshot,
+                  listOpenCode2Workspace(cwd).pipe(
+                    Effect.timeout("20 seconds"),
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderDriverError({
+                          driver: DRIVER_KIND,
+                          instanceId,
+                          detail: `Failed to list OpenCode commands and skills for '${cwd}'`,
+                          cause,
+                        }),
+                    ),
+                  ),
+                ]).pipe(
+                  Effect.map(([machineSnapshot, { skills, commands }]) => ({
+                    ...machineSnapshot,
+                    skills: openCode2SkillsToServerProviderSkills(skills),
+                    slashCommands: openCode2CommandsToServerProviderSlashCommands(commands),
+                  })),
+                ),
                 v1: Effect.all([
                   snapshot.getSnapshot,
                   loadWorkspaceForCwd(cwd).pipe(Effect.timeout("20 seconds")),
