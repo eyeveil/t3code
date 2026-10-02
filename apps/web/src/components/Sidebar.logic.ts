@@ -1011,11 +1011,10 @@ export function shouldShowSidebarV2Duration(status: SidebarThreadStatus): boolea
     in the inbox. */
 export function isSidebarThreadWorking(thread: ThreadStatusInput): boolean {
   const status = resolveSidebarThreadStatus(thread);
-  // v2 reports background work alone (main's "monitoring") as "waiting".
-  if (status !== "working" && status !== "waiting") return false;
-  // A plan prompt outranks lingering background work. The status pill ranks
-  // Waiting above Plan Ready, so ask the plan question directly.
-  return !hasPlanReadyPrompt(thread);
+  const hasWork =
+    status === "working" ||
+    (status === "waiting" && (thread.pendingBackgroundTasks?.length ?? 0) > 0);
+  return hasWork && !hasPlanReadyPrompt(thread);
 }
 
 /** First VALID timestamp wins: `a ?? b` falls through on null, but a present-

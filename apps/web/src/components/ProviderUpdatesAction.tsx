@@ -93,11 +93,14 @@ export function ProviderUpdatesAction() {
             disabled={isPending}
             onClick={() => void handleUpdate()}
           >
-            {isPending ? "Updating…" : "Update all"}
+            {isPending ? "Updating…" : "Update all machines"}
           </Button>
         }
       />
       <TooltipPopup side="top">
+        <div>
+          Updates providers across connected machines. Each machine checks your permissions.
+        </div>
         {machines.map((machine) => (
           <div key={machine.environmentId}>
             {machine.label}:{" "}

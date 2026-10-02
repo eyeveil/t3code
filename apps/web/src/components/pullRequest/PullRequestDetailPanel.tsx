@@ -2595,7 +2595,7 @@ export function PullRequestDetailPanel({
                   </Tooltip>
                 ) : (
                   <span
-                    className="flex h-4 min-w-0 flex-wrap content-start items-center justify-end gap-x-1.5 overflow-hidden text-xs text-muted-foreground"
+                    className="flex min-h-4 min-w-0 flex-wrap content-start items-center justify-end gap-x-1.5 text-xs text-muted-foreground"
                     aria-label={checksSummary ? `Checks: ${checksSummary}` : "Checks"}
                   >
                     {checksState !== null ? (
@@ -2608,7 +2608,7 @@ export function PullRequestDetailPanel({
                     ) : (
                       <CircleDotIcon aria-hidden className="size-3.5" />
                     )}
-                    <span className="whitespace-nowrap">{checksSummary}</span>
+                    <span className="text-right">{checksSummary}</span>
                   </span>
                 )}
               </span>

@@ -2080,6 +2080,13 @@ describe("Working shelf (beta)", () => {
     expect(isSidebarThreadWorking({ ...idle, runtime })).toBe(true);
     expect(isSidebarThreadWorking({ ...idle, ...background })).toBe(true);
     expect(isSidebarThreadWorking(idle)).toBe(false);
+    expect(
+      isSidebarThreadWorking({
+        ...idle,
+        runtime: { ...runtime, status: "idle", activeRunId: null },
+        pendingBackgroundTasks: [],
+      }),
+    ).toBe(false);
     expect(isSidebarThreadWorking({ ...idle, runtime, hasPendingApprovals: true })).toBe(false);
     expect(isSidebarThreadWorking({ ...idle, runtime, hasPendingUserInput: true })).toBe(false);
     expect(
