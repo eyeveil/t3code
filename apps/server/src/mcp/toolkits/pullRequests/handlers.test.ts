@@ -6,6 +6,8 @@ import {
   type OrchestrationV2ServerCommand as OrchestrationCommand,
   type OrchestrationProjectShell,
   type ThreadPullRequestLink,
+  type PullRequestSummary,
+  PullRequestOperationError,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -22,6 +24,7 @@ import {
   v2PullRequestThread,
 } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestService from "../../../pullRequest/PullRequestService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { listThreadPullRequests, PullRequestsToolkitHandlersLive } from "./handlers.ts";
 import { PullRequestLinkFailedError, PullRequestsToolkit } from "./tools.ts";
@@ -124,6 +127,8 @@ function makeLink(
 }
 
 interface HarnessOptions {
+  readonly hostState?: PullRequestSummary["state"];
+  readonly summaryFailure?: boolean;
   readonly thread?: PullRequestTestThread | null;
   readonly project?: OrchestrationProjectShell | null;
   /** A rejection the orchestrator reports as the dispatch error's cause. */
@@ -149,6 +154,24 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       return { sequence: 1, storedEvents: [] };
     });
   const dependencies = Layer.mergeAll(
+    Layer.mock(PullRequestService.PullRequestService)({
+      invalidate: () => Effect.void,
+      summary: (input) =>
+        options.summaryFailure
+          ? Effect.fail(new PullRequestOperationError({ operation: "summary", detail: "offline" }))
+          : Effect.succeed({
+              provider: "github",
+              projectId: input.projectId,
+              repository: input.repository,
+              number: input.number,
+              title: "Pull request",
+              url: `https://github.com/${input.repository}/pull/${input.number}`,
+              state: options.hostState ?? "open",
+              headBranch: "feature",
+              baseBranch: "main",
+              updatedAt: "2026-08-27T00:00:00.000Z",
+            }),
+    }),
     Layer.mock(ProjectService.ProjectService)({
       getShell: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
@@ -255,6 +278,7 @@ describe("pull request toolkit handlers", () => {
       };
       const merged = makeLink(1, { headBranch: "done" });
       const harness = yield* makeHarness({
+        hostState: "merged",
         thread: makeThread([
           { ...merged, snapshot: merged.snapshot && { ...merged.snapshot, state: "merged" } },
           makeLink(2, { headBranch: "idle" }),
@@ -270,6 +294,52 @@ describe("pull request toolkit handlers", () => {
       ).toMatchObject({ wasWatching: true });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.watch", number: 3, watching: false },
+      ]);
+    }),
+  );
+
+  it.effect.each(["closed", "merged"] as const)(
+    "refuses to watch an unlinked %s pull request",
+    (state) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ hostState: state });
+        const error = yield* harness
+          .call("watch_pull_request", {
+            url: "https://github.com/t3tools/t3code/pull/9",
+          })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "PullRequestNotOpenError", state });
+        expect(yield* Ref.get(harness.commands)).toEqual([]);
+      }),
+  );
+
+  it.effect("checks host state when the linked snapshot still says open", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        hostState: "closed",
+        thread: makeThread([makeLink(9, { headBranch: "feature" })]),
+      });
+      const error = yield* harness
+        .call("watch_pull_request", {
+          repository: "t3tools/t3code",
+          number: 9,
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "PullRequestNotOpenError", state: "closed" });
+      expect(yield* Ref.get(harness.commands)).toEqual([]);
+    }),
+  );
+
+  it.effect("reports host lookup failures without starting a watch and can still unwatch", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ summaryFailure: true });
+      const target = { repository: "t3tools/t3code", number: 9 };
+      const error = yield* harness.call("watch_pull_request", target).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "PullRequestWatchFailedError" });
+      expect(yield* Ref.get(harness.commands)).toEqual([]);
+      yield* harness.call("unwatch_pull_request", target);
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.watch", number: 9, watching: false },
       ]);
     }),
   );

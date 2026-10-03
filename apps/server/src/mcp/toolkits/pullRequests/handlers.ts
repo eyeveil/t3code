@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestService from "../../../pullRequest/PullRequestService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   type ListThreadPullRequestsResult,
@@ -154,6 +155,7 @@ const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
 
   const projects = yield* ProjectService.ProjectService;
+  const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
 
   const commandId = (tag: string, threadId: ThreadId) =>
@@ -225,9 +227,21 @@ const make = Effect.gen(function* () {
         (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),
       );
     const before = watchedLink(thread);
-    const state = before?.snapshot?.state;
-    if (watching && state !== undefined && state !== "open") {
-      return yield* new PullRequestNotOpenError({ state });
+    if (watching) {
+      const reference = {
+        projectId: thread.projectId,
+        host: target.host,
+        repository: target.repository,
+        number: target.number,
+        allowStale: false,
+      };
+      yield* pullRequests.invalidate({ reference }, { notifyReaders: false });
+      const summary = yield* pullRequests
+        .summary(reference, { recoverTransientFailure: false })
+        .pipe(Effect.mapError((cause) => new PullRequestWatchFailedError({ cause })));
+      if (summary.state !== "open") {
+        return yield* new PullRequestNotOpenError({ state: summary.state });
+      }
     }
     yield* engine
       .dispatch({

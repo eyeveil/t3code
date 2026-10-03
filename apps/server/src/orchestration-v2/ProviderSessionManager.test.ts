@@ -17,6 +17,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -2629,6 +2630,96 @@ it.effect("ProviderSessionManagerV2 settles a request the event pump persists du
       yield* TestClock.adjust("1 second");
       yield* Deferred.succeed(pause.resume, undefined);
       yield* Fiber.join(closed);
+
+      const projection = yield* projectionStore.getThreadProjection(threadId);
+      const request = projection.runtimeRequests.find(
+        (candidate) => candidate.id === pendingRequest.requestId,
+      );
+      assert.equal(request?.responseCapability.type, "not_resumable");
+    });
+
+    yield* effect.pipe(
+      Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000, flakyReleaseWrites: flaky })),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 overlapping closes leave a replacement runtime alive", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const flaky: FlakyReleaseWrites = {
+      failing: yield* Ref.make<"none" | "session" | "session-and-requests">("none"),
+      failures: yield* Queue.unbounded<void>(),
+      pauseRequestWrites: {
+        paused: yield* Deferred.make<void>(),
+        resume: yield* Deferred.make<void>(),
+      },
+    };
+    const pause = flaky.pauseRequestWrites!;
+    const effect = Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-overlapping-close");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      const createdAt = now;
+      const pendingRequest = yield* makePendingRuntimeRequestEvents({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        providerThread: makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          now: createdAt,
+        }),
+        now: createdAt,
+      });
+      const adapterEvents = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+      assert.isDefined(adapterEvents);
+      yield* Queue.offer(adapterEvents!, pendingRequest.providerEvents[0]!);
+      // The event pump holds the request permit while it persists the request.
+      yield* Deferred.await(pause.paused);
+      const removed = yield* Deferred.make<void>();
+      const finishCutoff = yield* Deferred.make<void>();
+      const clock = yield* Clock.Clock;
+      // Pause the cleanup cutoff after removal while the old runtime still owns its permit.
+      const cutoffClock: Clock.Clock = {
+        ...clock,
+        currentTimeMillis: Effect.gen(function* () {
+          yield* Deferred.succeed(removed, undefined);
+          yield* Deferred.await(finishCutoff);
+          return yield* clock.currentTimeMillis;
+        }),
+      };
+      const firstClose = yield* manager
+        .close(providerSessionId)
+        .pipe(
+          Effect.provideService(Clock.Clock, cutoffClock),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+      const secondClose = yield* manager
+        .close(providerSessionId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Deferred.succeed(pause.resume, undefined);
+      yield* Deferred.await(removed);
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      yield* Deferred.succeed(finishCutoff, undefined);
+      yield* Fiber.join(firstClose);
+      yield* Fiber.join(secondClose);
+      const runtimeState = yield* Ref.get(state);
+      assert.equal(runtimeState.openCount, 2);
+      assert.equal(runtimeState.closeCount, 1);
+      assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
       const request = projection.runtimeRequests.find(

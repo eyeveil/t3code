@@ -808,31 +808,24 @@ export const layerWithOptions = (
           if (candidate === undefined) {
             return [Option.none<LiveSessionEntry>(), yield* DateTime.now] as const;
           }
-          const removed = yield* Effect.zip(
+          return yield* Effect.zip(
             Ref.modify(sessions, (current) => {
               const existing = current.get(key);
-              if (existing !== candidate) {
-                return [existing === undefined ? "gone" : "changed", current] as const;
+              if (existing === undefined || existing.runtime !== candidate.runtime) {
+                return [Option.none<LiveSessionEntry>(), current] as const;
               }
               if (
                 input.onlyIfIdleGeneration !== undefined &&
                 (existing.busyCount > 0 || existing.idleGeneration !== input.onlyIfIdleGeneration)
               ) {
-                return ["kept", current] as const;
+                return [Option.none<LiveSessionEntry>(), current] as const;
               }
               const updated = new Map(current);
               updated.delete(key);
-              return ["removed", updated] as const;
+              return [Option.some(existing), updated] as const;
             }),
             DateTime.now,
           ).pipe(candidate.requestEventPermit.withPermits(1));
-          const [outcome, releasedAt] = removed;
-          // Another entry took this id while the permit was held; release it instead.
-          if (outcome === "changed") return yield* removeLiveEntry(input);
-          return [
-            outcome === "removed" ? Option.some(candidate) : Option.none<LiveSessionEntry>(),
-            releasedAt,
-          ] as const;
         });
 
       const releaseEntry = (input: {
