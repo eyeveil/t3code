@@ -1,10 +1,23 @@
 // @effect-diagnostics nodeBuiltinImport:off - Loads the same CommonJS config Expo uses.
 import * as NodeModule from "node:module";
-import { expect, it } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 
-it("fingerprints the default app major when the release version supports an override", () => {
+it.each([
+  { version: undefined, major: "2" },
+  { version: "0.10.0", major: "0" },
+  { version: "3.0.0", major: "3" },
+  { version: "3.1.0", major: "3" },
+])("fingerprints the effective app major for $version", ({ version, major }) => {
   const require = NodeModule.createRequire(import.meta.url);
-  expect(require("../fingerprint.config.js")).toEqual({
-    extraSources: [{ type: "contents", id: "appMajorVersion", contents: "2" }],
-  });
+  const configPath = require.resolve("../fingerprint.config.js");
+  vi.stubEnv("T3CODE_MOBILE_VERSION", version);
+  delete require.cache[configPath];
+  try {
+    expect(require(configPath)).toEqual({
+      extraSources: [{ type: "contents", id: "appMajorVersion", contents: major }],
+    });
+  } finally {
+    vi.unstubAllEnvs();
+    delete require.cache[configPath];
+  }
 });
