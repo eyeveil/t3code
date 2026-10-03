@@ -1,3 +1,5 @@
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
@@ -1254,7 +1256,7 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "Watch build", kind: "monitor" }],
           runtime: {
             ...baseThread.runtime,
             status: "idle",
@@ -2053,20 +2055,49 @@ describe("navigation after parking a thread", () => {
   );
 });
 
+describe("unseen completion with background work", () => {
+  it.each([
+    { kind: "command", status: "ready", topStatus: "done", receded: false, pill: "Completed" },
+    { kind: "monitor", status: "waiting", topStatus: "waiting", receded: true, pill: "Waiting" },
+  ] as const)("presents a completed thread with a $kind roster", (expected) => {
+    const thread = presentThreadShell(localEnvironmentId, {
+      ...makeThreadFixture().source,
+      latestRunId: RunId.make("run-background-completion"),
+      status: "completed",
+      latestRunCompletedAt: DateTime.makeUnsafe("2026-06-20T01:00:00.000Z"),
+      lastVisitedAt: DateTime.makeUnsafe("2026-06-20T00:59:00.000Z"),
+      pendingBackgroundTasks: [{ taskId: "background-work", kind: expected.kind }],
+    });
+    const status = resolveSidebarThreadStatus(thread);
+    const isUnread = hasUnseenCompletion(thread);
+
+    expect(isUnread).toBe(true);
+    expect(status).toBe(expected.status);
+    expect(resolveSidebarV2TopStatus({ status, isUnread, isWoke: false })).toBe(expected.topStatus);
+    expect(
+      shouldRecedeSidebarThread({
+        status,
+        isUnread,
+        isWoke: false,
+        isActive: false,
+        isSelected: false,
+      }),
+    ).toBe(expected.receded);
+    expect(isSidebarThreadWorking(thread)).toBe(expected.receded);
+    expect(resolveThreadStatusPill({ thread })).toMatchObject({ label: expected.pill });
+  });
+});
+
 describe("Working shelf (beta)", () => {
   const runtime = {
     status: "running" as const,
-    providerName: "Codex",
+    activeRunId: null,
     providerInstanceId: ProviderInstanceId.make("codex"),
-    activeRunId: "turn-1" as never,
+    providerName: "Codex",
     lastError: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
   };
-  // v2 parks a run at idle while only background tasks are live.
-  const background = {
-    pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" as const }],
-    runtime: { ...runtime, status: "idle" as const, activeRunId: null },
-  };
+  const backgroundTask = { taskId: "bg-1", description: "Watch build", kind: "monitor" as const };
   const idle = {
     hasActionableProposedPlan: false,
     hasPendingApprovals: false,
@@ -2075,10 +2106,16 @@ describe("Working shelf (beta)", () => {
     latestRun: makeLatestRun(),
     runtime: null,
   };
+  // Stopped with background tasks still open: V2's "waiting" sidebar status.
+  const waiting = {
+    ...idle,
+    runtime: { ...runtime, status: "idle" as const },
+    pendingBackgroundTasks: [backgroundTask],
+  };
 
-  it("folds away running and background-only threads only", () => {
+  it("folds away running threads and threads waiting on background work only", () => {
     expect(isSidebarThreadWorking({ ...idle, runtime })).toBe(true);
-    expect(isSidebarThreadWorking({ ...idle, ...background })).toBe(true);
+    expect(isSidebarThreadWorking(waiting)).toBe(true);
     expect(isSidebarThreadWorking(idle)).toBe(false);
     expect(
       isSidebarThreadWorking({
@@ -2091,7 +2128,7 @@ describe("Working shelf (beta)", () => {
     expect(isSidebarThreadWorking({ ...idle, runtime, hasPendingUserInput: true })).toBe(false);
     expect(
       isSidebarThreadWorking({
-        ...idle,
+        ...waiting,
         runtime: { ...runtime, status: "failed" as const, lastError: "boom" },
       }),
     ).toBe(false);
@@ -2100,8 +2137,7 @@ describe("Working shelf (beta)", () => {
   it("keeps a ready plan in the inbox while background work runs", () => {
     expect(
       isSidebarThreadWorking({
-        ...idle,
-        ...background,
+        ...waiting,
         interactionMode: "plan",
         hasActionableProposedPlan: true,
       }),
